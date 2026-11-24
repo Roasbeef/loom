@@ -3252,10 +3252,11 @@ fn captured_transfer(
         json.Array(case window {
           transfer.Escalations(ids) ->
             list.filter_map(ids, fn(id) {
+              let keys = snapshot_view.lookup_keys(id)
+
+              // Both local and relayed spellings depend only on the request.
               case
-                list.any(cut.cells, fn(cell) {
-                  list.contains(snapshot_view.lookup_keys(id), cell.key)
-                })
+                list.any(cut.cells, fn(cell) { list.contains(keys, cell.key) })
               {
                 True -> Error(Nil)
                 False -> Ok(json.String(id))
@@ -10564,6 +10565,14 @@ fn describe_api_error(
     api.QueueRejected(reason: queue.NoActiveRun) -> #(
       protocol.code_conflict,
       "strand " <> strand <> " has no live operation",
+    )
+    api.QueueRejected(reason: queue.NextRunFull(limit:)) -> #(
+      protocol.code_conflict,
+      "strand "
+        <> strand
+        <> " already holds "
+        <> int.to_string(limit)
+        <> " messages for its next run",
     )
     api.ReadFailed(reason:) -> #(protocol.code_internal, reason)
     api.CommitFailed(error: _) -> #(

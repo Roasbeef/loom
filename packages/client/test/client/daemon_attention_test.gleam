@@ -27,14 +27,19 @@ import core/attention as records
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
+import core/register
+import core/tx
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap
+import machine/codec
+import machine/operation
 import machine/strand as machine_strand
 import runtime/api
+import runtime/writer
 import session_view/operator as session_operator
 import storage/access
 import storage/catalogue
@@ -623,10 +628,13 @@ pub fn an_answer_is_delivered_to_the_asking_strand_then_settled_test() {
       as "the answer is delivered and settled"
     assert settled > revision
 
-    // One prompt, to the strand that asked, worded as 119 specifies.
+    // One prompt, to the strand that asked, worded as 130 specifies.
     let assert Ok(#(strand, text)) = process.receive(seen, 0)
     assert strand == "sub:main/audit"
-    assert string.starts_with(text, "Answer to " <> rig.ask <> ":\n\n```json\n")
+    assert string.starts_with(
+      text,
+      "Answer to your ask " <> rig.ask <> ".\n\n1. ",
+    )
     assert process.receive(seen, 0) == Error(Nil)
 
     // The record is settled with the answer and the answerer.
@@ -1082,11 +1090,11 @@ pub fn the_owner_answers_an_ask_over_the_control_socket_test() {
     assert body(again, "may_answer") == json.Bool(False)
     assert field(body(again, "answer"), "by") == json.String(principal.id)
 
-    // One prompt reached the asking strand, worded as 119 specifies.
+    // One prompt reached the asking strand, worded as 130 specifies.
     let assert [prompt] = await_prompts(rig, 1)
     assert string.starts_with(
       prompt,
-      "Answer to " <> rig.ask <> ":\n\n```json\n",
+      "Answer to your ask " <> rig.ask <> ".\n\n1. ",
     )
 
     // An answered ask is not answered again, and nothing more is sent.
@@ -1472,6 +1480,234 @@ pub fn saved_counts_are_read_for_the_sessions_a_credential_holds_test() {
       )
       == json.Array([])
     let _ = ffi_ws.tcp_close(by_socket)
+    assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+// --- dismissing a stuck strand (protocol-change/131) -----------------------------
+
+/// The operation a failed run is, from a seed.
+fn failed_op(seed: Int) -> ids.OpId {
+  let #(id, _) = ids.mint_op(ids.generator(clock.fixed(at: 5), seed:))
+  id
+}
+
+/// Ends a strand's last run as failed, as a run's end writes it.
+fn strand_fails(rig: Rig, strand: String, run: ids.OpId) -> Nil {
+  let last =
+    operation.RunLastResult(
+      operation: run,
+      leaf: None,
+      outcome: operation.RunFailed(operation.OperationError(
+        "provider",
+        "overloaded",
+        None,
+      )),
+      final_assistant: None,
+    )
+  let assert Ok(_) =
+    writer.commit(
+      rig.runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandLastResult,
+            strand,
+            register.value(codec.encode_last_result(last)),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the failed result is committed"
+  Nil
+}
+
+fn dismiss(
+  socket,
+  id: Int,
+  session: String,
+  strand: String,
+  run: ids.OpId,
+  epoch: String,
+) -> JsonValue {
+  send(
+    socket,
+    id,
+    "attention.dismiss_stuck",
+    json.Object([
+      #("session", json.String(session)),
+      #("strand", json.String(strand)),
+      #("operation", json.String(ids.op_id_to_string(run))),
+      #("epoch", json.String(epoch)),
+    ]),
+    within_ms: 1000,
+  )
+}
+
+fn stuck_count(socket, id: Int, rig: Rig, epoch: String) -> JsonValue {
+  let feed =
+    send(
+      socket,
+      id,
+      "sessions.attention",
+      json.Object([
+        #("sessions", json.Array([json.String(rig.session)])),
+        #("epoch", json.String(epoch)),
+      ]),
+      within_ms: 1000,
+    )
+  let assert json.Array([row]) = body(feed, "attention") as "one row"
+  field(field(row, "stuck"), "count")
+}
+
+pub fn the_owner_dismisses_a_stuck_strand_and_the_feed_drops_it_test() {
+  with_rig(fn(_registry, port, credential, epoch, rig, _principal) {
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    strand_fails(rig, "sub:main/a", failed_op(1))
+    assert stuck_count(socket, 1, rig, epoch) == json.Int(1)
+
+    // Each refusal leaves the strand listed.
+    assert code(dismiss(
+        socket,
+        2,
+        rig.session,
+        "sub:main/a",
+        failed_op(1),
+        "previous-epoch",
+      ))
+      == json.String("stale_epoch")
+    assert code(dismiss(
+        socket,
+        3,
+        rig.session,
+        "sub:main/a",
+        failed_op(7),
+        epoch,
+      ))
+      == json.String("conflict")
+    assert code(dismiss(
+        socket,
+        4,
+        rig.session,
+        "sub:main/none",
+        failed_op(1),
+        epoch,
+      ))
+      == json.String("not_found")
+    assert code(dismiss(socket, 5, rig.saved, "sub:main/a", failed_op(1), epoch))
+      == json.String("not_resident")
+    assert stuck_count(socket, 6, rig, epoch) == json.Int(1)
+
+    // The dismissal names the strand and the failure, and the count falls.
+    let done =
+      dismiss(socket, 7, rig.session, "sub:main/a", failed_op(1), epoch)
+    assert field(done, "event") == json.String("attention.dismiss_stuck")
+    assert body(done, "strand") == json.String("sub:main/a")
+    assert body(done, "operation")
+      == json.String(ids.op_id_to_string(failed_op(1)))
+    assert stuck_count(socket, 8, rig, epoch) == json.Int(0)
+
+    // A strand that fails again is listed again, and a second press on the
+    // first failure is stale.
+    strand_fails(rig, "sub:main/a", failed_op(2))
+    assert stuck_count(socket, 9, rig, epoch) == json.Int(1)
+    assert code(dismiss(
+        socket,
+        10,
+        rig.session,
+        "sub:main/a",
+        failed_op(1),
+        epoch,
+      ))
+      == json.String("conflict")
+
+    // A malformed request is refused before any registry call.
+    let malformed =
+      send(
+        socket,
+        11,
+        "attention.dismiss_stuck",
+        json.Object([
+          #("session", json.String(rig.session)),
+          #("strand", json.Int(3)),
+          #("epoch", json.String(epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert code(malformed) == json.String("bad_request")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn members_dismiss_by_their_role_over_the_control_socket_test() {
+  with_rig(fn(registry, port, _credential, epoch, rig, _principal) {
+    let assert Ok(store) = catalogue.open(rig.state_root <> "/catalogue.db")
+      as "the catalogue opens"
+    let member = fn(name, token, role) {
+      let assert Ok(principal) =
+        access.create_member(store, name, name, digest_of(token))
+        as "the member exists"
+      case role {
+        Some(held) -> {
+          let assert Ok(Nil) =
+            access.grant(store, principal.id, rig.session, held)
+          Nil
+        }
+        None -> Nil
+      }
+    }
+    let operator = string.repeat("4", 64)
+    let observer = string.repeat("5", 64)
+    let bystander = string.repeat("6", 64)
+    member("dis-operator", operator, Some(access.Operator))
+    member("dis-observer", observer, Some(access.Observer))
+    member("dis-bystander", bystander, None)
+    strand_fails(rig, "sub:main/a", failed_op(1))
+
+    // An observer may read the session and may not change it, and a bystander
+    // is told what an unknown session is told.
+    let #(ob_socket, _) = connect(port, observer, "/v2/control")
+    let _ = frame(ob_socket, within_ms: 1000)
+    assert code(dismiss(
+        ob_socket,
+        1,
+        rig.session,
+        "sub:main/a",
+        failed_op(1),
+        epoch,
+      ))
+      == json.String("forbidden")
+    assert stuck_count(ob_socket, 2, rig, epoch) == json.Int(1)
+    let _ = ffi_ws.tcp_close(ob_socket)
+
+    let #(by_socket, _) = connect(port, bystander, "/v2/control")
+    let _ = frame(by_socket, within_ms: 1000)
+    assert code(dismiss(
+        by_socket,
+        1,
+        rig.session,
+        "sub:main/a",
+        failed_op(1),
+        epoch,
+      ))
+      == json.String("not_found")
+    let _ = ffi_ws.tcp_close(by_socket)
+
+    // An Operator member dismisses, and the cell names it.
+    let #(op_socket, _) = connect(port, operator, "/v2/control")
+    let _ = frame(op_socket, within_ms: 1000)
+    let done =
+      dismiss(op_socket, 1, rig.session, "sub:main/a", failed_op(1), epoch)
+    assert field(done, "event") == json.String("attention.dismiss_stuck")
+    assert stuck_count(op_socket, 2, rig, epoch) == json.Int(0)
+    let assert Ok([held]) = attention.dismissals(rig.runtime)
+    let assert Ok(principal) =
+      manager.authenticate(registry, digest_of(operator))
+    assert held.by == principal.id
+    let _ = ffi_ws.tcp_close(op_socket)
     assert catalogue.close(store) == Ok(Nil)
   })
 }

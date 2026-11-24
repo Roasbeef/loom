@@ -10,9 +10,12 @@ text frames out, and unmasked frames in.
 Usage:
   control.py STATE PORT create NAME WORKSPACE     prints the session id
   control.py STATE PORT open SESSION
+  control.py STATE PORT stop SESSION              stop a resident session
   control.py STATE PORT link SOURCE TARGET        main to main, may_wake
   control.py STATE PORT send SOURCE TARGET ID TEXT
   control.py STATE PORT ui SESSION operator|observer   prints the page link
+  control.py STATE PORT ui home operator|observer      prints the home page link
+  control.py STATE PORT raw CMD JSON-BODY         any owner command; prints the reply body
 """
 
 import base64
@@ -92,6 +95,8 @@ def main():
                                         "name": rest[0], "configuration": ""}
     elif command == "open":
         cmd, body = "sessions.open", {"session_id": rest[0], "epoch": epoch}
+    elif command == "stop":
+        cmd, body = "sessions.stop", {"session_id": rest[0], "epoch": epoch}
     elif command == "link":
         cmd, body = "peers.link", {"source_session": rest[0], "source_strand": "main",
                                    "target_session": rest[1], "target_strand": "main",
@@ -100,8 +105,12 @@ def main():
         cmd, body = "peers.send", {"source_session": rest[0], "source_strand": "main",
                                    "target_session": rest[1], "target_strand": "main",
                                    "message_id": rest[2], "text": rest[3], "epoch": epoch}
+    elif command == "raw":
+        cmd, body = rest[0], json.loads(rest[1])
     elif command == "ui":
-        cmd, body = "ui.link", {"session_id": rest[0], "page": rest[1]}
+        cmd, body = "ui.link", {"page": rest[1]}
+        if rest[0] != "home":
+            body["session_id"] = rest[0]
     else:
         raise SystemExit(__doc__)
     sock.sendall(frame(json.dumps({"v": 2, "id": 1, "cmd": cmd, "body": body})))
@@ -113,6 +122,8 @@ def main():
         print(body.get("session_id") or body.get("id") or json.dumps(body))
     elif command == "ui":
         print(body.get("path", json.dumps(body)))
+    elif command == "raw":
+        print(json.dumps(body))
     else:
         print(json.dumps(body))
 

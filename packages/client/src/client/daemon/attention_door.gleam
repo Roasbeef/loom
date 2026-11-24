@@ -1,5 +1,6 @@
-//// The daemon's three acts on one attention record: read it, answer an ask,
-//// close a find (protocol-change/120).
+//// The daemon's acts on the attention records: read one, answer an ask, close a
+//// find (protocol-change/120), and dismiss a stuck strand's failure
+//// (protocol-change/131).
 ////
 //// Each act is the same walk. Who the caller is comes from the registry, read
 //// afresh, and never from the request. The session must be resident, because
@@ -11,8 +12,8 @@
 ////
 //// ## Flow
 ////
-//// `read`, `answer` and `close_find`, each through `held`, `endpoint_of` and
-//// `fetch`
+//// `read`, `answer`, `close_find` and `dismiss_stuck`, each through `held`,
+//// `endpoint_of` and, for the first three, `fetch`
 ////
 //// 1. `held` asks the registry for the caller's authority over the session. A
 ////    session the caller does not hold is refused as an unknown one is.
@@ -22,6 +23,10 @@
 //// 4. `answer` validates the answer against the record
 ////    (`core/attention_answer`), delivers one prompt to the asking strand, and
 ////    only then settles the record. `close_find` settles directly.
+////
+//// `dismiss_stuck` has no record to fetch: a stuck strand is derived from the
+//// session's last results, so the session's Agency checks the failure the caller
+//// names and writes the dismissal in the same call.
 ////
 //// ## Why delivery comes before settling
 ////
@@ -235,7 +240,7 @@ fn deliver_then_settle(
   values: List(#(String, records.Value)),
   principal: access.Principal,
 ) -> Result(Answered, AnswerFault) {
-  let text = attention_answer.prompt_text(ask.header.id, values)
+  let text = attention_answer.prompt_text(ask, values)
 
   // The prompt must be taken before the record is settled.
   use admission <- result.try(case send(ask.header.strand, text) {
@@ -301,6 +306,48 @@ fn open_find(stored: attention.Stored, revision: Int) -> Result(Nil, Refusal) {
         records.FindOpen, True -> Ok(Nil)
       }
   }
+}
+
+// --- dismiss ----------------------------------------------------------------------
+
+/// Dismisses a stuck strand's failure for the caller: the strand stops being
+/// listed as stuck until it fails again (protocol-change/131). Nothing is sent
+/// to the strand and nothing about it changes, so the owner who dismisses a
+/// failure has not retried, stopped or closed anything.
+///
+/// The caller must be the owner or an Operator member holding the session, the
+/// principals that may retry the strand, and `operation` must be the failed run
+/// the caller read. A strand that has run since, or failed again, is `conflict`,
+/// and one with no failure to dismiss is `not_found`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_door.dismiss_stuck(reach, "0198...", "sub:main/a", "0194f7b2-...")
+/// ```
+pub fn dismiss_stuck(
+  reach: Reach(instance),
+  session: String,
+  strand: String,
+  operation: String,
+) -> Result(Nil, Refusal) {
+  use #(principal, _authority) <- result.try(held_for_acting(reach, session))
+  use endpoint <- result.try(endpoint_of(reach, session))
+  call(endpoint, peer_mail.StuckDismiss(strand, operation, principal.id))
+  |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(refusal) {
+    // The shared words speak of a record, and a stuck strand is not one.
+    case refusal.code {
+      "not_found" ->
+        Refusal("not_found", "no failed strand of that name to dismiss")
+      "conflict" ->
+        Refusal(
+          "conflict",
+          "that strand has run or failed again since it was read",
+        )
+      _ -> refusal
+    }
+  })
 }
 
 // --- the walk ---------------------------------------------------------------------

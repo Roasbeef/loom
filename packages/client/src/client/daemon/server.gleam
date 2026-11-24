@@ -62,6 +62,7 @@ import client/daemon/manager
 import client/daemon/profiles
 import client/daemon/project_book
 import client/daemon/project_host
+import client/daemon/project_settings_wire
 import client/daemon/project_start
 import client/daemon/project_verdict
 import client/daemon/protocol
@@ -90,6 +91,8 @@ import client/orchestrators
 import client/peer_mail
 import client/peers
 import client/pools
+import client/project_overrides
+import client/project_proposal
 import client/project_standing
 import client/remote/orchestrator_port
 import client/roster.{type Roster}
@@ -559,8 +562,9 @@ pub type Attachment(instance) {
     /// read the home makes (`home_activity`), with the page's own credential,
     /// so a member is told only about sessions they hold. It blocks for the
     /// read's deadline, so the page runs it from a task
-    /// (`ui_socket.activity_task`).
-    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    /// (`ui_socket.activity_task`). Each answer is the session's state and
+    /// its count of asks waiting on the owner, and nothing it said.
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Watch)),
     /// The daemon's resident-only peer lookups, which an owner's page reads
     /// and changes its session's peer links through (`client/daemon/ui_peers`,
     /// protocol-change/077). They are the daemon's own and a page never
@@ -2927,7 +2931,7 @@ fn resident_upgrade(
                 state_root: state.state_root,
                 sessions_directory: state.sessions_directory,
                 registration:,
-                activity: session_activity(config, state.registry, digest),
+                activity: session_watches(config, state.registry, digest),
                 peers: peer_directory(config, state.registry),
                 models: fn() {
                   profiles.model_keys(config.domain_configuration)
@@ -3546,6 +3550,9 @@ fn control(
             | protocol.CloseTicket(..)
             | protocol.RetryTicket(..)
             | protocol.RecheckTicket(..)
+            | protocol.ProjectSettings(..)
+            | protocol.SetProjectSettings(..)
+            | protocol.ProposeProject(..)
             | protocol.RequeueTrigger(..)
             | protocol.SetProjectMode(..)
             | protocol.LabelTrigger(..)
@@ -3560,6 +3567,7 @@ fn control(
             | protocol.SessionBrief(..)
             | protocol.ReviewSession(..)
             | protocol.CloseFind(..)
+            | protocol.DismissStuck(..)
             | protocol.AnswerAsk(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3621,6 +3629,8 @@ fn control_use(command: protocol.Command) {
     | protocol.ListProjects
     | protocol.ProjectBoard(..)
     | protocol.ProjectTicket(..)
+    | protocol.ProjectSettings(..)
+    | protocol.ProposeProject(..)
     | protocol.ProjectLabels(..)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
@@ -3652,12 +3662,14 @@ fn control_use(command: protocol.Command) {
     | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
     | protocol.RecheckTicket(..)
+    | protocol.SetProjectSettings(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
     | protocol.LabelTrigger(..)
     | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..)
     | protocol.CloseFind(..)
+    | protocol.DismissStuck(..)
     | protocol.AnswerAsk(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
@@ -3892,6 +3904,27 @@ fn dispatch(
         )
       })
     }
+    protocol.DismissStuck(session, strand, operation, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      attention_door.dismiss_stuck(
+        attention_reach(config, state.registry, digest),
+        session,
+        strand,
+        operation,
+      )
+      |> result.map_error(attention_refusal)
+      |> result.map(fn(_) {
+        #(
+          "attention.dismiss_stuck",
+          json.Object([
+            #("strand", json.String(strand)),
+            #("operation", json.String(operation)),
+          ]),
+        )
+      })
+    }
     protocol.CloseFind(session, find, revision, outcome, supplied) -> {
       use Nil <- result.try(
         epoch(state, supplied) |> result.map_error(control_refusal),
@@ -3974,6 +4007,18 @@ fn dispatch(
     protocol.PublishTicket(project, ticket) ->
       project_command_in_words(config, principal, fn(control) {
         project_publish(control, project, ticket)
+      })
+    protocol.ProjectSettings(project) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_settings_read(control, project)
+      })
+    protocol.SetProjectSettings(project, revision, changes, publish_to) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_settings_write(control, project, revision, changes, publish_to)
+      })
+    protocol.ProposeProject(project) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_propose(control, project)
       })
     protocol.RequeueTrigger(project, trigger) ->
       project_command(config, principal, fn(control) {
@@ -4288,6 +4333,92 @@ fn project_command_in_words(
     |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   run(control)
+}
+
+/// The `projects.settings` step: the value in force for each of the project's
+/// five keys, where it came from, and the revision a write must echo.
+fn project_settings_read(
+  control: project_start.Control,
+  project: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use view <- result.map(
+    project_host.settings(handle)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.settings", project_settings_wire.view_json(project, view))
+}
+
+/// The `projects.set_settings` step: the owner changes the project's own
+/// settings. Every value is checked by the rules the file is checked by. A
+/// stale revision is `conflict`, and turning `publish` on without naming its
+/// URL is `bad_request` with the sentence that states the URL.
+fn project_settings_write(
+  control: project_start.Control,
+  project: String,
+  revision: Int,
+  changes: List(protocol.SettingChange),
+  publish_to: Option(String),
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use parsed <- result.try(
+    list.try_map(changes, setting_change)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  use view <- result.map(
+    project_host.change_settings(handle, revision, parsed, publish_to, "owner")
+    |> result.map_error(fn(failure) {
+      case failure {
+        project_host.StaleSettings ->
+          Refused(
+            "conflict",
+            "the settings changed since you read them; read them again",
+            [],
+          )
+        project_host.RefusedSettings(words) -> Refused("bad_request", words, [])
+      }
+    }),
+  )
+  #("projects.set_settings", project_settings_wire.view_json(project, view))
+}
+
+/// One requested change as the settings code takes it. A key and a value are
+/// checked by `project_overrides`, so the refusal is the file's own.
+fn setting_change(
+  change: protocol.SettingChange,
+) -> Result(project_overrides.Change, String) {
+  use key <- result.try(project_overrides.key_from_word(change.key))
+
+  // No words is a release, and words must pass the file's rules.
+  case change.values {
+    None -> Ok(project_overrides.Release(key))
+    Some(words) ->
+      project_overrides.parse(key, words) |> result.map(project_overrides.Hold)
+  }
+}
+
+/// The `projects.propose` step: what the table in `project_proposal` reads from
+/// the project's repository. Nothing is applied.
+fn project_propose(
+  control: project_start.Control,
+  project: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.map(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  let proposals =
+    project_proposal.read(handle.workspace) |> project_proposal.propose
+  #(
+    "projects.propose",
+    project_settings_wire.proposals_json(project, proposals),
+  )
 }
 
 /// The `projects.set_mode` step: the owner sets one rule's mode. An unknown
@@ -5567,6 +5698,9 @@ fn dispatch_class(
     | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
     | protocol.RecheckTicket(..)
+    | protocol.ProjectSettings(..)
+    | protocol.SetProjectSettings(..)
+    | protocol.ProposeProject(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
     | protocol.LabelTrigger(..)
@@ -5580,6 +5714,7 @@ fn dispatch_class(
     | protocol.SessionBrief(..)
     | protocol.ReviewSession(..)
     | protocol.CloseFind(..)
+    | protocol.DismissStuck(..)
     | protocol.AnswerAsk(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
@@ -7548,6 +7683,48 @@ pub fn states_of(
   }
 }
 
+/// The activity read the session page's sidebar is handed: `home_activity`
+/// reduced to what each running session is doing and how many asks wait on the
+/// owner (`listed_sessions.Watch`). As with `session_activity`, the narrowing
+/// is here, so the page is never given another session's last message or
+/// glances.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.session_watches(config, registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn session_watches(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(#(String, listed_sessions.Watch)) {
+  watches_of(home_activity(config, registry, digest))
+}
+
+/// Narrows a read of reports to a read of watches, as `states_of` narrows to
+/// states: the state word and the count of asks, and nothing a session said. A
+/// live page the home opened passes the home's reports through here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.watches_of(reports)(["0198..."])
+/// ```
+@internal
+pub fn watches_of(
+  reports: fn(List(String)) -> List(#(String, listed_sessions.Report)),
+) -> fn(List(String)) -> List(#(String, listed_sessions.Watch)) {
+  fn(ids) {
+    reports(ids)
+    |> list.map(fn(pair) {
+      let report = pair.1
+      #(pair.0, listed_sessions.Watch(report.activity, report.asks))
+    })
+  }
+}
+
 /// The identities among `ids` the credential holds a membership in, at any role,
 /// in their order. The owner holds every session in the catalogue. An identity
 /// the credential does not hold is dropped exactly as one the registry has never
@@ -7626,7 +7803,7 @@ pub fn activity_reports(
 /// ## Examples
 ///
 /// ```gleam
-/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None)))
+/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None, 0)))
 /// ```
 @internal
 pub fn report_of(
@@ -7657,8 +7834,12 @@ pub fn report_of(
           glances,
           // A time of any type but a whole non-negative number is no time,
           // and an old daemon's row has neither.
-          time_field(fields, "last_message_at"),
-          time_field(fields, "turn_started_at"),
+          count_field(fields, "last_message_at"),
+          count_field(fields, "turn_started_at"),
+          // The count of asks waiting on the owner. A daemon that predates the
+          // field, or a value that is not a whole non-negative number, says
+          // none.
+          count_field(fields, "asks") |> option.unwrap(0),
         ),
       ))
     }
@@ -7671,9 +7852,13 @@ pub fn report_of(
   }
 }
 
-/// A Unix-millisecond time of a row, or nothing for a member that is missing,
-/// null, not a whole number or negative.
-fn time_field(fields: List(#(String, JsonValue)), name: String) -> Option(Int) {
+/// A whole non-negative number of a row (a Unix-millisecond time, or a count),
+/// or nothing for a member that is missing, null, not a whole number or
+/// negative.
+fn count_field(
+  fields: List(#(String, JsonValue)),
+  name: String,
+) -> Option(Int) {
   case list.key_find(fields, name) {
     Ok(json.Int(at)) if at >= 0 -> Some(at)
     Ok(_) | Error(Nil) -> None
@@ -7801,8 +7986,12 @@ pub type Standing {
   Unheld
 }
 
-/// Reads a non-resident session's standing in one visibility read and, for a
-/// session that is not archived, one custody read.
+/// Reads a non-resident session's standing in one custody read and, for a
+/// session that has not moved away, one visibility read.
+///
+/// A session handed to another orchestrator is `Handed` whatever its
+/// visibility, because the owner may have archived the stub left behind and
+/// the answer must still name where the session went.
 ///
 /// ## Examples
 ///
@@ -7811,15 +8000,14 @@ pub type Standing {
 /// ```
 @internal
 pub fn standing(registry: manager.Manager(instance), id: String) -> Standing {
-  // This branch resolves manager visibility registry id before the operation continues.
-  case manager.visibility(registry, id) {
-    Error(_) -> Unheld
-    Ok(catalogue.Archived) -> Archived
-    Ok(catalogue.Active) ->
-      // This branch resolves manager custody registry id before the operation continues.
-      case manager.custody(registry, id) {
-        Ok(catalogue.Moved(..)) -> Handed
-        Ok(_) | Error(_) -> Unopened
+  // A tombstone answers first, so an archived stub is still `Handed`.
+  case manager.custody(registry, id) {
+    Ok(catalogue.Moved(..)) -> Handed
+    Ok(_) | Error(_) ->
+      case manager.visibility(registry, id) {
+        Error(_) -> Unheld
+        Ok(catalogue.Archived) -> Archived
+        Ok(catalogue.Active) -> Unopened
       }
   }
 }

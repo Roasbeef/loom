@@ -4069,6 +4069,12 @@ pub fn tool_call_summary(
         None ->
           generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
+    "ask", json.Object(fields) ->
+      case ask_prompts(fields) {
+        [] ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
+        prompts -> ask_summary(prompts, details_expanded)
+      }
     "agent_wait", json.Object(fields) ->
       case list.key_find(fields, "handles") {
         Ok(json.Array(handles)) ->
@@ -4168,6 +4174,58 @@ fn generic_tool_call(
   case details_expanded {
     True -> name <> "\n" <> rendered
     False -> name <> " · " <> compact(rendered, 120)
+  }
+}
+
+/// The prompts of an `ask` call's questions, in order. A question without a
+/// text prompt is left out, so a call this reader cannot understand falls back
+/// to the generic words.
+fn ask_prompts(fields: List(#(String, json.JsonValue))) -> List(String) {
+  case list.key_find(fields, "questions") {
+    Ok(json.Array(questions)) ->
+      list.filter_map(questions, fn(question) {
+        case question {
+          json.Object(question_fields) ->
+            string_field(question_fields, "prompt") |> option.to_result(Nil)
+          json.Array(_)
+          | json.String(_)
+          | json.Int(_)
+          | json.Float(_)
+          | json.Bool(_)
+          | json.Null -> Error(Nil)
+        }
+      })
+    Ok(_) | Error(Nil) -> []
+  }
+}
+
+/// The words of an `ask` call: how many questions it puts and the first, or
+/// every one when details are open. The reader sees the question and not the
+/// JSON that carried it.
+fn ask_summary(prompts: List(String), details_expanded: Bool) -> String {
+  let count = list.length(prompts)
+
+  // One question is singular; any other count, plural.
+  let noun = case count {
+    1 -> " question"
+    _ -> " questions"
+  }
+
+  let head = "ask · " <> int.to_string(count) <> noun
+
+  // Details list every question; the compact row names the first.
+  case details_expanded, prompts {
+    True, _ ->
+      head
+      <> "\n"
+      <> string.join(
+        list.index_map(prompts, fn(prompt, index) {
+          int.to_string(index + 1) <> ". " <> prompt
+        }),
+        "\n",
+      )
+    False, [first, ..] -> head <> ": " <> compact(first, 96)
+    False, [] -> head
   }
 }
 

@@ -611,7 +611,7 @@ pub fn a_session_in_flight_cannot_be_opened_and_says_where_it_is_going_test() {
   })
 }
 
-pub fn open_archive_restore_and_delete_name_the_new_owner_after_the_move_test() {
+pub fn open_restore_and_delete_name_the_new_owner_and_archive_hides_the_stub_after_the_move_test() {
   moving(fn(ready, port, credential, _recorder) {
     let session = remote(ready, "moved-away")
     let #(socket, _) = wire.connect(port, credential, "/v2/control")
@@ -626,7 +626,6 @@ pub fn open_archive_restore_and_delete_name_the_new_owner_after_the_move_test() 
       [
         #(2, "sessions.open"),
         #(3, "sessions.restore"),
-        #(4, "sessions.archive"),
         #(6, "sessions.delete"),
       ],
       fn(each) {
@@ -638,6 +637,11 @@ pub fn open_archive_restore_and_delete_name_the_new_owner_after_the_move_test() 
           == json.String("wss://laptop.example.com:8443/v2/control")
       },
     )
+
+    // Archiving the stub is the one command the source still serves: the
+    // session lives on the receiver, so only the local row is hidden.
+    let archived = command(socket, 4, "sessions.archive", session, ready.epoch)
+    assert field(archived, "event") == json.String("sessions.archive")
 
     // A second move is refused the same way.
     assert code(move(socket, 7, session, "laptop", ready.epoch))

@@ -947,6 +947,17 @@ pub fn the_bar_ends_with_a_back_control_that_sends_nothing_test() {
   assert string.contains(html, "<loom-back>Home</loom-back>")
 }
 
+// The rail's six folders are Back controls too: the admin page mints no home
+// ticket, so each is a `<loom-back>` that carries its name as light text and
+// draws no handler, and none is a button the page would have to answer.
+pub fn the_rail_folders_go_back_and_send_nothing_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert list.length(string.split(html, "<loom-back class=\"folder-back")) == 7
+  assert string.contains(html, ">Everything, by need</loom-back>")
+  assert !string.contains(html, "class=\"folder\"")
+}
+
 // An invitation's claim is drawn in the Sessions section, under the form that
 // made it, and a rotation's under the row of the person it rotated. Neither
 // moves to the top of the page, and neither is drawn where it does not belong.

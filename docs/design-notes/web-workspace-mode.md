@@ -86,10 +86,10 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:396`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:3533`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:3540`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:3437`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:3556`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:881`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
@@ -106,7 +106,7 @@ read with the page's credential digest (`listed_for`
 (`ui_socket.gleam:663`), `authorized_page`
 (`client/daemon/manager.gleam:1263`)), grouped by workspace (`grouped`
 (`web_view/sessions.gleam:154`)), and a row for a running session is a button
-that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:103`),
+that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:111`),
 `target` (`web_client/switch_rule.gleam:67`)). The observer page has no
 sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.
@@ -711,7 +711,7 @@ the membership and that the session is resident (`running`
 (`ui_socket.gleam:1012`)), mints with the page's own ceiling and deadline,
 and `<loom-switch>` navigates to the exchange. A saved session is text in
 the sidebar, and the refusal says to resume it from a terminal
-(`reason_words` (`web_view/sessions.gleam:352`)). The ruling "operator
+(`reason_words` (`web_view/sessions.gleam:371`)). The ruling "operator
 surfaces do not open saved sessions" was about the listing not being
 permission to activate; the open must go through the membership- and
 epoch-checked path.
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:3576`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:3587`) makes;
 3. `open` (`client/daemon/manager.gleam:1971`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;

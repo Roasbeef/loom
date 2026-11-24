@@ -49,6 +49,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import session_view/admission as session_admission
 import session_view/connection_event
+import tui/ask_board
 import tui/attachment
 import tui/job
 import tui/model.{
@@ -110,6 +111,7 @@ fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     job.ControlArrived(key:, reply:) -> admit_control(model, key, reply)
     job.ReconnectArrived(key:, reply:) -> admit_reconnect(model, key, reply)
     job.ActivityArrived(key:, reply:) -> admit_activity(model, key, reply)
+    job.AsksArrived(key:, reply:) -> admit_asks(model, key, reply)
     job.ConfigurationArrived(key:, reply:) ->
       admit_configuration(model, key, reply)
     job.ImageArrived(key:, reply:) -> admit_image(model, key, reply)
@@ -187,6 +189,33 @@ fn admit_activity(
           ),
         )
       })
+  }
+}
+
+/// Delivers an ask poll reply to the board's read, when the board still waits
+/// for that job.
+fn admit_asks(
+  model: Model,
+  key: job.Key,
+  reply: job.AsksReply,
+) -> Result(Model, Nil) {
+  case model.view.asks.phase {
+    ask_board.Reading(job: awaiting) ->
+      job.admit(awaiting, key, reply)
+      |> result.map(fn(awaiting) {
+        Model(
+          ..model,
+          view: view_set.asks(
+            model.view,
+            ask_board.Board(
+              ..model.view.asks,
+              phase: ask_board.Reading(awaiting),
+            ),
+          ),
+        )
+      })
+    ask_board.ReadDue | ask_board.Resting(..) | ask_board.Sending(..) ->
+      Error(Nil)
   }
 }
 

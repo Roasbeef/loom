@@ -4,6 +4,7 @@
 //// usefully show. The composer keeps those bytes out of presentation state,
 //// but expands them back into the ordinary text prompt at the gateway edge.
 
+import core/attention_answer
 import gleam/bool
 import gleam/int
 import gleam/list
@@ -540,6 +541,12 @@ pub fn harness_injection_summary(text: String) -> Option(String) {
 /// ```
 pub fn transcript_text(text: String, details_expanded: Bool) -> String {
   use <- bool.lazy_guard(when: details_expanded, return: fn() { text })
+
+  // The answer to an ask is the owner's own words under each question and
+  // reads whole; folding it like a large paste would join its lines.
+  use <- bool.lazy_guard(when: attention_answer.is_prompt(text), return: fn() {
+    text
+  })
 
   // Handle the `transcript_text` branch dispatch.
   case harness_injection_summary(text), memory_context_lines(text) {

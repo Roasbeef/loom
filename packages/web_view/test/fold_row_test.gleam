@@ -38,7 +38,7 @@ fn drawn(pieces: List(turns.Piece)) -> String {
 fn work(items: List(turns.Item)) -> turns.Piece {
   turns.Work(
     "work:1.0",
-    turns.Worked(Some(22_000), 2, 1, 0, turns.Finished),
+    turns.Worked(Some(22_000), 2, 1, 0, None, turns.Finished),
     items,
     turns.Unfolded(0),
     Some(2),
@@ -821,7 +821,7 @@ pub fn an_interrupted_turn_says_so_on_its_divider_test() {
     drawn([
       turns.Work(
         "work:1.0",
-        turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted),
+        turns.Worked(Some(12_000), 0, 0, 0, None, turns.Interrupted),
         [],
         turns.Folded,
         Some(2),

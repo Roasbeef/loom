@@ -16,7 +16,10 @@ and puts its answers in front of the model through `cap/lsp` in code mode
 and a diagnostics block appended to `fs_write` and `fs_edit` results.
 `cap/lsp_sql` collects explicit observations for satellite-local SQL. The
 default registry exposes no separate `lsp_*` tools; the capability modules
-share the same manager and lease.
+share the same manager and lease. A host whose agents call tools directly,
+with no code mode, can opt in with `[tools] lsp_tools = "on"`, which adds five
+thin query tools over the same door (see
+[The opt-in query tools](#the-opt-in-query-tools)).
 
 This document is how the code carries out two rulings:
 `docs/adr/015-language-servers-as-jailed-leases.md` (the server is a
@@ -159,6 +162,7 @@ relative to its package's source root: `lsp/client.gleam` is
 | Module | Owns | Read first |
 |---|---|---|
 | `tools/lsp.gleam` | Shared rendering, rename's `land`, the write tools' `diagnostics_observer`, and shared clipping/change-span helpers. | `## Flow` (`tools/lsp.gleam:19`), then `land` (`tools/lsp.gleam:112`) |
+| `tools/lsp_query.gleam` | The opt-in `lsp_*` query tools: argument decoding, bounded rendering and the typed errors over one `Door` closure each. Off by default. | its header, then `tools` |
 | `tools/fs.gleam`, `tools/hashline.gleam` | `land_plan`, `WriteTarget`, the write observer, and `plan_between`: the one landing path rename shares with `fs_edit`. | their own headers |
 | `codemode/lsp.gleam` | The `lsp.*` router arm, rename preview diffing, and the wire shapes. | `## Flow` (`codemode/lsp.gleam:57`) |
 | `cap/lsp.gleam` | The typed module a program imports: `Query`, `Site`, `Found`, `LspError`, and the seven functions. | `## Flow` (`cap/lsp.gleam:43`) and `## Where each error comes from` (`cap/lsp.gleam:62`) |
@@ -237,8 +241,8 @@ what it meant. The keys are described under "Configuration" below.
 ## One door, every surface
 
 Native queries and observed writes ask through one record of closures,
-`lsp/query.Door`. The write tools' diagnostics observer calls it, and code
-mode's router calls it. The session's language-server manager
+`lsp/query.Door`. The write tools' diagnostics observer calls it, the opt-in
+`lsp_*` tools call it, and code mode's router calls it. The session's language-server manager
 fills it. One door means one symbol-resolution rule, one document-sync
 rule and one server per session, whichever surface asked. A code-mode
 program is not a second client of the server; it is a second caller of
@@ -284,11 +288,61 @@ flowchart TB
     B --> S
 ```
 
-**The surfaces are thin.** `tools/lsp` decodes tool arguments into an
-`lsp/query.SymbolQuery`, calls the door and renders the answer.
+**The surfaces are thin.** `tools/lsp_query` (the opt-in tools) decodes tool
+arguments into an `lsp/query.SymbolQuery`, calls the door and renders the
+answer; `tools/lsp` supplies the shared rendering and the write observer.
 `codemode/lsp` does the same into the msgpack shapes `cap/lsp` decodes.
 `cap/lsp` is the typed module a program imports; like every prelude
 module, its functions are stubs that send a `cap_call`.
+
+### The opt-in query tools
+
+A consumer whose agents call tools directly has no path to `cap/lsp`, and
+measured on code mode, three programs in about 27,000 used the language
+server at all. `[tools] lsp_tools = "on"` (default `"off"`) registers five
+tools beside the workspace's own, in this order:
+
+| Tool | Arguments | Door closure | Answers |
+|---|---|---|---|
+| `lsp_definition` | `symbol`; optional `path` and 1-based `line` | `definition` | A count, then at most 20 sites as `path:line:anchor\|text`. |
+| `lsp_references` | the same | `references` | Reference and file counts, then at most 50 hits grouped by file and containing symbol; the heading says "showing 50" and a closing line how many were left out. |
+| `lsp_hover` | the same | `hover` | The site, then the server's text clipped at 4096 bytes with a "more bytes cut" line. |
+| `lsp_symbols` | `path` | `outline` | A file's document symbols, nested, at most 100 lines, with a closing count of entries left out. |
+| `lsp_diagnostics` | optional `path` | `diagnostics` | `lsp.render_diagnostics`: settled or "NOT settled", the count by severity and at most 20 entries. |
+
+Four rules keep them one surface over one door:
+
+- **No second path.** Each tool holds only the closure it calls. Symbol
+  resolution, document sync, the one server per session and the gate on
+  named paths (`resolve.owner` and `admit`, called from the manager) are all
+  behind that closure, so a path outside the server's root is refused here
+  as it is in `cap/lsp`.
+- **Both a word and a door.** The tools register only when the operator says
+  `lsp_tools = "on"` and an `[lsp.<name>]` server is configured
+  (`contributions.lsp_query_tools`). With either missing the tool array is
+  byte for byte what it was. The tools are placed on the workspace side
+  (`tool_placement.opt_in_workspace_names`), where the door is. A workspace
+  on an executor builds its own door from its own `[lsp.<name>]` tables and
+  its own `lsp_tools` setting, and the owner's remote surface forwards the
+  five names to it (`tool_placement.runnable_workspace_names`).
+- **Typed errors in band.** A `QueryError` becomes a failed tool result, not a
+  crash. `NoServer` (no server owns the file, or its path is past the owning
+  server's root, or the server cannot start) and `Unavailable` (timeout,
+  server died) both read "language server unavailable: ...", so a model can
+  tell an absent server from a question the server answered with nothing.
+- **Bounded in total.** Besides the per-list caps, a site's source text is cut
+  to 400 bytes (after its anchor is taken from the whole line), and a whole
+  answer past the inline threshold is saved as a blob with head and tail
+  excerpts, as `grep` does, so a generated multi-megabyte line or a long
+  server message cannot be inlined fifty times.
+- **Decoded before asked.** `symbol` is required and non-empty; `line` needs
+  a `path` and is at least 1; an empty `path` is refused. A malformed call
+  costs no server request.
+
+Workspace-wide symbol search, call hierarchy and rename are not offered. The
+door has no workspace-symbol closure (a bare `symbol` is already searched
+across the server's root by `lsp_definition`), and rename writes files, so it
+stays an explicit previewed code-mode operation.
 
 ## The jailed lease
 

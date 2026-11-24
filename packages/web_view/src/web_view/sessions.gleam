@@ -257,6 +257,25 @@ pub type Report {
     /// nothing while the main strand is idle. It is the start of the current
     /// turn and never the end of the last one.
     turn_started_at: Option(Int),
+    /// How many asks the session has open and routed to the owner
+    /// (protocol-change/050, the addendum on open asks). A row from a daemon
+    /// that predates the field, or whose field is not a whole non-negative
+    /// number, says none.
+    asks: Int,
+  )
+}
+
+/// What a session page's sidebar learns of another running session from the
+/// activity read: what it is doing and how many asks wait on the owner. It is
+/// the part of a `Report` a page that draws no model text may be given, so the
+/// daemon narrows to it (`server.watches_of`) and the page cannot draw what it
+/// was never handed.
+pub type Watch {
+  Watch(
+    /// What the session is doing, as the sidebar's dots say it.
+    activity: Activity,
+    /// How many open asks the session has routed to the owner.
+    asks: Int,
   )
 }
 

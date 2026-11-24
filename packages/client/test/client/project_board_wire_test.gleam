@@ -386,3 +386,14 @@ pub fn a_timeout_is_unanswered_and_never_a_refusal_test() {
     == page_projects.Refused("bad_request")
   assert ui_projects.acted_of(Ok(Nil)) == page_projects.Acted
 }
+
+pub fn a_settings_write_naming_a_key_twice_is_malformed_test() {
+  let frame =
+    "{\"v\":2,\"id\":5,\"cmd\":\"projects.set_settings\",\"body\":{\"project\":\"p1\",\"revision\":0,\"changes\":[{\"key\":\"check\",\"value\":[\"a\"]},{\"key\":\"check\",\"value\":null}]}}"
+  let assert Error(_) = protocol.decode(frame)
+
+  // The same two keys, each once, decode.
+  let once =
+    "{\"v\":2,\"id\":5,\"cmd\":\"projects.set_settings\",\"body\":{\"project\":\"p1\",\"revision\":0,\"changes\":[{\"key\":\"check\",\"value\":[\"a\"]},{\"key\":\"setup\",\"value\":null}]}}"
+  let assert Ok(_) = protocol.decode(once)
+}

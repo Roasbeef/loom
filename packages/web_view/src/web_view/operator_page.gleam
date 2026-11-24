@@ -470,6 +470,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           True -> element.none()
           False -> composer(model)
         },
+
+        // The open asks are the dock's last child, so the composer's path does
+        // not move; the stylesheet orders them above the composer.
+        component.asks(model, Observed),
       ]),
 
       // The element that moves the browser to another page is always the
@@ -631,11 +635,15 @@ fn rail_folders(
       #(inbox_rule.Projecting, None),
     ],
     current: None,
-    pick: case component.can_go_home(model) {
-      True -> Some(fn(_) { Observed(component.GoingHome) })
-      False -> None
+    way: case component.can_go_home(model) {
+      True -> sidebar.Pick(fn(_) { Observed(component.GoingHome) })
+      False -> sidebar.Text
     },
-    note: "Counts are read on the inbox.",
+    note: case component.final_ending(model) {
+      // The list is the last one the page received and nothing updates it.
+      Some(_) -> "This page lost its session, so this list is out of date."
+      None -> "Counts are read on the inbox."
+    },
     running: component.running_count(model),
   )
 }

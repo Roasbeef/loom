@@ -47,8 +47,9 @@ pub const max_strands = 12
 /// The most peer messages a brief lists.
 pub const max_peers = 3
 
-/// The longest assistant text, in bytes.
-pub const assistant_bytes = 600
+/// The longest assistant text, in bytes. The text keeps its newlines and is cut
+/// at a block boundary (`block_clip`), so the page can draw it as Markdown.
+pub const assistant_bytes = 1600
 
 /// The longest words of one step, in bytes.
 pub const words_bytes = 120
@@ -71,7 +72,7 @@ pub const command_bytes = 200
 /// The encoded size a brief never exceeds, in bytes. The daemon sheds the
 /// strands, then the peers, then the steps until a brief fits, and the reply
 /// is checked against the 60,000-byte frame as well.
-pub const brief_bytes = 12_000
+pub const brief_bytes = 20_000
 
 /// Text a model or another session wrote. It is a type of its own so that no
 /// page reads it by accident: the words are behind `untrusted_text`, and a page
@@ -84,7 +85,7 @@ pub opaque type Untrusted {
 /// running.
 pub type Assistant {
   Assistant(
-    /// The words, cut to `assistant_bytes`.
+    /// The words, cut to `assistant_bytes` at a block boundary.
     text: Untrusted,
     /// When the entry holding them was written.
     at: Int,

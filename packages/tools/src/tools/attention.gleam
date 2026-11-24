@@ -205,10 +205,10 @@ fn ask_description() -> String {
   <> "grants and approvals, not through a question. The call records the "
   <> "ask and returns at once, and your turn ends: after asking, say "
   <> "nothing more and do no further work on what the answer decides. The "
-  <> "answer arrives later as a message from the person holding one fenced "
-  <> "JSON object, with the ask's id, an `answers` value for each question "
-  <> "(`null` where they used Other) and an `other` object holding the "
-  <> "text of each Other. At most "
+  <> "answer arrives later as a message from the person that names the "
+  <> "ask's id and lists each question, numbered, with the answer under it: "
+  <> "Yes or No, the chosen option labels in double quotes, the typed text, "
+  <> "or \"Other (not one of the options):\" and their text. At most "
   <> int.to_string(attention.max_open_asks)
   <> " asks may be open at once."
 }
@@ -751,18 +751,29 @@ fn object_fields(
   }
 }
 
-/// Refuses a field outside `allowed`. The schema declares no identifier and no
-/// markup field, so a model that sends one hears that it was not taken.
+/// Refuses a field outside `allowed`, and names the fields that are taken. The
+/// schema declares no identifier and no markup field, so a model that sends
+/// one hears that it was not taken. A model that guesses a name (a question's
+/// text as `description` rather than `prompt`) reads the right one in the same
+/// reply and corrects the call in one step instead of guessing again.
 fn known_fields(
   fields: List(#(String, JsonValue)),
   allowed: List(String),
   name: String,
 ) -> Result(Nil, String) {
+  // The first field outside the schema decides the refusal.
   case list.find(fields, fn(entry) { !list.contains(allowed, entry.0) }) {
     Error(Nil) -> Ok(Nil)
     Ok(#(key, _)) ->
       Error(
-        name <> ": unknown field `" <> key <> "`; there is no such argument",
+        name
+        <> ": unknown field `"
+        <> key
+        <> "`; the fields are "
+        <> string.join(
+          list.map(allowed, fn(field) { "`" <> field <> "`" }),
+          ", ",
+        ),
       )
   }
 }

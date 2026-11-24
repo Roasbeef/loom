@@ -1225,8 +1225,10 @@ fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
 
 /// The rail's folders on the admin page: the inbox's six, drawn as they are on
 /// every page. The admin page's rows say what a session is and do nothing when
-/// pressed (`sidebar.RowsShown`), and its folders are the same: the page has no
-/// way to the inbox but the bar's Home, so a press changes nothing.
+/// pressed (`sidebar.RowsShown`). Its folders go where the bar's Home goes: each
+/// is a `<loom-back>` (`sidebar.Return`), which steps back to the home the page
+/// was opened from and mints no ticket, since a home minted here would carry the
+/// admin page's fifteen minutes.
 fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
   sidebar.Folders(
     items: [
@@ -1238,7 +1240,7 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
       #(inbox_rule.Projecting, None),
     ],
     current: None,
-    pick: None,
+    way: sidebar.Return,
     note: "Counts are read on the inbox.",
     running: case model.snapshot {
       Some(snapshot) ->

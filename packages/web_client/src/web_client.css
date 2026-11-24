@@ -524,6 +524,7 @@
   .peek-entry{display:grid;row-gap:2px;min-width:0;}
   .peek-speaker{color:var(--color-fg-quiet);font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;}
   .peek-text{margin:0;font:12px/1.5 var(--font-sans);white-space:pre-wrap;overflow-wrap:anywhere;}
+  .home-card-fact.markdown .md-p{white-space:pre-line;}
   /* The session sidebar, the left column (web_view/view/sidebar): the daemon's
      name and "New session" at the top, the machine pills, the sessions by what
      each needs from the person, and the pages that are not sessions at the foot.
@@ -533,15 +534,6 @@
   /* The list's title stays in the page for assistive technology and is not
      drawn, since the group headings are the labels a sighted reader needs. */
   .sidebar-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
-  .side-top{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;padding:12px 10px 4px;}
-  .side-top .brand{display:flex;align-items:center;gap:8px;margin:0;padding:2px 8px 10px;font:600 14px/1.4 var(--font-sans);}
-  .side-top .brand{flex-wrap:wrap;gap:2px 8px;}
-  .side-top .here{display:flex;align-items:center;gap:6px;flex:1 0 100%;min-width:0;color:var(--color-fg-quiet);font:400 12.5px/1.4 var(--font-sans);}
-  .side-top .here-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .dot-ok{display:inline-block;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--color-added);}
-  .new-session{display:flex;align-items:center;gap:10px;width:100%;height:36px;margin:0;padding:0 10px;border:0;border-radius:8px;background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);font:13.5px/1 var(--font-sans);text-align:left;cursor:pointer;}
-  .new-session:hover{background:color-mix(in srgb,var(--color-fg) 12%,transparent);}
-  .new-session:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   /* The machine pills: one row that wraps nowhere and scrolls sideways when the
      machines outnumber the width. Each is a real button that says whether it is the
      one chosen. */
@@ -725,9 +717,10 @@
   table.inbox-kv td{padding:4px 0;vertical-align:top;font-size:13px;overflow-wrap:anywhere;}
   table.inbox-kv td:first-child{width:128px;color:var(--color-fg-quiet);}
   table.inbox-kv code{font:12px/1.45 var(--font-mono);}
-  .inbox-quote{display:block;box-sizing:border-box;padding:9px 12px;border:1px dashed var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font-size:13px;}
+  .inbox-quote{display:block;box-sizing:border-box;padding:9px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-sunk);color:var(--color-fg);font-size:13px;}
   .inbox-quote-source{display:block;margin-bottom:3px;color:var(--color-fg-quiet);font-size:11.5px;font-weight:400;}
-  .inbox-quote-words{display:block;white-space:pre-wrap;overflow-wrap:anywhere;}
+  .inbox-quote-words{display:block;overflow-wrap:anywhere;}
+  .inbox-quote-words .md-p{white-space:pre-line;}
   .inbox-said{margin-top:8px;}
   .inbox-glances{margin:0;padding:0;list-style:none;font:12px/1.7 var(--font-mono);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   /* What a session's brief draws (view/brief_view): the last few steps as a
@@ -870,11 +863,11 @@
      right the chip that says who the page is for, a ghost Search with its
      shortcut and a ghost Theme. The connection's pill is drawn only when the
      page is not connected. */
-  :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;min-height:48px;height:48px;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
-  :host(.loom-inbox) .shell-toggle{align-self:center;height:47px;}
+  :host(.loom-inbox) .shell-bar{align-items:flex-start;box-sizing:border-box;min-height:48px;height:auto;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
+  :host(.loom-inbox) .shell-toggle{align-self:flex-start;height:47px;}
   :host(.loom-inbox) .toggle-sidebar{width:44px;}
   :host(.loom-inbox) .toggle-hint{display:none;}
-  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:center;box-sizing:border-box;width:auto;height:auto;margin:0 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:flex-start;box-sizing:border-box;width:auto;height:auto;margin:11px 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   :host(.loom-inbox) .shell-theme{margin-right:12px;}
   :host(.loom-inbox) .bar-search:hover,:host(.loom-inbox) .shell-theme:hover{background:var(--color-bg-raised);color:var(--color-fg);}
   loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:47px;padding:0 16px 0 4px;overflow:hidden;}
@@ -895,6 +888,11 @@
   loom-shell.loom-inbox .session-head .home-who-button{padding:2px 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   loom-shell.loom-inbox .session-head .home-who-button:hover,loom-shell.loom-inbox .session-head .home-who-button[aria-expanded="true"]{background:var(--color-bg-raised);}
   loom-shell.loom-inbox .session-head .role-chip{order:4;}
+  /* A page that has ended draws its notice in the bar. The bar is one line that
+     clips its overflow, so the notice would be laid over the chips after it:
+     the bar wraps instead, and the notice takes the row below all of them. */
+  loom-shell.loom-inbox .session-head:has(> .ended-notice){flex-wrap:wrap;overflow:visible;padding-bottom:8px;}
+  loom-shell.loom-inbox .session-head > .ended-notice{order:9;flex:1 1 100%;}
   .need-pill{order:2;flex:0 0 auto;padding:2px 8px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,transparent);border-radius:10px;background:var(--color-pill-wait-bg);color:var(--color-signal-text);font:600 12px/1.45 var(--font-sans);white-space:nowrap;}
   /* The rail: the folders at its top, the running sessions under "Watch live"
      in the mockup's two-line rows, then what the counts read and "New session". */
@@ -909,7 +907,13 @@
   .folder .n{min-width:20px;color:var(--color-fg-quiet);font-size:12px;text-align:center;}
   .folder.need .n{padding:0 6px;border-radius:10px;background:var(--color-signal);color:var(--color-on-signal);font-weight:700;}
   .rail-heading{flex:0 0 auto;margin:18px 18px 6px 18px;color:var(--color-fg-quiet);font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;}
-  loom-shell.loom-inbox .state-heading{display:none;}
+  /* A group's heading names the state its rows share (running, saved, blocked),
+     which no row repeats, so it stays in the rail, drawn as the rail's own "Watch
+     live" heading. A section of another orchestrator is the same, so the line
+     saying the box is not reachable sits under the name it describes and not
+     alone under the saved rows. */
+  loom-shell.loom-inbox .state-heading{display:flex;margin:14px 8px 4px 8px;padding:0;font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;}
+  loom-shell.loom-inbox .relayed-side-group .state-heading{margin:18px 8px 6px 8px;}
   loom-shell.loom-inbox section.state-group{margin:0;}
   loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
   loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}
@@ -922,8 +926,10 @@
   :host(.loom-inbox) .toggle-sidebar{position:relative;}
   @media (min-width:1212px){:host(.loom-inbox[waiting]) .toggle-sidebar::after{display:none;}}
   loom-shell.loom-inbox .tag-agent{color:var(--color-fg-quiet);font-weight:400;}
-  loom-shell.loom-inbox .tag-arrow,loom-shell.loom-inbox .tag-code{display:none;}
-  loom-shell.loom-inbox .session-subtitle{display:none;}
+  /* A row that carries the placement tag (the admin page's, and a session the
+     page has no live words for) says where the code lives after the agent: that is
+     the one fact the row holds about the session's place, so it is not hidden. */
+  loom-shell.loom-inbox .tag-code{color:var(--color-fg-quiet);}
   .rail-note{margin:16px 8px 0 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .rail-new{display:block;box-sizing:border-box;width:calc(100% - 16px);margin:16px 8px 0 8px;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
   .rail-new:hover{background:var(--color-bg-raised);}
@@ -1677,6 +1683,7 @@
   .ended-notice p{margin:0;overflow-wrap:anywhere;}
   .ended-headline{color:var(--color-danger-text);font-weight:600;}
   .ended-advice{margin-top:2px;}
+  .ended-notice loom-back{display:block;margin-top:6px;}
   .ended-page{display:flex;justify-content:center;padding:0 16px 48px;}
   .ended-document{box-sizing:border-box;width:100%;max-width:560px;margin-top:min(20vh,160px);padding:20px 24px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);font:14px/1.5 var(--font-sans);}
   .ended-brand{margin:0 0 12px 0;font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
@@ -1690,6 +1697,10 @@
   button.ended-back:hover{background:var(--color-bg-raised);}
   button.ended-back:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .ended-document loom-back{display:block;margin-top:12px;}
+  /* The admin page's rail folders are Back controls: the page mints no home
+     ticket, so each folder is a <loom-back> drawn as a folder row. */
+  .folder-back{display:block;width:100%;}
+  :host(.folder-back) button.ended-back{display:block;box-sizing:border-box;width:100%;padding:6px 8px;border-color:transparent;border-radius:6px;color:var(--color-fg);font:13.5px/1.45 var(--font-sans);text-align:left;}
   a.ended-link{color:inherit;text-decoration:underline;text-underline-offset:2px;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
@@ -2011,6 +2022,7 @@
   li.home-folder:has(> button.home-ticket){padding:0;}
   .home-ticket-page{max-width:780px;}
   .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  .home-ticket-page .home-card-fact.markdown{white-space:normal;}
   /* A check's output is a process's text. It wraps at any character and a long log scrolls inside its own box, so at phone width nothing runs past the edge and nothing is cut off. */
   .home-ticket-page pre.home-check-output{box-sizing:border-box;max-width:100%;max-height:24rem;margin:0 0 12px 0;padding:8px 10px;overflow:auto;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;}
   @media (max-width:640px){
@@ -2035,6 +2047,7 @@
   li.home-folder:has(> button.home-ticket){padding:0;}
   .home-ticket-page{max-width:780px;}
   .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  .home-ticket-page .home-card-fact.markdown{white-space:normal;}
   /* A check's output is a process's text. It wraps at any character and a long log scrolls inside its own box, so at phone width nothing runs past the edge and nothing is cut off. */
   .home-ticket-page pre.home-check-output{box-sizing:border-box;max-width:100%;max-height:24rem;margin:0 0 12px 0;padding:8px 10px;overflow:auto;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;}
   @media (max-width:640px){
@@ -2314,7 +2327,7 @@
      the quiet line under a heading that says a box is not answering, and the dimmed
      rows of a box whose last list is what is drawn. The `relayed-side-` prefix keeps
      them apart from the relayed session page's own classes above. */
-  .relayed-side-note{margin:0;padding:0 10px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .relayed-side-note{margin:0 8px 6px 8px;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .relayed-side-quiet ul.sessions{opacity:.65;}
   /* A chip's list. The scrim sits under it and closes it when pressed. */
   .pop-scrim{position:fixed;z-index:4;inset:0;margin:0;padding:0;border:0;background:transparent;cursor:default;}
@@ -2342,6 +2355,27 @@
   .opt[aria-disabled="true"] .opt-text > span,.opt[aria-disabled="true"] svg.i{color:var(--color-fg-quiet);opacity:.7;}
   /* A row that cannot be chosen gives its reason in full, since the reason is what the row is for. */
   .opt[aria-disabled="true"] .opt-text small{overflow:visible;white-space:normal;}
+  /* The folder picker (protocol-change/132), drawn in the Code list's place: a breadcrumb, the
+     child directories as rows, and a bar with the choice. The breadcrumb scrolls sideways rather
+     than wrapping, so a deep path keeps one line at 375px. */
+  .picker{display:flex;flex-direction:column;gap:4px;}
+  .pick-path{display:flex;align-items:center;flex:0 0 auto;gap:0;margin:2px 2px 4px 2px;padding:2px 6px;overflow-x:auto;scrollbar-width:thin;white-space:nowrap;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);font:13px/1.4 var(--font-sans);}
+  .pick-path > span{display:inline-flex;align-items:center;flex:0 0 auto;}
+  .crumb{margin:0;padding:6px 6px;border:0;border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:inherit;}
+  button.crumb{cursor:pointer;}
+  button.crumb:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
+  button.crumb:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .crumb[aria-current="page"]{color:var(--color-fg);font-weight:550;}
+  .crumb-sep{color:var(--color-fg-quiet);}
+  .pick-rows{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;}
+  .pick-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin:4px 2px 0 2px;padding:8px 4px 2px 4px;border-top:1px solid var(--color-divider);}
+  .pick-alts{display:flex;flex-wrap:wrap;gap:4px;}
+  .pick-alt{margin:0;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+  .pick-alt:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
+  .pick-alt:focus-visible,.pick-use:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .pick-use{margin:0;padding:7px 14px;border:1px solid var(--color-primary-button);border-radius:8px;background:var(--color-primary-button);color:var(--color-bg);font:550 13.5px/1.4 var(--font-sans);cursor:pointer;}
+  .pick-use:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  .pick-note{color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   /* The phone's banner: the session that most needs the person. It is drawn on a
      narrow window only, where the sidebar is shut most of the time. */
   .banner{display:none;align-items:center;gap:10px;width:100%;min-height:48px;box-sizing:border-box;margin:0 0 4px 0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-pill-wait-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
@@ -2449,8 +2483,9 @@
     .pop,.pop.wide{position:fixed;z-index:21;top:auto;left:0;right:0;bottom:0;width:auto;min-width:0;max-width:none;max-height:82dvh;padding:12px 12px 20px 12px;border-width:1px 0 0 0;border-radius:18px 18px 0 0;overflow-y:auto;}
     .pop-scrim{z-index:20;background:rgba(0,0,0,.45);}
     .opt{min-height:48px;}
+    .pick-alt{min-height:44px;}
+    .pick-use{min-height:44px;flex:1 1 100%;}
     .fp{height:36px;}
-    .new-session{height:44px;}
     .session-open,li.session:not(:has(>.session-open)){min-height:48px;}
   }
   @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
@@ -2511,21 +2546,63 @@
      still the control, so the block is the target and the keyboard focus ring
      is the block's. A question's legend repeats the card's words when it is
      the only one, so it is kept for assistive technology and not drawn. */
-  .lift .inbox-questions{gap:6px;margin:0;}
-  .lift fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
-  .lift fieldset.inbox-question:only-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
-  .lift fieldset.inbox-question > legend{padding:0;font:550 13px/1.4 var(--font-sans);}
-  .lift label.inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
-  .lift label.inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
-  .lift label.inbox-option > input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
-  .lift label.inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
-  .lift label.inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
-  .lift label.inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
-  .lift label.inbox-option:hover{border-color:var(--color-fg-faint);}
-  .lift label.inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
-  .lift label.inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
-  .lift .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
-  .lift .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+  .lift .inbox-questions,.ask-card .inbox-questions,.inbox-reading .inbox-questions{gap:6px;margin:0;}
+  .lift fieldset.inbox-question,.ask-card fieldset.inbox-question,.inbox-reading fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
+  .inbox-reading fieldset.inbox-question:first-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
+  .lift-ask:has(.inbox-questions) .lift-head{display:none;}
+  .lift .inbox-questions{margin-top:8px;}
+  .lift fieldset.inbox-question > legend,.ask-card fieldset.inbox-question > legend,.inbox-reading fieldset.inbox-question > legend{padding:0;margin:0 0 2px 0;font:550 13.5px/1.4 var(--font-sans);}
+  .lift label.inbox-option,.ask-card .inbox-option,.inbox-reading .inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
+  .lift label.inbox-option::before,.ask-card .inbox-option::before,.inbox-reading .inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
+  .lift label.inbox-option > input[type="radio"],.lift label.inbox-option > input[type="checkbox"],.ask-card .inbox-option > input[type="radio"],.ask-card .inbox-option > input[type="checkbox"],.inbox-reading .inbox-option > input[type="radio"],.inbox-reading .inbox-option > input[type="checkbox"]{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
+  .lift label.inbox-option > span,.ask-card .inbox-option > span,.inbox-reading .inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
+  .lift label.inbox-option .inbox-mark,.ask-card .inbox-option .inbox-mark,.inbox-reading .inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
+  .lift label.inbox-option .inbox-note,.ask-card .inbox-option .inbox-note,.inbox-reading .inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .lift label.inbox-option:hover,.ask-card .inbox-option:hover,.inbox-reading .inbox-option:hover{border-color:var(--color-fg-faint);}
+  .lift label.inbox-option:has(> input:checked),.ask-card .inbox-option:has(> input:checked),.inbox-reading .inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
+  .lift label.inbox-option:has(> input:focus-visible),.ask-card .inbox-option:has(> input:focus-visible),.inbox-reading .inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
+  /* The reading pane draws its options at the final design's size: a raised
+     block of 10px 14px with the note under the label, as in the rail but with
+     more room, and a chosen option's number is a filled dot. The Other option
+     holds its own text field, which is drawn only while the option is chosen,
+     above the option's hidden control so the field takes the pointer. */
+  .inbox-reading .inbox-questions{gap:14px;margin:8px 0 0 0;}
+  .inbox-reading fieldset.inbox-question{gap:8px;background:transparent;}
+  .inbox-reading label.inbox-option,.inbox-reading .inbox-option{padding:10px 14px;}
+  .inbox-reading .inbox-option .inbox-note{font-size:13px;}
+  .lift .inbox-option:has(> input:checked)::before,.ask-card .inbox-option:has(> input:checked)::before,.inbox-reading .inbox-option:has(> input:checked)::before{content:"\25CF  " counter(opt);color:var(--color-current);}
+  .inbox-option > .inbox-other{display:none;grid-column:2 / -1;grid-row:3;position:relative;z-index:1;margin-top:8px;}
+  .inbox-option:has(> input:checked) > .inbox-other{display:block;}
+  .lift .inbox-questions .composer-name,.ask-card .inbox-questions .composer-name,.inbox-reading .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
+  .lift .inbox-questions .place-send,.ask-card .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+
+  /* The asks waiting on the owner, in the dock above the composer on the
+     operator's page and above the bar on an observer's (component.asks). A
+     card is a tinted background and a hairline border, as an approval's is. Its
+     form and its read-only questions are dressed as the rail's ask is, so the
+     options are the same numbered blocks with the note under the label. The
+     dock lays out as a column only so the cards can be ordered above the
+     composer without moving it in the tree. The order is asks, then approvals,
+     then the composer, so an ask that arrives or leaves does not move an
+     armed approval card's buttons. The todo panel, the goal and the other
+     children keep order 0 and stay above all three. */
+  footer.dock{display:flex;flex-direction:column;}
+  footer.dock > section.ask-dock{order:1;}
+  footer.dock > section.approvals{order:2;}
+  footer.dock > form.composer{order:3;}
+  main.centre > .observer-bar{order:2;}
+  main.centre > section.ask-dock{order:1;margin:0 auto 8px auto;padding:0 24px;}
+  section.ask-dock{flex:0 0 auto;margin:0 24px 8px 24px;max-height:55vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.ask-card{background:color-mix(in srgb,var(--color-signal) 5%,var(--color-bg-raised));border:1px solid color-mix(in srgb,var(--color-signal) 55%,var(--color-divider));border-radius:10px;padding:10px 14px;margin:0 0 6px 0;}
+  article.ask-card:last-child{margin-bottom:0;}
+  .ask-head{margin:0 0 8px 0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);}
+  .ask-kind{color:var(--color-signal-text);font-weight:600;}
+  .ask-cut{margin:0;color:var(--color-fg);font:13.5px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .ask-words{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  article.ask-card fieldset.inbox-question{background:transparent;}
+  .ask-card .inbox-hold{margin:0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .ask-card .inbox-read{cursor:default;}
+  .ask-card .inbox-read:hover{border-color:var(--color-divider);}
 
   /* A lifted row in the stream is tagged `lifted · Kind` under its words, and
      tinted across the row only when it needs the owner, with the tint and the
@@ -2576,7 +2653,9 @@
   @media (max-width:640px){
     main.centre > .stream-head{padding-left:14px;padding-right:14px;}
     loom-follow.follow > *{padding-left:14px;padding-right:14px;}
-    section.approvals,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    section.approvals,section.ask-dock,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    main.centre > section.ask-dock{margin-left:auto;margin-right:auto;padding:0 14px;}
+    section.ask-dock{max-height:40vh;}
     form.composer{padding-left:14px;padding-right:14px;}
   }
 
@@ -2593,7 +2672,7 @@
   @media (max-width:640px){
     :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
     :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
-    loom-shell.loom-inbox .session-head .role-chip,loom-shell.loom-inbox .session-head .workspace{display:none;}
+    loom-shell.loom-inbox .session-head .workspace{display:none;}
     loom-shell.loom-inbox:not(.loom-home) .session-head .home-who{display:none;}
     loom-shell.loom-home .session-head .home-who{display:flex;min-width:0;}
     loom-shell.loom-home .session-head .home-who-button{min-height:36px;max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -2602,6 +2681,7 @@
     loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
     loom-shell.loom-inbox .session-head .session-title h1{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     loom-shell.loom-inbox .session-head .need-pill,loom-shell.loom-inbox .session-head .brand,loom-shell.loom-inbox .session-head .home-link,.live-mark{flex:0 0 auto;}
+    loom-shell.loom-inbox .session-head .role-chip{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;}
   }
   /* The review's count chips and the last command share one line where there is
      room: the counts keep their size and the command's chip takes what is left,

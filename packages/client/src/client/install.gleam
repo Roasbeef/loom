@@ -152,9 +152,10 @@ pub fn bundled_launcher() -> Result(String, Nil) {
 
 /// The `git-cow` binary a project's template is copied with, if there is one:
 /// the copy shipped in the same tree as the running server (`<root>/bin/git-cow`)
-/// first, and the first `git-cow` on `PATH` after it. A release does not ship
-/// it yet, so a missing binary is the ordinary case, and the host then copies
-/// the template with a plain recursive copy.
+/// first, and the first `git-cow` on `PATH` after it. A release ships it
+/// (`scripts/build-git-cow.sh`), so it needs nothing installed. A development
+/// tree has none unless one is on `PATH`, and the host then copies the
+/// template with a plain recursive copy.
 ///
 /// ## Examples
 ///

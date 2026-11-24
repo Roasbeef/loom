@@ -408,6 +408,33 @@ pub fn only_a_page_opened_from_a_home_draws_the_home_button_test() {
   })
 }
 
+// The inbox's folders in the rail are the same way home. A page that holds the
+// capability (the owner's page, a workspace page, an observer's workspace page)
+// draws each of the six as a button whose press is `GoingHome`, and a page that
+// holds none (any page a link for one session opened, the owner's operating
+// link included) draws them as text, so no folder is a button that does
+// nothing.
+pub fn the_rail_folders_are_buttons_only_where_the_page_can_go_home_test() {
+  let #(model, _) =
+    component.update(
+      homed(sessions.Ticketed(home_ticket), process.new_subject()),
+      component.SessionsListed(listing()),
+    )
+  let html = drawn(model)
+  let button = "<button aria-pressed=\"false\" class=\"folder"
+  assert list.length(string.split(html, button)) == 7
+  assert !string.contains(html, "<div class=\"folder")
+
+  let #(plain, _) =
+    component.update(
+      page_fixture.start() |> component.new,
+      component.SessionsListed(listing()),
+    )
+  let html = drawn(plain)
+  assert list.length(string.split(html, "<div class=\"folder")) == 7
+  assert !string.contains(html, "<button aria-pressed=\"false\" class=\"folder")
+}
+
 // The press is the page's only request: nothing names where to go. The answer
 // is a home ticket's address on the hidden element, the same element a switch
 // uses, and the observer's page draws it too, last in its centre.

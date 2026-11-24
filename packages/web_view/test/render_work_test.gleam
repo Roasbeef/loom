@@ -74,7 +74,7 @@ fn reasoning(text: String) -> Element(Nil) {
     [
       turns.Work(
         "work",
-        turns.Worked(None, 0, 0, 0, turns.Finished),
+        turns.Worked(None, 0, 0, 0, None, turns.Finished),
         [turns.Narrated(block, dict.new(), None)],
         turns.Unfolded(0),
         None,

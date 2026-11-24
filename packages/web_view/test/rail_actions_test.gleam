@@ -28,10 +28,13 @@ const find_id = "find-0123456789"
 
 const strand = "sub:main/audit"
 
+const failed_run = "0194f7b2-aaaa-7000-8000-000000000001"
+
 // What the page asked the daemon to do, in the order it asked.
 type Acted {
   Closed(find: String, revision: Int, closure: attention.Closure)
   Retried(strand: String)
+  Dismissed(strand: String, operation: String)
 }
 
 // One stuck strand and one find, which is all these tests need of the feed.
@@ -57,6 +60,7 @@ fn row() -> attention_feed.Row {
         reason: None,
         retry_after_ms: None,
         parent: None,
+        operation: Some(failed_run),
       ),
     ]),
   )
@@ -125,6 +129,10 @@ fn start(
                   retry: fn(strand, deliver) {
                     process.send(acted, Retried(strand))
                     settle(deliver, "Delivered to the strand · admitted")
+                  },
+                  dismiss_stuck: fn(strand, operation, deliver) {
+                    process.send(acted, Dismissed(strand, operation))
+                    settle(deliver, "Dismissed.")
                   },
                 ),
               )
@@ -218,7 +226,7 @@ pub fn an_operators_rail_draws_retry_file_issue_and_dismiss_test() {
 
   assert count(html, "Retry the last step") == 2
   assert count(html, "File issue") == 2
-  assert count(html, "Dismiss") == 2
+  assert count(html, "Dismiss") == 4
 }
 
 // The buttons are at the exact paths the socket's tests pin, and they are the
@@ -227,9 +235,10 @@ pub fn the_buttons_are_at_their_exact_paths_test() {
   let model = opened(start(process.new_subject(), True, Promptly))
   let clicks = paths(rail_handlers(operator_page.view(model)), "click")
 
-  assert list.length(clicks) == 4
+  assert list.length(clicks) == 5
   assert list.count(clicks, component.rail_click) == 1
   assert list.count(clicks, component.rail_retry) == 1
+  assert list.count(clicks, component.rail_dismiss) == 1
   assert list.count(clicks, component.rail_close) == 2
 
   // No path is two things, so a socket that admitted one shape would not have
@@ -239,6 +248,7 @@ pub fn the_buttons_are_at_their_exact_paths_test() {
       [
         component.rail_click(path),
         component.rail_retry(path),
+        component.rail_dismiss(path),
         component.rail_close(path),
       ],
       fn(is) { is },
@@ -262,6 +272,11 @@ pub fn the_predicates_refuse_every_neighbouring_path_test() {
   // position that is not a counter are none of them an action.
   assert !component.rail_close("0\t3\t0\t4\t1\t1\t1\t0\t2\t2")
   assert !component.rail_retry("0\t3\t0\t4\t1\t0\t1\t1\t2\t1")
+  assert component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t1")
+  assert !component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t0")
+  assert !component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t2")
+  assert !component.rail_dismiss("0\t3\t0\t4\t1\t1\t1\t1\t2\t1")
+  assert !component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\tx\t2\t1")
   assert !component.rail_close(close <> "\t0")
   assert !component.rail_close("0\t3\t0\t4\t1\t1\t1\t0\t2")
   assert !component.rail_retry("0\t3\t0\t5\t1\t0\t1\t1\t2\t0")
@@ -278,6 +293,42 @@ pub fn retry_asks_the_stuck_strand_and_says_the_daemons_word_test() {
 
   assert received(acted) == [Retried(strand)]
   assert string.contains(drawn(retried), "Delivered to the strand")
+}
+
+// Dismiss on a stuck card names the strand and the failed run the feed row held,
+// and the daemon's word is said in the rail.
+pub fn dismiss_names_the_strand_and_the_failed_run_test() {
+  let acted = process.new_subject()
+  let model = opened(start(acted, True, Promptly))
+  let dismissed = second(model, component.RailDismissed(strand))
+
+  assert received(acted) == [Dismissed(strand, failed_run)]
+  assert string.contains(drawn(dismissed), "Dismissed.")
+}
+
+// A strand the row does not hold, and one the row holds with no operation, are
+// not dismissed, and a page that may not act sends nothing.
+pub fn dismiss_is_not_sent_without_a_held_failure_test() {
+  let acted = process.new_subject()
+  let model = opened(start(acted, True, Promptly))
+  let _ = second(model, component.RailDismissed("main"))
+  let _ = second(model, component.RailDismissed("sub:main/other"))
+  assert received(acted) == []
+
+  let idle = opened(start(acted, False, Promptly))
+  let _ = second(idle, component.RailDismissed(strand))
+  assert received(acted) == []
+}
+
+// While one action is out, a Dismiss on the same card sends nothing.
+pub fn dismiss_waits_for_an_action_that_is_out_test() {
+  let acted = process.new_subject()
+  let model = opened(start(acted, True, Never))
+  let pressed = second(model, component.RailRetried(strand))
+  assert received(acted) == [Retried(strand)]
+
+  let _ = second(pressed, component.RailDismissed(strand))
+  assert received(acted) == []
 }
 
 // File issue and Dismiss close the find at the revision the page read, in the

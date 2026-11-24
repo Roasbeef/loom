@@ -5405,6 +5405,221 @@ event. The registration page's cookie is the page's own, scoped to
 `/ui/p/<key>`, so it reaches the route and no other path. The sign-in page has
 no cookie and no key in its address.
 
+## Addendum: the ask in the dock (2026-11-23)
+
+On 2026-11-23 an agent called `ask` and the daemon held the ask open, but the
+owner, reading the session's transcript with the live rail closed, saw no question
+and typed "continue", which the agent took as no answer. The rail and the phone's
+sheet held the ask and its form, and neither is on screen by default. This
+addendum puts the open ask where the owner reads: a card above the composer on an
+operator's page and above the bar on an observer's, and the turn that called `ask`
+marked in the stream.
+
+### What the page draws
+
+Each ask the session's feed row holds as open and routed to the owner is one card,
+oldest first, in a `section` labelled "Asks waiting". A card's header is `Ask ·
+waiting since <loom-time> · <strand>`, the time drawn through `view/stamp` so the
+browser words it in its own zone. Under it are the ask's questions, each once, and
+each option's note under its label in the same place for every option.
+
+- **An operator's page** draws the rail's form (`view/attention_thread.answer_form`)
+  with a button that reads `Send`. Its submit is the rail's `RailAnswered`, so the
+  checking (`web_view/answer_rule`), the revision, the door and the daemon's word
+  are the rail's. The word is said under the cards while it is not empty.
+- **An observer's page** draws the questions as text (`questions_only`): no form,
+  no control, no Send.
+- **Until the ask is read in full** the card holds the feed's cut of the first
+  question and no form.
+
+A card leaves with the next read of the feed row after its ask is answered or
+closed, and with no open ask the section is `element.none()`.
+
+The row an ask belongs to is marked in the stream as a lifted row: the tint of a
+row that needs the owner and the tag `lifted · Ask`, and the rail's press jumps to
+it. The lane holds no identity of an ask. A settled turn is a divider with no
+steps in it, the call's result that names the ask is in a step, and the record's
+anchor is a driver coordinate the lane does not carry. The row is therefore the
+newest piece of the agent's own output (its words or a turn's work) whose time is
+at or before the ask's `created_at` (`view/lifted.ask_row`), which is the turn that
+made the call. A row with no time is never chosen, and an ask with no row marks
+nothing; the card is unaffected.
+
+### Paths, and who admits them
+
+The cards are drawn at places that move no path an earlier addendum admits:
+
+| Page | Place |
+|---|---|
+| Operator's | The dock's last child, after the composer; the stylesheet lays the dock out as a column and orders the cards above the composer. |
+| Observer's | The centre's sixth child, the slot the operator's page gives the session switcher and the observer's left empty, so the context figure's Refresh keeps its path. |
+
+The form's submit is a submit beneath the dock. An operator's or owner's socket
+admits a submit at any path, as the addendum "the live rail, answered" says, and an
+observer's admits none and is handed no form. No socket's code changed, and
+`component.rail_submit` still names the rail's form alone. The cards carry no
+approval control: an approval is decided only in its own region of the dock.
+
+### What the page reads
+
+Every page now reads each open ask in full (`Attention.record`), where before only a
+page that may answer did, because an observer's card draws the questions. The read
+is the door's `read_stored`, which holds the authority an observer already has for
+the rail's rows. A find is still read in full only by a page that may close it.
+
+### What was considered
+
+- **Moving the ask's form out of the rail and the sheet.** The rail and the sheet
+  keep their forms, so an owner who opens either still answers there. That leaves
+  the same ask answerable from two places; whichever sends first settles it, and the
+  other form leaves with the next read.
+- **A new row of the lane drawn for the ask.** The lane's rows come from the
+  transcript, and an ask is a record beside it, so a row drawn for the record would
+  claim a position in the conversation the model never wrote.
+- **Matching the turn by the ask's anchor, by the call's result or by the call's
+  summary.** The anchor is a driver coordinate the lane does not carry, and the
+  result and the summary are in a step, which a settled turn does not hold until
+  the reader opens it.
+
+### Cost
+
+One function (`component.asks`) drawn in two places, one read-only drawing, a
+read of each open ask on the observer's page, a stylesheet block, and one pass
+over the lane's pieces for each open ask. No message, route, frame or admitted place.
+
+### Verification
+
+`web_view/test/ask_card_test.gleam` drives the page: an operator's card with its
+form and Send in the dock after the composer, each question drawn once with each
+note beside its label, an observer's card with no form and no Send, two asks oldest
+first, an answered ask drawn as nothing, and the asking turn tinted and tagged. A drive
+in a browser against the scripted model (`scripts/web_seed`, the prompt "ask me
+first") was run on the operator's and the observer's page at 1440 and 375 pixels
+wide with the rail closed; the captures are kept outside the repository.
+
+## Addendum: the reading pane and the rail against the final design (2026-11-23)
+
+The owner compared the release with `docs/design-notes/attention-inbox/final/mockup.html`
+and found the ask thread, the stuck thread and the live rail short of it. This
+addendum records what changed on the pages that carry the forms and the rail, and
+what did not.
+
+### What changes
+
+- **One ask form, drawn the same in three places.** The inbox pane, the rail's
+  card and the dock's ask card share `attention_thread.answer_form`. An option is
+  a raised block in all three: its number, its label and, where the ask marks one,
+  the "recommended" pill on the first line, and its note under the label. The pane
+  drew the note beside the label, which wrapped under it for some options and not
+  others. "Other" is one option, and its text field is inside that option, shown
+  while the option is chosen, where it had been an option and a separate field.
+  The pane's title is the first question in full when the ask has been read, and
+  the form does not draw that question again as a heading; the rail's row hides its
+  cut head when the card holds the form, so the question is drawn once there too.
+- **No session text in a header.** The pane's note section said `Message <the
+  session's name>`, and a session named by its first prompt put that prompt in
+  capitals. Both panes that drew it now say `Message this session`.
+- **A hairline quote.** The box that holds an agent's own words was dashed. It is
+  now a solid hairline on the sunk ground.
+- **A row names its strand.** A record of a strand other than `main` is named on
+  its inbox row by the strand, shortened, so two rows of one session no longer read
+  alike. The identifier the agency appends to a sub-agent's name is left off.
+- **An insight is a toggle.** A press on a whole insight draws it folded, and a
+  press on a folded one draws it whole again (`RailOpened` adds the key or removes
+  it). The handler is drawn on every insight and at the same path as before, so
+  `component.rail_click` and the observer's admission are unchanged. A pinned row
+  still has none.
+- **A failed turn says what failed.** The divider (`turns.Worked`) carries the last
+  failed call's words and the first line of its result, and the rail's head reads
+  that line, with the count after it when more than one call failed. A turn whose
+  only failure was a program's inner call keeps the count.
+- **The ask tints the agent's words.** The lane row for an open ask is the agent's
+  message that comes directly before the asking turn's divider when the lane holds
+  one, and the divider otherwise.
+
+### What does not change
+
+No path, frame, message or capability. The Other field moved inside its option and
+the stylesheet shows it, so the form's submit handler and its field names are the
+ones `component.rail_submit` and `answer_rule` already read. No approval control is
+drawn anywhere new: an approval is still decided only from its own session's dock.
+
+### What was considered
+
+- **Keeping Other as a field beside its option, shown by a script.** A page script
+  would focus the field on choosing it, but the stylesheet reveals it without one,
+  and the pane keeps to the rules that ship no behaviour a stylesheet can draw.
+  Choosing Other shows the field and the person presses into it.
+- **Reading the failure from the open fold.** A closed fold holds no steps, which
+  is when the rail matters most, so the line is kept on the divider instead.
+- **Moving the `lifted · Ask` tag into the agent's name line.** The tag is the
+  lane row's third child for every kind, which keeps the admitted message paths
+  where they are. It stays under the words.
+
+### Verification
+
+`web_view/lifted_test` pins the toggle, including the property that every insight
+carries a handler and a pinned row never does. `web_view/ask_card_test` pins the
+tint on the agent's words. `web_view/attention_threads_test` pins the single
+title, Other inside its option, the fixed header words and the strand on the row.
+`session_view/attention_test` and `turns_test` pin the failed call's line. A drive
+against the scripted model (`scripts/web_seed`, the prompts "fail the check", "ask
+me first" and "go stuck") was run at 1440 and 375 pixels, light and dark; the
+captures are kept outside the repository.
+
+## Addendum: Dismiss on a stuck strand's card (2026-11-23)
+
+[131](131-dismiss-stuck-strand.md) adds a second action to a stuck strand's card
+in the live rail, "Dismiss", beside "Retry the last step". It is drawn for the page
+that is handed `component.Attention.act` and only when the feed row names the failed
+run, so an observer's page, which has no `act`, draws neither button.
+
+The button is the second button of the same `div.lift-acts` that holds Retry, so
+its path is Retry's with the last step `1` instead of `0`:
+`rail_path`, then `1\t0\t1`, the card's position, then `2\t1`. `component.rail_dismiss`
+names it as `rail_retry` and `rail_close` name theirs. No socket consults it: an
+operator's or an owner's socket admits a click at any path, and an observer's list of
+admitted places is unchanged, so an event at this path from an observer is dropped as
+one at Retry's is. The test `client/test/client/ui_socket_test.gleam` pins the
+observer's refusal at the path, alone and in a batch, and `rail_actions_test` pins
+that the button is at that path and the only handler the card gained.
+
+No message, route or frame is added to the observer's list, and nothing else in this
+document changes.
+
+## Addendum: the way back to the inbox (2026-11-24)
+
+**Status**: IMPLEMENTED in the change that adds it. It adds no route, no frame,
+no event on any socket's list of admitted paths, no field on the wire and no
+capability.
+
+The rail's folders are the way to the inbox on every page that can draw one
+(#1345). Two pages drew them as text.
+
+**The admin page returns by history.** A home minted from the admin page would
+carry the admin page's deadline, at most fifteen minutes, which the addendum on
+navigation gave as the reason the page has no ticket-minting Home. That reason
+still holds, so the folders do what the bar's Home does: each is a `<loom-back>`
+(`sidebar.Return`), which sends the component nothing, mints nothing and steps
+back to the home the page was opened from. The element takes no address, and
+`class` only restyles it. The admin socket's admitted paths do not change.
+`sidebar.Folders` names what a folder does as `way`: `Pick` (a message naming the
+folder), `Return` (the admin page) or `Text` (no way).
+
+**A page opened from a link for one session has no way home, by design.** Its
+link grants one session, and `home_capability` hands such a page no capability.
+That stays, so its folders are text. The alternative considered was to hand the
+capability to the daemon's owner's operating page and mint a `Resumed` home. It
+was rejected: an owner who gives an operating link for one session to someone
+else would then also give them the owner's whole home at the operator's ceiling
+for as long as the page lives, which widens what a shared link grants, and the
+page cannot tell its owner from the person the link was passed to.
+
+**Tests.** `admin_test` pins that the admin page's folders are `<loom-back>`
+elements with no handler. `session_switch_test` pins that a session page's
+folders are buttons only where the page holds the capability. `ui_route_test`
+pins that the owner's operating link for one session is refused the way home.
+
 ## Addendum: home and admin meet OtherPage (2026-11-23)
 
 This supersedes the statement in the addendum of 2026-11-20, "A page key used on

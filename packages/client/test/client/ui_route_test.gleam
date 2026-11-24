@@ -86,6 +86,7 @@ import web_view/admin
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
+import web_view/folder_browse
 import web_view/grants
 import web_view/home
 import web_view/invites
@@ -3025,7 +3026,8 @@ pub fn a_switch_carries_the_pages_own_reach_test() {
 // A page opened from a home may go home: the daemon mints a home ticket whose
 // exchange is the home's, for the same principal. A page a link for one session
 // opened has no capability to call, so the way home is not offered to it, and
-// the daemon's own answer would be the same refusal to a forged call.
+// that holds for the owner's own operating link (`operate`): the link grants one
+// session, and a home would widen it.
 pub fn only_a_workspace_page_may_go_home_test() {
   fixture_with(Switching, fn(ready, port, credential) {
     let session = create_session(ready, "go-home", 973)
@@ -5690,6 +5692,78 @@ pub fn a_rail_close_needs_an_open_page_and_the_doors_authority_test() {
   })
 }
 
+// A rail's dismissal needs the page open and then the door's own authority, as a
+// close does: an ended page is refused as `forbidden` before the door is read, and
+// a session the credential does not hold is told no such session
+// (protocol-change/131).
+pub fn a_rail_dismissal_needs_an_open_page_and_the_doors_authority_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+
+    assert ui_socket.page_dismiss_for(
+        reach,
+        fn() { Error(Nil) },
+        "S1",
+        "sub:a",
+        "op-1",
+      )
+      == Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+
+    let assert Error(attention_door.Refusal(code: "not_found", ..)) =
+      ui_socket.page_dismiss_for(reach, page_open, "S1", "sub:a", "op-1")
+
+    Nil
+  })
+}
+
+// The home's dismissal is the owner's operating page's alone: an ended page is
+// refused as `forbidden`, and the door's words are the page's fixed ones.
+pub fn the_homes_dismissal_needs_an_open_owner_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+
+    assert ui_socket.dismiss_stuck_for(
+        standing,
+        fn() { Error(Nil) },
+        fn(_) { None },
+        "S1",
+        "sub:a",
+        "op-1",
+      )
+      == Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+
+    // The door reads the registry afterwards, and an unknown session is told so.
+    let assert Error(attention_door.Refusal(code: "not_found", ..)) =
+      ui_socket.dismiss_stuck_for(
+        standing,
+        page_open,
+        fn(_) { None },
+        "S1",
+        "sub:a",
+        "op-1",
+      )
+
+    assert ui_socket.dismiss_outcome(Ok(Nil)) == home.Succeeded("Dismissed.")
+    assert ui_socket.dismiss_outcome(
+        Error(attention_door.Refusal("conflict", "that failure moved")),
+      )
+      == home.Failed("Not dismissed: that failure moved")
+    Nil
+  })
+}
+
 // A rail's retry needs the page open, sends the one fixed prompt to the strand
 // it names and words the gateway's answer as the home words the same act.
 pub fn a_rail_retry_sends_the_fixed_prompt_from_an_open_page_test() {
@@ -6427,6 +6501,64 @@ pub fn the_owners_recent_folders_are_listed_and_forgotten_test() {
         entry.path
       })
       == [home <> "/proj"]
+  })
+}
+
+// The folder picker's listing is answered for the owner's operating page alone
+// (protocol-change/132). A page that has ended, one minted to read and a member's
+// page get the refusal a missing folder gets, so the answer does not say which
+// it was, and none of them reaches the filesystem.
+pub fn the_folder_listing_is_answered_for_the_owners_operating_page_only_test() {
+  fixture(fn(ready, _, credential) {
+    let home = owners_home("browse")
+    let assert Ok(Nil) = simplifile.create_directory_all(home <> "/code/app")
+      as "a folder to list"
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+
+    let assert Ok(listing) =
+      ui_socket.browse_for(standing, page_open, fn() { Ok(home) }, [])
+    assert list.contains(
+      listing.children,
+      folder_browse.Child("code", folder_browse.Plain),
+    )
+    let assert Ok(inner) =
+      ui_socket.browse_for(standing, page_open, fn() { Ok(home) }, ["code"])
+    assert inner.trail == ["code"]
+
+    let refused = Error(folder_browse.NotAFolder)
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    assert ui_socket.browse_for(readonly, page_open, fn() { Ok(home) }, [])
+      == refused
+    assert ui_socket.browse_for(
+        standing,
+        fn() { Error(Nil) },
+        fn() { Ok(home) },
+        [],
+      )
+      == refused
+    let existing = create_session(ready, "browse-known", 1124)
+    let grant = member(ready, "ui-browse", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-browse")
+    assert ui_socket.browse_for(members, page_open, fn() { Ok(home) }, [])
+      == refused
+
+    // The home is a path resolution, so a page that fails the owner check never
+    // reads it.
+    let read = process.new_subject()
+    let watching = fn() {
+      process.send(read, Nil)
+      Ok(home)
+    }
+    assert ui_socket.browse_for(readonly, page_open, watching, []) == refused
+    assert ui_socket.browse_for(members, page_open, watching, []) == refused
+    assert process.receive(read, 0) == Error(Nil)
+    let assert Ok(_) = ui_socket.browse_for(standing, page_open, watching, [])
+    assert process.receive(read, 0) == Ok(Nil)
+
+    // The owner's page is still refused a trail that leaves the home.
+    assert ui_socket.browse_for(standing, page_open, fn() { Ok(home) }, [".."])
+      == refused
   })
 }
 
@@ -12307,4 +12439,24 @@ pub fn a_member_reads_and_removes_no_passkey_test() {
       )
       == passkeys.Declined(passkeys.NotAllowed)
   })
+}
+
+// A listing runs under a deadline: one that stalls is answered `Unreadable` when
+// the deadline passes, and a quick one is answered as it is (protocol-change/132).
+pub fn a_stalled_folder_listing_is_answered_unreadable_at_its_deadline_test() {
+  let answers = process.new_subject()
+  let listing = folder_browse.Listing([], [], folder_browse.Whole)
+
+  ui_socket.browse_within(
+    fn() {
+      process.sleep(2000)
+      Ok(listing)
+    },
+    100,
+    process.send(answers, _),
+  )
+  assert process.receive(answers, 1500) == Ok(Error(folder_browse.Unreadable))
+
+  ui_socket.browse_within(fn() { Ok(listing) }, 1000, process.send(answers, _))
+  assert process.receive(answers, 1500) == Ok(Ok(listing))
 }

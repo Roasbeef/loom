@@ -7,10 +7,18 @@
 //// busy sample does to the stretch, and that a due beat restarts it.
 
 import client/advisor
+import client/gateway_test
 import client/notice
+import core/attention
+import core/clock
+import core/ids
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
+import runtime/api
+import session/session
 
 const interval = 600_000
 
@@ -264,4 +272,94 @@ pub fn a_busy_or_unreadable_strand_is_never_woken_test() {
   assert process.receive(woken, 10) == Error(Nil)
   let _idle = sample_at(idle, Ok(notice.Idle), woken, interval * 4)
   assert process.receive(woken, 10) == Error(Nil)
+}
+
+// Whether the strand has put anything on its branch. A run that was accepted
+// has placed its prompt, and one that already finished still has, so this does
+// not depend on whether the fixture's provider has settled yet.
+fn main_has_run(runtime: api.Runtime) -> Bool {
+  let assert Ok(Some(session.Cell(value: leaf, ..))) =
+    session.strand_leaf(runtime.session, "main")
+    as "the strand must be seeded"
+  leaf != None
+}
+
+fn an_ask_of_main(runtime: api.Runtime) -> Nil {
+  let ask =
+    attention.Ask(
+      header: attention.Header(
+        id: "ask-0000000001",
+        created_at: 1,
+        routing: attention.ToOwner,
+        anchor: attention.Anchor(
+          operation: ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 9)).0,
+          step_id: "turn-1:tools",
+          source_index: 0,
+        ),
+        strand: "main",
+        parents: [],
+      ),
+      why: None,
+      questions: [attention.Question("q1", "Retry?", attention.Confirm, [])],
+      state: attention.AskOpen,
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      attention.ask_key(ask.header.id),
+      attention.encode_ask(ask),
+    )
+    as "the ask record must be written"
+  Nil
+}
+
+// A heartbeat exists to make an idle owner look at its jobs. An owner that
+// stopped on an ask is looking at the owner instead, so the beat is skipped
+// rather than starting a run that carries on without the answer.
+pub fn a_heartbeat_skips_a_strand_waiting_on_the_owner_test() {
+  let runtime = gateway_test.reserved_fixture(session_id(701)).runtime
+  an_ask_of_main(runtime)
+
+  assert notice.beat(runtime, "main", "[loom] idle heartbeat") == Ok(Nil)
+  assert !main_has_run(runtime)
+}
+
+pub fn a_heartbeat_still_wakes_an_idle_strand_with_no_ask_test() {
+  let runtime = gateway_test.reserved_fixture(session_id(702)).runtime
+
+  assert notice.beat(runtime, "main", "[loom] idle heartbeat") == Ok(Nil)
+  assert main_has_run(runtime)
+}
+
+// Past the held queue's limit a completion notice is refused with the queue's
+// own words and spends no mark. The jobs and executions services drop a
+// failed delivery, as they always have, because the finished record is read by
+// `job_poll` or `join`, so what the model loses is the wake and not the result.
+pub fn a_notice_past_the_held_limit_is_refused_and_spends_no_mark_test() {
+  let runtime = gateway_test.reserved_fixture(session_id(703)).runtime
+  an_ask_of_main(runtime)
+  list.each(list.repeat(Nil, api.next_run_limit), fn(_) {
+    let assert Ok(api.Held(..)) =
+      api.send_to_strand(
+        runtime,
+        to: "main",
+        message: message.UserMessage(
+          content: [message.UserText(text: "held", text_signature: None)],
+          timestamp: 0,
+          origin: None,
+        ),
+      )
+    Nil
+  })
+
+  let assert Error(reason) =
+    notice.deliver(runtime, "main", notice.Job(id: "j1"), "[loom] job j1 done")
+  assert string.contains(reason, "NextRunFull")
+  assert api.fact(runtime, notice.key(notice.Job(id: "j1"))) == Ok(None)
+}
+
+fn session_id(seed: Int) -> ids.SessionId {
+  let #(id, _) =
+    ids.mint_session(ids.generator(clock.stepping(1_756_000_000_000, 1), seed))
+  id
 }

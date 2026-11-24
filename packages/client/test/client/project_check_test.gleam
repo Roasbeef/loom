@@ -75,6 +75,7 @@ fn scene(rig: worktree_rig.Rig) -> Scene {
 
 fn request(scene: Scene, command: String) -> project_host.CheckRequest {
   project_host.CheckRequest(
+    cut: project_host.FromClone,
     ticket: "t-a",
     commit: scene.commit,
     command:,
@@ -222,6 +223,7 @@ pub fn a_commit_the_host_repository_lacks_is_not_checked_test() {
       layout,
       Ok(rig.trees),
       project_host.CheckRequest(
+        cut: project_host.FromClone,
         ticket: "t-a",
         commit: string.reverse(owners),
         command: "true",
@@ -271,6 +273,7 @@ pub fn a_commit_that_is_not_a_commit_name_never_reaches_a_command_line_test() {
   let layout = project_rig.started(rig)
   let hostile =
     project_host.CheckRequest(
+      cut: project_host.FromClone,
       ticket: "t-a",
       commit: "--upload-pack=touch /tmp/x",
       command: "true",

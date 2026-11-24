@@ -447,6 +447,10 @@ sandbox: ## Build the loom-exec sandbox helper binary
 	@scripts/go-build.sh $(GO_PKG) ./cmd/loom-exec $(HELPER)
 	@echo "built $(HELPER)"
 
+.PHONY: git-cow
+git-cow: ## Build the pinned git-cow into build/git-cow, the copier a release ships beside loom-exec
+	@scripts/build-git-cow.sh build/git-cow
+
 .PHONY: sandbox-test
 sandbox-test: ## Vet, build, and test the Go sandbox package
 	@cd $(GO_PKG) && go vet ./... && go build ./... && \

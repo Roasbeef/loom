@@ -467,7 +467,7 @@ fn attach_to(
       port:,
       read_authority: fn(run) { wiring.read_authority(registered.opened, run) },
       reconnect: reach.connect,
-      remote_tools: tool_placement.workspace_names,
+      remote_tools: tool_placement.runnable_workspace_names(),
       attach_within_ms: reach.attach_within_ms,
       mint_token: surface.strong_token,
       // The executor's broker is new after a restart, and the port forwards to

@@ -8,6 +8,11 @@ there and a model's `put_fact` is refused, so a question a person is about to
 answer, and an answer, cannot be forged. The runtime treats the payloads as
 opaque; `core/attention` owns their shape and the host owns the bounds.
 
+`attention/stuck/<strand>` is a third reserved prefix (protocol-change/131): the
+owner's dismissal of a stuck strand's failure, owned by `core/attention_dismissal`
+and written by `client/attention`. A model's `put_fact` is refused there too, so
+a strand cannot hide its own failure from the feed.
+
 ## Native evolution fact ownership
 
 The `evolution/` FactCustom prefix and existing `client/` and `prompt/`
@@ -405,6 +410,19 @@ extended by the M3 runtime wave.
   scheduled heartbeat is the first caller ever needing exactly-once
   admission on the fresh-run path, because nothing before it was allowed
   to wake an idle strand at all.
+- `runtime/api.{Held, next_run_limit, open_owner_asks}` — the third `Delivery`.
+  A target with an open ask routed to its owner (`attention/ask/`,
+  read through `core/attention_hold`) neither starts a run nor joins its open
+  run for `send_to_strand`, `send_to_strand_marking`, `steer_marking` (when a
+  run is open) or a parent's `send_to_child`:
+  the message is queued with `queue.enqueue_next_run`, in one commit with the
+  mark if there is one, the doorbell is not rung, and the strand's next run
+  places the held items ahead of its own prompt. A store that will not answer
+  reads as no ask. The queue holds `next_run_limit` (32) items and refuses the
+  next with `queue.NextRunFull`. The owner's own input reaches the strand
+  through `prompt`, `steer` and `follow_up`, which this does not touch, and a
+  relayed page's prompt through `send_as_owner_marking`, which never holds
+  (protocol-change/119, the 2026-11-23 addendum).
 - `runtime/api.{FactCell, fact_cell, put_fact_expecting}` — the
   compare-and-set half of the blackboard: read a cell with the seq of
   the write that put it there, then write only if it has not moved. The
@@ -622,6 +640,9 @@ extended by the M3 runtime wave.
   → commit and re-plan on `Transition`/`Finish`; on `Dispatch` commit the
   intent *then* start the effect; on `AwaitEffect(key)` resolve the key; on
   `Wait` schedule a timer or a poll permit; on `Fault` stop abnormally.
+  `checkpoint_threshold` evaluates the host hook only at a running
+  checkpoint. Other passes supply `ThresholdNotExceeded`. The planner
+  owns inbox order and threshold deduplication within a checkpoint.
 - **Restart callbacks retain only their own inputs.** `api.open_published`
   projects option fields before constructing runtime and driver builders.
   `supervisor.start_published` captures the classifier and driver builder

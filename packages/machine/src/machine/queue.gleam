@@ -29,6 +29,11 @@ pub type QueuePlan {
 pub type QueueReject {
   /// Steer and follow-up require an open run with running control.
   NoActiveRun
+
+  /// The strand already holds `limit` next-run items, so one more is refused
+  /// and nothing is written. An item is held for a run that no input of its
+  /// own starts, so the queue is bounded by the caller's own limit.
+  NextRunFull(limit: Int)
 }
 
 /// Enqueues a steer item onto an open run (allowed while suspended on a

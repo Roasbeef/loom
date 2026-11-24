@@ -8,7 +8,9 @@
 //// directory the agent's tools work in. They are separate because they can
 //// differ: the agent may run on a laptop while its commands run on an executor.
 //// The strip says each in words, "Agent on laptop" and "Commands on exec ·
-//// repo", so a person never has to infer one from the other.
+//// repo", so a person never has to infer one from the other. When the
+//// commands run in a folder on the agent's own machine the two facts name one
+//// machine, and the strip says it once: "On laptop · …/loom".
 ////
 //// The strip is a header child and decides nothing. It draws what the host
 //// wrote: the daemon's name from its configuration, and the session's workspace
@@ -42,31 +44,29 @@ import web_view/listing.{type Code}
 pub fn view(agent: String, code: Option(Code)) -> Element(message) {
   case agent {
     "" -> element.none()
-    _ ->
-      html.p([attribute.class("placement-strip")], [
-        tag("Agent on", agent, []),
-        ..commands(agent, code)
-      ])
+    _ -> html.p([attribute.class("placement-strip")], tags(agent, code))
   }
 }
 
-/// The commands' half, when the page knows where they run. A folder is on the
-/// machine the agent runs on, so it is named with that machine.
-fn commands(agent: String, code: Option(Code)) -> List(Element(message)) {
+/// The strip's tags. A folder is on the machine the agent runs on, so the two
+/// facts are one tag; commands on another machine get a tag of their own.
+fn tags(agent: String, code: Option(Code)) -> List(Element(message)) {
+  // Where the commands run decides whether the agent's machine is named once.
   case code {
-    None -> []
+    None -> [tag("Agent on", agent, [])]
     Some(listing.Folder(path:)) -> [
-      tag("Commands on", agent <> " · " <> listing.short_path(path), [
+      tag("On", agent <> " · " <> listing.short_path(path), [
         attribute.title(path),
       ]),
     ]
     Some(listing.Registered(..) as code) | Some(listing.Pooled(..) as code) -> [
+      tag("Agent on", agent, []),
       tag("Commands on", listing.code_words(code), []),
     ]
   }
 }
 
-/// One half of the strip: a quiet label and the machine or place it names.
+/// One tag of the strip: a quiet label and the machine or place it names.
 fn tag(
   label: String,
   words: String,

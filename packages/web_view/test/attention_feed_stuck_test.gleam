@@ -1,5 +1,6 @@
 //// A stuck item's added fields (protocol-change/120, the addendum on stuck
-//// strands): the reason, the provider's retry hint and the parent strand.
+//// strands): the reason, the provider's retry hint and the parent strand, and
+//// the failed run's operation (protocol-change/131).
 ////
 //// A row from an older daemon has none of them and still decodes, and a
 //// damaged one is absent.
@@ -29,6 +30,7 @@ pub fn a_stuck_item_decodes_its_reason_hint_and_parent_test() {
       #("reason", json.String("provider_error")),
       #("retry_after_ms", json.Int(30_000)),
       #("parent", json.String("main")),
+      #("operation", json.String("0194f7b2-aaaa-7000-8000-000000000001")),
     ])
   let old = json.Object([#("strand", json.String("sub:main/b"))])
   let assert Ok(decoded) = attention_feed.decode_row(row([full, old]))
@@ -40,8 +42,9 @@ pub fn a_stuck_item_decodes_its_reason_hint_and_parent_test() {
         Some("provider_error"),
         Some(30_000),
         Some("main"),
+        Some("0194f7b2-aaaa-7000-8000-000000000001"),
       ),
-      Stuck("sub:main/b", None, None, None, None),
+      Stuck("sub:main/b", None, None, None, None, None),
     ]
 }
 
@@ -52,7 +55,9 @@ pub fn a_damaged_added_field_is_absent_test() {
       #("reason", json.Int(3)),
       #("retry_after_ms", json.String("soon")),
       #("parent", json.Null),
+      #("operation", json.Int(7)),
     ])
   let assert Ok(decoded) = attention_feed.decode_row(row([damaged]))
-  assert decoded.stuck.items == [Stuck("sub:main/a", None, None, None, None)]
+  assert decoded.stuck.items
+    == [Stuck("sub:main/a", None, None, None, None, None)]
 }

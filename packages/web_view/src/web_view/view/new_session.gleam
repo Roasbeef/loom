@@ -123,6 +123,7 @@ import web_view/composer.{
   type Agent, type Chip, type Offers, type Piece, type Recent, type State,
   type Target, type Typed,
 }
+import web_view/folder_browse.{type Child, type Listing}
 import web_view/listing
 import web_view/placements
 import web_view/sessions.{type Entry}
@@ -149,6 +150,17 @@ pub type Presses(message) {
     start_with_limits: fn(String, Typed, composer.LimitsInput) -> message,
     /// The code list's search text changed.
     search: fn(String) -> message,
+    /// "Choose a folder…" was pressed: open the folder picker.
+    browse: message,
+    /// A child directory's row of the picker was pressed, by its index in the
+    /// listing the page holds.
+    descend: fn(Int) -> message,
+    /// A breadcrumb or the way up was pressed, by the depth of the ancestor.
+    ascend: fn(Int) -> message,
+    /// "Use this folder" was pressed.
+    pick: message,
+    /// "Back to the list" was pressed.
+    leave_browser: message,
     /// The form was submitted with this message and this typed field.
     start: fn(String, Typed) -> message,
     /// The "Open the session" button, shown after a creation whose first message
@@ -158,9 +170,6 @@ pub type Presses(message) {
     open: fn(String) -> message,
     /// The link to the full session list was pressed.
     listing: message,
-    /// The link back to the inbox was pressed. It is `None` on a page whose
-    /// inbox is not what it would land on, which draws no link.
-    inbox: Option(message),
   )
 }
 
@@ -244,6 +253,7 @@ pub fn needs(target: Option(Target)) -> Needs {
     Some(composer.OnExecutor(workspace: None, ..))
     | Some(composer.InPool(workspace: None, ..)) -> NameAndWorkspace
     Some(composer.Folder(_))
+    | Some(composer.Picked(_))
     | Some(composer.OnExecutor(workspace: Some(_), ..))
     | Some(composer.InPool(workspace: Some(_), ..))
     | None -> NameOnly
@@ -398,28 +408,16 @@ fn heading(history: History) -> Element(message) {
   }
 }
 
-/// The links to the other lists, in a row above the heading: the full session
-/// list once there are sessions to list, and the way back to the inbox when the
-/// page has an inbox to return to. A daemon with neither draws no row.
+/// The link to the full session list, in a row above the heading, once there are
+/// sessions to list. A daemon with none draws no row. The way back to the inbox
+/// is the rail's folders, which every page of the home draws.
 fn links(pane: Pane(message)) -> Element(message) {
-  // The list link has something to list only once a session exists.
-  let to_list = case pane.history {
-    NoSessions -> []
-    HasSessions -> [
-      link("All sessions", pane.presses.listing),
-    ]
-  }
-
-  // The inbox link exists only on a page that has an inbox to return to.
-  let to_inbox = case pane.presses.inbox {
-    Some(back) -> [link("Back to the inbox", back)]
-    None -> []
-  }
-
-  // A row with no link in it takes no room.
-  case list.append(to_list, to_inbox) {
-    [] -> element.none()
-    row -> html.nav([attribute.class("new-links")], row)
+  case pane.history {
+    NoSessions -> element.none()
+    HasSessions ->
+      html.nav([attribute.class("new-links")], [
+        link("All sessions", pane.presses.listing),
+      ])
   }
 }
 
@@ -1128,10 +1126,20 @@ fn section_head(title: String, gloss: String) -> Element(message) {
   ])
 }
 
-/// The Code chip's list: a search field, then the sections in their fixed order.
+/// The Code chip's list: the folder picker while "Choose a folder…" has it open,
+/// and the list of places otherwise.
+fn code_list(pane: Pane(message)) -> Element(message) {
+  case pane.state.browser {
+    composer.Closed -> code_places(pane)
+    composer.Reading(..) | composer.Browsing(..) | composer.Failed(_) ->
+      picker(pane)
+  }
+}
+
+/// The list of places: a search field, then the sections in their fixed order.
 /// Rows the search does not match are not drawn, nor are headings left with no
 /// row. A search that matches nothing says so.
-fn code_list(pane: Pane(message)) -> Element(message) {
+fn code_places(pane: Pane(message)) -> Element(message) {
   let needle = string.lowercase(pane.state.search)
   let sections =
     list.flatten([
@@ -1187,6 +1195,9 @@ type Standing(message) {
   // The row chooses this target.
   Pressable(target: Target)
 
+  // The row opens the folder picker.
+  Opens
+
   // The row cannot work, and says why in words.
   Unavailable(reason: String)
 }
@@ -1208,14 +1219,15 @@ fn folder_section(
       )
     })
 
-  // Dispatch on folder_section state.
+  // The picker is offered only where a path may be typed, since both name a
+  // directory on the daemon serving the page.
   let typed = case pane.offers.typing {
     composer.MayType -> [
       Row(
         label: "Choose a folder…",
-        detail: "Type a path in the form",
+        detail: "Browse your folders",
         glyph: Folder,
-        standing: Pressable(composer.TypedFolder),
+        standing: Opens,
       ),
     ]
     composer.MayNotType -> []
@@ -1431,6 +1443,16 @@ fn row(pane: Pane(message), shown: Row(message)) -> Element(message) {
         list.append(body, check_if(current)),
       )
     }
+    Opens ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("opt"),
+          attribute.role("option"),
+          event.on_click(pane.presses.browse),
+        ],
+        body,
+      )
     Unavailable(reason:) ->
       html.div(
         [
@@ -1564,10 +1586,311 @@ fn code_title(code: listing.Code) -> String {
   }
 }
 
+/// How many of the page's remembered folders the picker offers above the home's
+/// own folders.
+const recent_shown = 5
+
+/// Whether the listing in view may be chosen with "Use this folder": every
+/// directory but the home, where a session may not start.
+type Use {
+  Usable
+  Unusable
+}
+
+/// Whether the breadcrumb's parts can be pressed: they can while a listing is on
+/// screen, and cannot while the next one is being read.
+type Walk {
+  Walkable
+  Waiting
+}
+
+/// The folder picker (protocol-change/132), drawn in the Code chip's place while
+/// "Choose a folder…" has it open. It draws what the page holds of the daemon's
+/// answer: a breadcrumb, the child directories as rows, and the ways out. Every
+/// directory's name is a text node, and every press carries an index or a depth
+/// the server built, which the composer checks against its own listing.
+fn picker(pane: Pane(message)) -> Element(message) {
+  let presses = pane.presses
+
+  // The three states of the picker each draw a head and a body; the footer is
+  // shared, with "Use this folder" only beside a listing that may be used.
+  let #(head, body, standing) = case pane.state.browser {
+    composer.Browsing(listing:, refusal:) -> #(
+      crumbs(listing.trail, Walkable, presses.ascend),
+      browsing(pane, listing, refusal),
+      case listing.trail {
+        [] -> Unusable
+        [_, ..] -> Usable
+      },
+    )
+    composer.Reading(trail:, ..) -> #(
+      crumbs(trail, Waiting, presses.ascend),
+      [html.p([attribute.class("pop-foot")], [html.text("Reading…")])],
+      Unusable,
+    )
+    composer.Failed(refusal:) -> #(element.none(), [refused(refusal)], Unusable)
+    composer.Closed -> #(element.none(), [], Unusable)
+  }
+
+  html.div(
+    [
+      attribute.class("pop"),
+      attribute.class("wide"),
+      attribute.class("picker"),
+      attribute.role("group"),
+      attribute.aria_label("Choose a folder"),
+    ],
+    [
+      head,
+      html.div([attribute.class("pick-rows")], body),
+      footer(pane, standing),
+    ],
+  )
+}
+
+/// The breadcrumb: the home, then each directory of the trail. Every part but the
+/// last presses to that ancestor while a listing is on screen, and the last is the
+/// directory in view.
+fn crumbs(
+  trail: List(String),
+  walk: Walk,
+  ascend: fn(Int) -> message,
+) -> Element(message) {
+  let last = list.length(trail)
+  let names = ["~", ..trail]
+
+  html.nav(
+    [attribute.class("pick-path"), attribute.aria_label("Folder path")],
+    list.index_map(names, fn(name, depth) {
+      // The directory in view is text, an ancestor is a button while a listing is
+      // on screen, and either is text while the next listing is being read.
+      let part = case walk, depth == last {
+        Walkable, True | Waiting, True ->
+          html.span(
+            [
+              attribute.class("crumb"),
+              attribute.attribute("aria-current", "page"),
+            ],
+            [html.text(name)],
+          )
+        Waiting, False ->
+          html.span([attribute.class("crumb")], [html.text(name)])
+        Walkable, False ->
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("crumb"),
+              event.on_click(ascend(depth)),
+            ],
+            [html.text(name)],
+          )
+      }
+
+      // Every part after the home follows a separator, which is not announced.
+      case depth == 0 {
+        True -> part
+        False ->
+          html.span([], [
+            html.span(
+              [attribute.class("crumb-sep"), attribute.aria_hidden(True)],
+              [html.text("/")],
+            ),
+            part,
+          ])
+      }
+    }),
+  )
+}
+
+/// The rows of a listing: the way up, the remembered folders at the home, the
+/// child directories and the note on what is not listed.
+fn browsing(
+  pane: Pane(message),
+  shown: Listing,
+  refusal: Option(folder_browse.Refusal),
+) -> List(Element(message)) {
+  let depth = list.length(shown.trail)
+
+  // The last press's refusal is worded above the rows, which stay in view.
+  let notice = case refusal {
+    Some(why) -> [refused(why)]
+    None -> []
+  }
+
+  // The way up is drawn everywhere but the home, which has no parent in view.
+  let up = case shown.trail {
+    [] -> []
+    [_, ..] -> [
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("opt"),
+          event.on_click(pane.presses.ascend(depth - 1)),
+        ],
+        [
+          icon(Up),
+          html.span([attribute.class("opt-text")], [
+            html.span([], [html.text("Up one folder")]),
+          ]),
+        ],
+      ),
+    ]
+  }
+
+  // The remembered folders head the home's listing, so a place the owner already
+  // works in is one press away, and are not repeated in a subdirectory.
+  let recent = case pane.offers.folders {
+    [_, ..] if depth == 0 -> [
+      section_head("Recent", "where you started sessions"),
+      ..list.map(list.take(pane.offers.folders, recent_shown), fn(path) {
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("opt"),
+            event.on_click(pane.presses.choose(composer.Folder(path))),
+          ],
+          [
+            icon(Folder),
+            html.span([attribute.class("opt-text")], [
+              html.span([], [html.text(listing.short_path(path))]),
+              html.small([], [html.text(path)]),
+            ]),
+          ],
+        )
+      })
+    ]
+    [_, ..] | [] -> []
+  }
+
+  // A heading separates the remembered folders from the home's own, and is only
+  // needed when there are some.
+  let heading = case recent {
+    [] -> []
+    [_, ..] -> [section_head("Your home", "")]
+  }
+
+  list.flatten([
+    notice,
+    up,
+    recent,
+    heading,
+    list.index_map(shown.children, fn(child, index) {
+      child_row(pane, child, index)
+    }),
+    [cut_note(shown)],
+  ])
+}
+
+/// A child directory's row. A Git checkout says so under its name.
+fn child_row(
+  pane: Pane(message),
+  child: Child,
+  index: Int,
+) -> Element(message) {
+  // A Git checkout says so under its name, so a repository is told from a folder.
+  let mark = case child.marker {
+    folder_browse.Repository -> [html.small([], [html.text("Git repository")])]
+    folder_browse.Plain -> []
+  }
+
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("opt"),
+      event.on_click(pane.presses.descend(index)),
+    ],
+    [
+      icon(Folder),
+      html.span([attribute.class("opt-text")], [
+        html.span([], [html.text(child.name)]),
+        ..mark
+      ]),
+    ],
+  )
+}
+
+/// What the listing leaves out, in words: nothing when it is whole and has rows,
+/// the cap when it was cut, and the depth when it stopped there.
+fn cut_note(shown: Listing) -> Element(message) {
+  // What the listing leaves out is said in words: nothing for a whole listing
+  // with rows, the cap for a cut one, and the depth where the listing stopped.
+  case shown.cut, shown.children {
+    folder_browse.Whole, [] ->
+      html.p([attribute.class("pop-foot")], [html.text("No folders here.")])
+    folder_browse.Whole, [_, ..] -> element.none()
+    folder_browse.CutShort, _ ->
+      html.p([attribute.class("pop-foot")], [
+        html.text(
+          "Showing the first "
+          <> int.to_string(folder_browse.shown_limit)
+          <> " folders. Type a path for one that is not listed.",
+        ),
+      ])
+    folder_browse.AtDepthLimit, _ ->
+      html.p([attribute.class("pop-foot")], [
+        html.text(
+          "Folders below this one are not listed. Use this folder, or type a path.",
+        ),
+      ])
+  }
+}
+
+/// A refusal's fixed words, announced to a screen reader.
+fn refused(why: folder_browse.Refusal) -> Element(message) {
+  html.p([attribute.class("new-refusal"), attribute.role("alert")], [
+    html.text(folder_browse.refusal_words(why)),
+  ])
+}
+
+/// The picker's footer: "Use this folder" for the directory in view when it may
+/// be used, and the two ways out, back to the list of places and to a typed path.
+fn footer(pane: Pane(message), standing: Use) -> Element(message) {
+  let presses = pane.presses
+
+  // "Use this folder" is drawn only where the directory in view may be chosen.
+  let chosen = case standing {
+    Usable ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("pick-use"),
+          event.on_click(presses.pick),
+        ],
+        [html.text("Use this folder")],
+      )
+    Unusable ->
+      html.span([attribute.class("pick-note")], [
+        html.text("Open a folder to use it."),
+      ])
+  }
+
+  html.div([attribute.class("pick-bar")], [
+    html.div([attribute.class("pick-alts")], [
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("pick-alt"),
+          event.on_click(presses.leave_browser),
+        ],
+        [html.text("Back to the list")],
+      ),
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("pick-alt"),
+          event.on_click(presses.choose(composer.TypedFolder)),
+        ],
+        [html.text("Type a path instead")],
+      ),
+    ]),
+    chosen,
+  ])
+}
+
 /// The glyph for a target: a folder, or a chip for a registered workspace.
 fn code_icon(target: Target) -> Icon {
   case target {
-    composer.Folder(_) | composer.TypedFolder -> Folder
+    composer.Folder(_) | composer.TypedFolder | composer.Picked(_) -> Folder
     composer.OnExecutor(..) -> Cpu
     composer.InPool(..) -> Pool
   }
@@ -1579,6 +1902,7 @@ type Icon {
   Laptop
   Server
   Folder
+  Up
   Cpu
   Pool
   Spark
@@ -1607,6 +1931,7 @@ fn outline(which: Icon) -> String {
     Server -> "M2.5 3.5h11v4h-11zM2.5 8.5h11v4h-11zM5 5.5h.01M5 10.5h.01"
     Folder ->
       "M2 4.5a1 1 0 011-1h3l1.5 1.5H13a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1z"
+    Up -> "M8 13V3M3.5 7.5L8 3l4.5 4.5"
     Cpu ->
       "M4 4h8v8H4zM6.5 1.5v2M9.5 1.5v2M6.5 12.5v2M9.5 12.5v2M1.5 6.5h2M1.5 9.5h2M12.5 6.5h2M12.5 9.5h2"
     Pool -> "M2 4h5v8H2zM9 4h5v8H9z"

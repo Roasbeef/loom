@@ -87,6 +87,11 @@ pub type Stuck {
     /// The strand that spawned this one, which is session text and drawn as
     /// text only. Absent when the daemon read no lineage for it.
     parent: Option(String),
+    /// The operation of the failed run, the identity of the failure
+    /// (protocol-change/131). A dismissal names it, so the daemon can refuse a
+    /// failure that is no longer the strand's. Absent for a daemon that predates
+    /// the field, and a page that has none offers no Dismiss.
+    operation: Option(String),
   )
 }
 
@@ -216,6 +221,7 @@ fn stuck_item(value: JsonValue) -> Result(Stuck, Nil) {
     reason: option_text(fields, "reason"),
     retry_after_ms: option_int(fields, "retry_after_ms"),
     parent: option_text(fields, "parent"),
+    operation: option_text(fields, "operation"),
   )
 }
 

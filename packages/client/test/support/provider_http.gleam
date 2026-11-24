@@ -22,6 +22,7 @@
 //// wire — rather than into the harness around it.
 
 import client/advisor
+import client/advisorslice
 import core/json
 import core/message
 import core/origin
@@ -822,15 +823,38 @@ fn latest_content(
     // agent steered into the run while the tool was in flight rides in the same
     // user turn as the result (a provider turn alternates roles). The result
     // still selects the reply, and the steered text stays in the retained
-    // request body for the caller to assert on. Plain text after a result is
-    // still refused, so only the shape steering produces is accepted.
+    // request body for the caller to assert on. A new goal feed may also
+    // share the user turn with the previous run's final tool result.
     [first, ..rest] ->
       case field(first, "type"), list.all(rest, is_steered_message) {
         json.String("tool_result"), True -> tool_result(first, admission)
+        json.String("tool_result"), False ->
+          goal_after_result(first, rest)
+          |> result.lazy_or(fn() { text_content(blocks) })
         _, _ -> text_content(blocks)
       }
 
     [] -> text_content(blocks)
+  }
+}
+
+/// Validates a goal feed merged into the prior run's final tool result turn.
+fn goal_after_result(
+  previous: json.JsonValue,
+  blocks: List(json.JsonValue),
+) -> Result(Latest, String) {
+  use _ <- result.try(tool_result(previous, OnlySuccessful))
+  use feed <- result.try(user_content(blocks))
+  case field(feed, "type"), field(feed, "text") {
+    json.String("text"), json.String(prompt) ->
+      case
+        string.starts_with(prompt, advisorslice.goal_feed_header)
+        && string.ends_with(prompt, advisorslice.goal_feed_footer)
+      {
+        True -> Ok(UserPrompt(prompt))
+        False -> Error("expected a goal feed after the previous result")
+      }
+    _, _ -> Error("expected a goal feed after the previous result")
   }
 }
 

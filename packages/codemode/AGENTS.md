@@ -310,7 +310,7 @@ session and sends it many invocations.
 - `codemode/lsp.{Seam, RenameMode, LineChange, PlannedFile, routing,
   serviced_caps, preview, refusal, site_value, max_items}` — the seven
   `lsp.*` names (ADR-015 §6), every plan `ServedHere` over an
-  `lsp/query.Door` — the same door the `lsp_*` tools use — plus the
+  `lsp/query.Door` — the same door the opt-in `lsp_*` tools use — plus the
   client-composed applied `rename` (prepare, hashline landing,
   `after_write`). It decodes a `SymbolQuery` totally (a `line` without a
   `path`, or below 1, is refused in band) and renders the msgpack shapes

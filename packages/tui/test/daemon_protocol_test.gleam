@@ -712,3 +712,106 @@ pub fn creation_omits_default_agency_and_encodes_custom_agency_test() {
   assert string.contains(custom, "\"session_strands\":512")
   assert string.contains(custom, "\"depth_cap\":\"unlimited\"")
 }
+
+// The attention commands the ask card sends carry the authenticated epoch and
+// the bodies protocol-change/120 and 128 name, and only the answer mutates.
+pub fn the_attention_commands_carry_the_epoch_and_their_bodies_test() {
+  let session = "01a20b44-bca6-76ce-bfc8-46100bfc1e42"
+  let epoch = protocol.Epoch("daemon-1")
+  let answer =
+    json.Object([
+      #("answers", json.Object([#("q1", json.Bool(True))])),
+      #("other", json.Object([])),
+    ])
+
+  let feed = protocol.AttentionCommand(protocol.ReadAttentionFeed(session))
+  assert protocol.name(feed) == "sessions.attention"
+  assert !protocol.mutates(feed)
+  let assert Ok(text) = protocol.encode(1, feed, epoch)
+  let assert Ok(json.Object(fields)) = json.parse(text)
+  assert list.key_find(fields, "cmd") == Ok(json.String("sessions.attention"))
+  assert list.key_find(fields, "body")
+    == Ok(
+      json.Object([
+        #("sessions", json.Array([json.String(session)])),
+        #("epoch", json.String("daemon-1")),
+      ]),
+    )
+
+  let read =
+    protocol.AttentionCommand(protocol.ReadAttentionRecord(
+      session,
+      "ask-3f9c01a2b4",
+    ))
+  assert protocol.name(read) == "attention.read"
+  assert !protocol.mutates(read)
+  let assert Ok(text) = protocol.encode(2, read, epoch)
+  assert string.contains(text, "\"id\":\"ask-3f9c01a2b4\"")
+  assert string.contains(text, "\"epoch\":\"daemon-1\"")
+
+  let send =
+    protocol.AttentionCommand(protocol.AnswerAttentionAsk(
+      session,
+      "ask-3f9c01a2b4",
+      41,
+      answer,
+    ))
+  assert protocol.name(send) == "attention.answer"
+  assert protocol.mutates(send)
+  let assert Ok(text) = protocol.encode(3, send, epoch)
+  assert string.contains(text, "\"revision\":41")
+  assert string.contains(text, "\"ask\":\"ask-3f9c01a2b4\"")
+  assert string.contains(
+    text,
+    "\"answer\":{\"answers\":{\"q1\":true},\"other\":{}}",
+  )
+}
+
+pub fn an_attention_command_is_refused_before_it_is_sent_when_malformed_test() {
+  let epoch = protocol.Epoch("daemon-1")
+  let session = "01a20b44-bca6-76ce-bfc8-46100bfc1e42"
+  let assert Error(_) =
+    protocol.encode(
+      1,
+      protocol.AttentionCommand(protocol.ReadAttentionFeed("not-a-session")),
+      epoch,
+    )
+    as "the session must be a canonical identity"
+  let assert Error(_) =
+    protocol.encode(
+      1,
+      protocol.AttentionCommand(protocol.ReadAttentionRecord(session, "")),
+      epoch,
+    )
+    as "an empty id names no record"
+  let assert Error(_) =
+    protocol.encode(
+      1,
+      protocol.AttentionCommand(protocol.AnswerAttentionAsk(
+        session,
+        "ask-3f9c01a2b4",
+        -1,
+        json.Null,
+      )),
+      epoch,
+    )
+    as "a revision is never negative"
+}
+
+pub fn the_attention_replies_decode_as_one_kept_document_test() {
+  list.each(
+    ["sessions.attention", "attention.read", "attention.answer"],
+    fn(name) {
+      let frame =
+        "{\"v\":2,\"reply_to\":4,\"event\":\""
+        <> name
+        <> "\",\"body\":{\"x\":1}}"
+      assert protocol.decode(frame)
+        == Ok(protocol.Answer(
+          4,
+          name,
+          protocol.AttentionReply(json.Object([#("x", json.Int(1))])),
+        ))
+    },
+  )
+}

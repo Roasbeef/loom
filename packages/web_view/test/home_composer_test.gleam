@@ -110,8 +110,8 @@ fn owner(asked: Asked) -> home.Start {
     now: fn() { 7_400_000 },
     activity: fn(_, deliver) {
       deliver([
-        #("B", sessions.Report(sessions.Idle, None, [], None, None)),
-        #("A", sessions.Report(sessions.Idle, None, [], None, None)),
+        #("B", sessions.Report(sessions.Idle, None, [], None, None, 0)),
+        #("A", sessions.Report(sessions.Idle, None, [], None, None, 0)),
       ])
     },
     rename: None,
@@ -198,8 +198,8 @@ fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
 fn needing(start: home.Start) -> home.Start {
   home.Start(..start, activity: fn(_, deliver) {
     deliver([
-      #("B", sessions.Report(sessions.NeedsYou, None, [], None, None)),
-      #("A", sessions.Report(sessions.Working, None, [], None, None)),
+      #("B", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
+      #("A", sessions.Report(sessions.Working, None, [], None, None, 0)),
     ])
   })
 }
@@ -680,7 +680,7 @@ pub fn the_owner_lands_on_the_inbox_when_something_waits_test() {
     run(
       chosen,
       home.Observed([
-        #("B", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        #("B", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
       ]),
     )
   assert string.contains(drawn(read), "What should the agent work on?")

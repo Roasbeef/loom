@@ -51,6 +51,7 @@ import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/accounting
 import core/agency_limits
+import core/attention
 import core/clock.{type Clock}
 import core/codec
 import core/entry
@@ -2434,6 +2435,52 @@ pub fn agent_send_carries_the_callers_strand_origin_downward_and_upward_test() {
     "main",
   )
     as "the origin is the caller and never the addressee"
+  close(harness)
+}
+
+// A child that stopped on an ask is waiting for the owner, and its parent's
+// message is an automatic input: it is held for the child's next run and the
+// sender is told so, where an idle child with no ask would start a fresh run.
+pub fn a_parents_message_does_not_wake_a_child_waiting_on_the_owner_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "first parent")
+  let assert Ok(child) = harness.seam.spawn(parent, a_spawn("review"))
+    as "the child must spawn"
+  assert settled(harness, child.handle) as "the first review must complete"
+  let ask =
+    attention.Ask(
+      header: attention.Header(
+        id: "ask-0000000001",
+        created_at: 1,
+        routing: attention.ToOwner,
+        anchor: attention.Anchor(
+          operation: child.handle.operation,
+          step_id: "turn-1:tools",
+          source_index: 0,
+        ),
+        strand: child.strand,
+        parents: ["main"],
+      ),
+      why: None,
+      questions: [attention.Question("q1", "Retry?", attention.Confirm, [])],
+      state: attention.AskOpen,
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      attention.ask_key(ask.header.id),
+      attention.encode_ask(ask),
+    )
+    as "the ask record must be written"
+
+  let assert Ok(agent.Held(entry: _)) =
+    harness.seam.send(parent, child.strand, "one more thing", None)
+    as "the message is held, not started"
+  let assert Ok(Some(session.Cell(value: state, ..))) =
+    session.strand_state(harness.runtime.session, child.strand)
+  assert state.current_operation == None as "the child was not woken"
+  assert list.length(state.pending_next_run) == 1
+    as "the message waits for the child's next run"
   close(harness)
 }
 

@@ -306,6 +306,7 @@ import web_view/composer
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
+import web_view/folder_browse
 import web_view/inbox_rule
 import web_view/item_pane
 import web_view/landing_rule
@@ -758,6 +759,14 @@ pub type Folders {
     /// Forgets the entry with this identity and answers the list that remains.
     /// An identity that is gone changes nothing.
     forget: fn(Int, fn(List(creations.Recent)) -> Nil) -> Nil,
+    /// Starts the read of one directory below the owner's home for the composer's
+    /// folder picker (protocol-change/132). The argument is the page's own trail,
+    /// built from a listing the daemon gave it, and the answer is a bounded
+    /// listing or a refusal in fixed words, dispatched as `FolderBrowsed`. The
+    /// daemon resolves the trail against the home it reads itself, refuses any
+    /// that leaves it, and checks the page and the owner again, whatever this page
+    /// said.
+    browse: fn(List(String), fn(folder_browse.Answer) -> Nil) -> Nil,
   )
 }
 
@@ -876,6 +885,10 @@ pub type Act {
     /// Closes a find: the session, the find, the revision and the way.
     close: fn(String, String, Int, attention.Closure, fn(ActOutcome) -> Nil) ->
       Nil,
+    /// Dismisses a stuck strand's failure (protocol-change/131): the session, the
+    /// strand and the operation of the failed run the page read from its feed
+    /// row. The daemon refuses a failure the strand no longer holds.
+    dismiss_stuck: fn(String, String, String, fn(ActOutcome) -> Nil) -> Nil,
     /// Sends a prompt or a steer to a named strand of a session, as a message
     /// typed on the session's own page is sent.
     strand: fn(
@@ -1347,6 +1360,9 @@ pub type Msg {
   /// Retry was pressed on a stuck strand.
   ItemRetried
 
+  /// Dismiss was pressed on a stuck strand.
+  ItemDismissed
+
   /// The daemon's word on an answer or a close.
   ItemActed(key: attention_rule.Key, outcome: ActOutcome)
 
@@ -1535,6 +1551,12 @@ pub type Msg {
   /// the effect's own message, dispatched from the daemon's task, and no
   /// handler carries it.
   FoldersRead(rows: List(creations.Recent))
+
+  /// A read of one directory for the folder picker arrived, with the trail it
+  /// answers. It is the effect's own message, dispatched from the daemon's task,
+  /// and no handler carries it; the composer applies it only if it is still
+  /// waiting for that trail.
+  FolderBrowsed(trail: List(String), answer: folder_browse.Answer)
 
   /// A read of the other orchestrators' first pages arrived, numbered by the read
   /// it answers. It is the effect's own message, dispatched from the daemon's
@@ -2072,14 +2094,24 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Widening -> #(Model(..model, filter: listing.Everywhere), effect.none())
 
-    // A folder is a filter on what the page draws and nothing else. A press
-    // for a folder the page does not list changes nothing.
+    // A folder narrows the inbox's list and brings the inbox to the centre: the
+    // rail draws the folders on every centre, so a press from the composer, the
+    // list, a ticket or a relayed session is the way back. A press for a folder
+    // the page does not list changes nothing.
     FolderPicked(folder:) ->
       case
         folder == inbox_rule.Everything
         || list.any(folder_counts(model), fn(entry) { entry.0 == folder })
       {
-        True -> #(Model(..model, folder:), effect.none())
+        True -> #(
+          Model(
+            ..model,
+            folder:,
+            pane: inbox_pane(model),
+            centre_choice: Decided(InboxCentre),
+          ),
+          effect.none(),
+        )
         False -> #(model, effect.none())
       }
 
@@ -2687,11 +2719,36 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         _, _, _ -> #(model, effect.none())
       }
 
+    // Dismiss names the failed run the page's last feed read held for the strand,
+    // so a strand that failed again since is refused by the daemon and not
+    // dismissed unseen. The daemon's word comes back as an answer's does.
+    ItemDismissed ->
+      case acting(model), model.item.key, model.item.progress {
+        Some(act), Some(key), item_pane.Resting
+        | Some(act), Some(key), item_pane.Settled(_)
+        -> dismissing(model, act, key)
+        _, _, _ -> #(model, effect.none())
+      }
+
     // The daemon's word on an answer or a close. A success is followed by the
     // staged note, which goes to the strand once the answer is settled; a
     // refusal leaves the outbox for the owner to fix and send again.
     ItemActed(key:, outcome:) ->
       case model.item.key == Some(key), acting(model), outcome {
+        // The only act on a stuck strand's thread that reaches this arm is a
+        // dismissal. A staged note is a message to the strand, and sending it
+        // would run the strand the owner just set aside, so it stays staged.
+        True, Some(_), Succeeded(words:)
+          if key.sort == attention_rule.StuckSort
+        -> {
+          let next =
+            Model(
+              ..model,
+              item: item_pane.settled(model.item, words, item_pane.Nothing),
+            )
+          #(next, attending(next))
+        }
+
         True, Some(act), Succeeded(words:) ->
           case item_pane.after_answer(model.item, strand_of(model, key)) {
             item_pane.NoteStep(session:, strand:, text:) -> #(
@@ -3105,6 +3162,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.start.folders {
         Some(_) -> #(
           Model(..model, recent: list.take(rows, recent_limit)),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    // A listing for the folder picker. The composer drops an answer that is not
+    // for the trail it waits on, so a slow answer never overwrites a newer press.
+    FolderBrowsed(trail:, answer:) ->
+      case model.start.folders {
+        Some(_) -> #(
+          Model(
+            ..model,
+            compose: composer.browsed(model.compose, trail, answer),
+          ),
           effect.none(),
         )
         None -> #(model, effect.none())
@@ -4178,6 +4249,7 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
       case intent {
         composer.Stay -> #(model, effect.none())
         composer.ReadPlacements -> reading_cards(model)
+        composer.Browse(trail:) -> browsing(model, trail)
         composer.ReadAgents -> reading_offers(model, names_of(model))
         composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
         composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
@@ -4537,6 +4609,25 @@ fn offered(listed: List(String), chosen: Option(String)) -> Bool {
   case chosen {
     None -> True
     Some(text) -> list.contains(listed, text)
+  }
+}
+
+/// Asks the daemon to list one directory for the folder picker. A page with no
+/// `Folders` capability cannot ask, so the picker closes instead of waiting for an
+/// answer that will not come.
+fn browsing(model: Model, trail: List(String)) -> #(Model, Effect(Msg)) {
+  case model.start.folders {
+    Some(Folders(browse:, ..)) -> #(Model(..model, note: None), {
+      use dispatch <- effect.from
+      browse(trail, fn(answer) { dispatch(FolderBrowsed(trail, answer)) })
+    })
+    None -> #(
+      Model(
+        ..model,
+        compose: composer.State(..model.compose, browser: composer.Closed),
+      ),
+      effect.none(),
+    )
   }
 }
 
@@ -5125,6 +5216,17 @@ fn ticket_heard(
       effect.none(),
     )
     feed.TicketUnread -> #(model, effect.none())
+  }
+}
+
+/// The pane under the inbox when a folder is pressed. The composer and the list
+/// keep their state beneath the inbox; a ticket's page and a relayed session
+/// are the centre's whole subject, so leaving for the inbox closes them as their
+/// own way back does.
+fn inbox_pane(model: Model) -> Pane {
+  case model.pane {
+    Ticketed(_) | Relayed(_) -> resting_pane(model)
+    NewSession | SessionList -> model.pane
   }
 }
 
@@ -6140,6 +6242,40 @@ fn acting(model: Model) -> Option(Act) {
   }
 }
 
+/// Dismisses the open stuck strand's failure, naming the failed run the page's
+/// last feed read held for it. A thread that is not a stuck strand's, a strand the
+/// read no longer holds and a row that names no failed run ask nothing, because
+/// the daemon needs the operation to tell the failure the owner read from one
+/// that happened since (protocol-change/131).
+fn dismissing(
+  model: Model,
+  act: Act,
+  key: attention_rule.Key,
+) -> #(Model, Effect(Msg)) {
+  // Only a stuck strand's thread has a failure to dismiss.
+  let held = case key.sort {
+    attention_rule.StuckSort ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.StuckItem(stuck:, ..)) -> stuck.operation
+        Some(attention_rule.AskItem(..)) | Some(attention_rule.FindItem(..)) ->
+          None
+        None -> None
+      }
+    attention_rule.AskSort | attention_rule.FindSort -> None
+  }
+
+  // The press is asked of the daemon only with the failed run in hand.
+  case held {
+    Some(operation) -> #(Model(..model, item: item_pane.sending(model.item)), {
+      use dispatch <- effect.from
+      act.dismiss_stuck(key.session, key.id, operation, fn(outcome) {
+        dispatch(ItemActed(key, outcome))
+      })
+    })
+    None -> #(model, effect.none())
+  }
+}
+
 /// Every item the last feed read holds, for the sessions the page's list still
 /// holds as running. The rows are taken in the order of the session identity so
 /// two renders of one read agree.
@@ -6426,6 +6562,7 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
                         send: ItemSent,
                         close: ItemClosed,
                         retry: ItemRetried,
+                        dismiss: ItemDismissed,
                       ))
                     None -> None
                   },
@@ -7091,11 +7228,36 @@ fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
   }
 }
 
-/// The agent's last message under its label, for the review's pane, which draws
-/// it between the counts and the verdict. Nothing when the session said none.
+/// The agent's message under its label, for the review's pane, which draws it
+/// between the counts and the verdict. It is the brief's latest message when the
+/// page read one, which keeps the message's line breaks, and otherwise the last
+/// finished message the overview carries. Nothing when the session said none.
 fn review_message(model: Model, session: String) -> Element(Msg) {
-  case dict.get(model.reports, session) {
-    Ok(sessions.Report(last_message: Some(text), last_message_at: at, ..)) ->
+  let report = dict.get(model.reports, session)
+
+  // The overview's last message time, when the overview has one.
+  let finished_at = case report {
+    Ok(sessions.Report(last_message_at:, ..)) -> last_message_at
+    Error(Nil) -> None
+  }
+
+  // A brief with no words, or one older than the overview's last message, says
+  // nothing, so the overview's message is the fallback.
+  let read = case shown_brief(model, session) {
+    Some(brief) ->
+      case brief_rule.current(brief, finished_at) && brief_has_words(brief) {
+        True -> Some(brief)
+        False -> None
+      }
+    None -> None
+  }
+
+  // The brief's message is drawn when there is one, the overview's last message
+  // is the fallback, and a session that said nothing draws nothing.
+  case read, report {
+    Some(brief), _ -> brief_view.latest(brief)
+    None, Ok(sessions.Report(last_message: Some(text), last_message_at: at, ..))
+    ->
       case string.trim(text) {
         "" -> element.none()
         _ ->
@@ -7103,7 +7265,16 @@ fn review_message(model: Model, session: String) -> Element(Msg) {
             brief_view.finished(text, at),
           ])
       }
-    Ok(_) | Error(Nil) -> element.none()
+    None, Ok(_) | None, Error(Nil) -> element.none()
+  }
+}
+
+/// Whether a brief's latest message has words in it.
+fn brief_has_words(read: session_brief.Brief) -> Bool {
+  case read.assistant {
+    Some(assistant) ->
+      string.trim(session_brief.untrusted_text(assistant.text)) != ""
+    None -> False
   }
 }
 
@@ -7226,6 +7397,11 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
       model: fn(model) { Composed(composer.ChoseModel(model)) },
       search: fn(text) { Composed(composer.Searched(text)) },
+      browse: Composed(composer.OpenedBrowser),
+      descend: fn(index) { Composed(composer.Descended(index)) },
+      ascend: fn(depth) { Composed(composer.Ascended(depth)) },
+      pick: Composed(composer.ChosePicked),
+      leave_browser: Composed(composer.ClosedBrowser),
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
       toggle_limits: Composed(composer.ToggledLimits),
       start_with_limits: fn(name, typed, limits) {
@@ -7234,7 +7410,6 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       open: Opening,
       depart: Composed(composer.OpenedUnsent),
       listing: ShowingList,
-      inbox: inbox_return(model),
     ),
   )
 }
@@ -7645,37 +7820,36 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
   }
 }
 
-/// The rail's folders, drawn when the centre is the inbox and nowhere else.
-/// "Everything, by need" is always first, and each group that holds a thread
-/// follows with its count. The note says how many sessions the counts read.
-fn rail_folders(model: Model) -> Option(sidebar.Folders(Msg)) {
-  // The folders belong to the inbox, so any other centre draws none.
-  case landed_inbox(model) {
-    False -> None
-    True -> {
-      let tally = attention_rule.tally(standings(model))
+/// The rail's folders, drawn on the home page whatever its centre is, so the
+/// inbox is one press away from the composer, the list, a ticket and a relayed
+/// session as it is from a session's page. "Everything, by need" is always
+/// first, and each group that holds a thread follows with its count. The note
+/// says how many sessions the counts read. A folder is marked as the one the
+/// list is narrowed to only while the inbox is the centre, since otherwise no
+/// folder is on screen.
+fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
+  let tally = attention_rule.tally(standings(model))
 
-      // The counts looked at saved sessions only where a catalogue summary
-      // supplied some.
-      let saved = case model.start.attention, tally.from_catalogue {
-        Some(_), found if found > 0 -> inbox_rule.SavedFromCatalogue
-        _, _ -> inbox_rule.SavedUnchecked
-      }
-
-      Some(sidebar.Folders(
-        items: [
-          #(inbox_rule.Everything, Some(0)),
-          ..list.map(folder_counts(model), fn(entry) {
-            #(entry.0, Some(entry.1))
-          })
-        ],
-        current: Some(shown_folder(model)),
-        pick: Some(FolderPicked),
-        note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
-        running: running_sessions(model),
-      ))
-    }
+  // The counts looked at saved sessions only where a catalogue summary
+  // supplied some.
+  let saved = case model.start.attention, tally.from_catalogue {
+    Some(_), found if found > 0 -> inbox_rule.SavedFromCatalogue
+    _, _ -> inbox_rule.SavedUnchecked
   }
+
+  sidebar.Folders(
+    items: [
+      #(inbox_rule.Everything, Some(0)),
+      ..list.map(folder_counts(model), fn(entry) { #(entry.0, Some(entry.1)) })
+    ],
+    current: case landed_inbox(model) {
+      True -> Some(shown_folder(model))
+      False -> None
+    },
+    way: sidebar.Pick(FolderPicked),
+    note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
+    running: running_sessions(model),
+  )
 }
 
 /// The folders with something in them and their counts, in the rail's order. A

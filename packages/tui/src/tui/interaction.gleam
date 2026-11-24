@@ -73,6 +73,7 @@ import tui/agent_message_panel
 import tui/agent_strip
 import tui/agents
 import tui/approval_panel
+import tui/ask_control
 import tui/attachment
 import tui/buffered
 import tui/context_panel
@@ -131,7 +132,12 @@ pub fn handle_paste(
     NoOverlay ->
       case layout.diff_shown(model), model.shared.worktree.focus {
         True, worktree_view.Navigator -> model
-        _, _ -> handle_underlay_paste(model, text, image)
+        _, _ ->
+          // Pasted text goes to the ask card only while it has the keyboard.
+          case ask_control.has_keyboard(model) {
+            True -> ask_control.pasted(model, text)
+            False -> handle_underlay_paste(model, text, image)
+          }
       }
     AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
       handle_underlay_paste(model, text, image)
@@ -634,7 +640,15 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
             approval_panel.Decide(record, choice) ->
               inbound.decide_captured_approval(model, record, choice)
           }
-        NoOverlay -> update_main_key(key, model)
+
+        // The composer has the keyboard unless the owner gave it to an ask
+        // with Alt+A, so an ask appearing never turns a keystroke into an
+        // answer.
+        NoOverlay ->
+          case ask_control.has_keyboard(model) {
+            True -> ask_control.key(model, key)
+            False -> update_main_key(key, model)
+          }
       }
   }
 }
@@ -1609,6 +1623,10 @@ fn close_sheet_after_open(model: Model) -> Model {
 
 /// Handles keyboard actions in composer mode, checking overlays and palette.
 fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
+  let ask_answerable = ask_control.answerable(model)
+
+  // Each key is either a chord of its own or falls to the palette and the
+  // composer.
   case layout.diff_shown(model), model.shared.worktree.focus, key {
     _, _, keys.Alt("q") -> submit.open_queue(model)
 
@@ -1620,6 +1638,10 @@ fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
     // Alt+M opens the memory overview, bound before the generic Alt rule for
     // the same reason.
     _, _, keys.Alt("m") -> side_surfaces.open_memory(model)
+
+    // Alt+A gives the keyboard to the ask card, when an ask can be answered.
+    // With none open the key is not bound and falls to the generic Alt rule.
+    _, _, keys.Alt("a") if ask_answerable -> ask_control.focus(model)
 
     // Ctrl+O ("open agents") is the chord a hand already on the keyboard
     // reaches; F2 stays for anyone who learned it. Ctrl+A was the other

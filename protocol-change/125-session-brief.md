@@ -67,7 +67,7 @@ formats none. Absent sections are omitted.
 
 | Member | Meaning |
 |---|---|
-| `assistant` | `{"text", "trust": "untrusted", "at"}`: the latest assistant message of the main strand that has text, even when its turn is still running, cut to 600 bytes, with the `ts` of its entry. Model text. |
+| `assistant` | `{"text", "trust": "untrusted", "at"}`: the latest assistant message of the main strand that has text, even when its turn is still running, with the `ts` of its entry. Model text. See the addendum for its bound. |
 | `steps[]` | At most 4 recent tool calls, newest first: `{"at", "tool", "words", "trust": "untrusted", "outcome"}`. `tool` is the name the model gave the call, cut to 64 bytes, and is model text like `words`. `words` is the line the session's own page uses (`session_view/step_words`: `Ran make check-core`, `Edit calc.py +3 −1`), in the present tense for a call with no result, cut to 120 bytes. `outcome` is `running`, `succeeded` or `failed`, which is what the result envelope reported and no claim about the command's meaning. |
 | `strands[]` | At most 12 strands, working ones first and then by name: `{"name", "state", "since"}`. `state` is `working`, `idle` or `stopped` (the last run failed). `since` is the mint time of the open operation for a working strand and the time of the last entry of the last run for another, and is omitted when there is none. |
 | `goal` | `{"objective", "status", "tokens_used", "token_budget"}` when the session has a goal: the objective cut to 200 bytes, `active`, `paused`, `limited` or `complete`, and the accounted total against the pinned budget. |
@@ -93,7 +93,7 @@ a spawn's purpose, and the page draws both as text nodes only.
 
 Every text and list is cut as above on a grapheme boundary. JSON escaping can
 grow a cut string several times, so the encoded brief is measured against
-12,000 bytes and shed until it fits: strands first, then peers, then steps, each
+20,000 bytes and shed until it fits: strands first, then peers, then steps, each
 from the end of its list, and last the assistant's words. The reply is also
 checked against the 60,000-byte frame. The fixed part of a brief is far under
 the bound.
@@ -128,7 +128,7 @@ holds for that session, or 0, and keeps the answer by session as
 A thread selection costs one read, which delays the session's other peer
 commands by the time its reads take: one branch scan of up to 80 entries, two
 register listings, a batch read of up to 12 entries and the goal cell. Home
-reads at most one session's brief at a time. The reply is bounded at 12,000
+reads at most one session's brief at a time. The reply is bounded at 20,000
 bytes. The command is in the drain's read set and in no write set.
 
 ## Threat model
@@ -149,3 +149,15 @@ reads a real runtime's brief back. `client/test/client/daemon_attention_test.gle
 pins the door: an observer reads, a bystander is `not_found`, an exhausted
 allowance and a saved session are refused, and the control command's epoch and
 reply.
+
+## Addendum: the assistant text keeps its newlines
+
+The page now draws a quoted agent message as Markdown, which needs the line
+breaks that the first edition removed. `assistant.text` keeps its newlines, is
+cut to 1600 bytes instead of 600, and is cut between blocks: whole blocks are
+kept while they fit, and a cut ends in a paragraph holding `…`. A first block
+longer than the whole bound is flattened to one line and cut at a word, as
+before. The member's name, shape and trust mark are unchanged, so no reader of
+the first edition breaks; one that drew the text raw now sees newlines in it.
+The reply bound rises from 12,000 to 20,000 bytes, because the longer text escapes to
+at most six times its length. `web_view/block_clip` is the cut and `web_view/markdown_view.quoted` is the draw.

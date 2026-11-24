@@ -12,8 +12,10 @@
 //// 2. `ask(questions, to: None, why: None)` records them and returns the
 ////    ask's id. It does not wait for the answer and it does not end your
 ////    turn: after the program returns, end the turn yourself. The answer
-////    arrives later as a message from the person holding one fenced JSON
-////    object.
+////    arrives later as a message from the person that names the ask's id
+////    and lists each question, numbered, with the answer under it: Yes or
+////    No, the chosen option labels in double quotes, the typed text, or
+////    "Other (not one of the options):" and the text.
 //// 3. `notice(kind, text, path: None, line: None)` records a note about
 ////    something outside the task and returns its id. It never stops
 ////    anything.
@@ -220,7 +222,10 @@ pub fn alternative(label: String) -> Alternative {
 /// when `to` names one, and returns the ask's id. It records the ask and
 /// returns at once, and it does not end your turn: end it yourself after the
 /// program returns. The answer arrives later as a message from the person
-/// holding one fenced JSON object. At most 32 asks may be open at once.
+/// that names the ask's id and lists each question, numbered, with the
+/// answer under it: Yes or No, the chosen option labels in double quotes,
+/// the typed text, or "Other (not one of the options):" and the text. At
+/// most 32 asks may be open at once.
 /// Capability: attention.ask. The execution allows at most 8 calls.
 ///
 /// ## Examples

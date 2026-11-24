@@ -70,6 +70,7 @@ import session/session
 import storage/snapshot
 import storage/storage
 import tools/blob
+import web_view/block_clip
 
 /// Waking an idle recipient is an independent operator permission.
 pub type Wake {
@@ -256,6 +257,11 @@ pub type Command {
   /// `revision` (`protocol-change/120`). The daemon has already decided who may
   /// do it and, for an answer, delivered the prompt.
   AttentionSettle(id: String, revision: Int, settlement: attention.Settlement)
+
+  /// Records that `by` has seen a stuck strand's failure and set it aside, when
+  /// the strand's last result is still the failed run `operation` names
+  /// (`protocol-change/131`). The daemon has already decided who may do it.
+  StuckDismiss(strand: String, operation: String, by: String)
 
   /// Records an outgoing message in the sender's outbox before its first
   /// delivery attempt (`client/peer_outbox`). The answer says whether the
@@ -689,6 +695,8 @@ pub fn handle_reporting(
 
       answer
     }
+    StuckDismiss(strand, failed_run, by) ->
+      stuck_dismiss(runtime, clock, strand, failed_run, by)
     OutboxClaim(source, strand, session, target, id, body) -> {
       let #(now, _) = clock.read(clock)
       peer_outbox_store.claim(
@@ -1479,7 +1487,8 @@ fn activity(runtime: api.Runtime, strand: String) -> Result(JsonValue, String) {
 }
 
 // One session's activity, as the owner's session picker shows it. Every
-// read here is a single register, one entry, or one prefix listing, so the
+// read here is a single register, one entry, or one prefix listing (the asks
+// are one more, the one `attention.summary` makes), so the
 // Agency actor answering it is held for a fixed number of store calls
 // rather than a walk over the conversation.
 /// Builds a bounded human-readable overview of peer activity.
@@ -1497,6 +1506,7 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     |> result.map_error(string.inspect),
   )
   use glances <- result.try(current_glances(runtime, states))
+  use asks <- result.map(attention.asks(runtime))
   let last = option.map(last, fn(cell) { cell.value })
   let #(doing, approvals, working) = standing_from(states, escalations, last)
   let state = doing_word(doing)
@@ -1513,12 +1523,13 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     #("strands", json.Int(list.length(states))),
     #("working", json.Int(working)),
     #("approvals", json.Int(approvals)),
+    #("asks", json.Int(list.length(attention.open_owner_asks(asks)))),
     #("last_outcome", last_outcome(last)),
     #("model", model),
     #("turn_started_at", turn_started_at(states)),
   ]
   let #(message, message_at) = final_message(runtime, last)
-  Ok(fit_overview(base, message, message_at, glances))
+  fit_overview(base, message, message_at, glances)
 }
 
 /// One record in the stored shape beside its revision. A record that is not
@@ -1562,6 +1573,25 @@ fn attention_settle(
       Error("conflict")
     Error(attention.WrongKind) -> Error("bad_request")
     Error(attention.Failed(reason:)) -> Error(reason)
+  }
+}
+
+/// Dismisses a stuck strand's failure and words the refusals as the other
+/// attention commands do: `not_found` for a strand with nothing to dismiss and
+/// `conflict` for a failure that is no longer the strand's own.
+fn stuck_dismiss(
+  runtime: api.Runtime,
+  time: clock.Clock,
+  strand: String,
+  failed_run: String,
+  by: String,
+) -> Result(JsonValue, String) {
+  case attention_feed.dismiss_stuck(runtime, time, strand, failed_run, by) {
+    Ok(Nil) -> Ok(json.Object([]))
+    Error(attention_feed.UnknownStrand) -> Error("not_found")
+    Error(attention_feed.StaleFailure) | Error(attention_feed.DismissalLost) ->
+      Error("conflict")
+    Error(attention_feed.DismissalUnavailable(reason:)) -> Error(reason)
   }
 }
 
@@ -1775,9 +1805,10 @@ fn final_message(
     Some(operation.RunLastResult(final_assistant: Some(id), ..)) -> {
       let #(text, at) = assistant_text(runtime, id)
 
-      // Clipping collapses whitespace first, so a message of only
-      // whitespace is null here rather than an empty string.
-      case glance.clip(text, overview_message_bytes) {
+      // The cut keeps the message's newlines and ends between blocks, so a
+      // page can take the first line as a title and draw the rest as Markdown.
+      // A message of only whitespace is null here rather than an empty string.
+      case block_clip.clip(text, overview_message_bytes) {
         "" -> #(json.Null, json.Null)
         text -> #(json.String(text), json.Int(at))
       }
@@ -1808,7 +1839,7 @@ fn assistant_text(runtime: api.Runtime, id: EntryId) -> #(String, Int) {
                 _ -> Error(Nil)
               }
             })
-            |> string.join(" "),
+            |> string.join("\n\n"),
           ts,
         )
         _ -> #("", 0)

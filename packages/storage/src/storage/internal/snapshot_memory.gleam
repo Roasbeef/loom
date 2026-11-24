@@ -58,7 +58,9 @@ pub fn capture(view: View, plan: snapshot.Plan) -> Result(snapshot.Cut, Error) {
         page_headers(view, namespace, prefix, after, limit)
       },
       header: fn(namespace, key) { header(view, namespace, key) },
-      cell: fn(header) { cell(view, header) },
+      cells: fn(headers) {
+        list.try_map(headers, fn(header) { cell(view, header) })
+      },
     ),
     initial_bytes: usage_bytes,
   ))

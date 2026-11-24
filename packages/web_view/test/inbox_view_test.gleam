@@ -17,6 +17,7 @@ import lustre/element.{type Element}
 import lustre/vdom/vnode
 import session_view/operator
 import web_view/home
+import web_view/inbox_rule
 import web_view/sessions.{
   type Entry, type Report, Entry, Glance, Live, Report, Saved,
 }
@@ -62,6 +63,7 @@ fn reports() -> List(#(String, Report)) {
         [],
         None,
         None,
+        asks: 0,
       ),
     ),
     #(
@@ -74,6 +76,7 @@ fn reports() -> List(#(String, Report)) {
         ],
         None,
         None,
+        asks: 0,
       ),
     ),
     #(
@@ -87,6 +90,7 @@ fn reports() -> List(#(String, Report)) {
         ],
         None,
         None,
+        asks: 0,
       ),
     ),
   ]
@@ -252,7 +256,7 @@ pub fn an_approval_is_named_and_never_decided_here_test() {
 // A failed run is named as failed, and nothing is offered but the session.
 pub fn a_failed_run_is_named_test() {
   let failed = [
-    #("A", Report(sessions.Failed, Some("It broke."), [], None, None)),
+    #("A", Report(sessions.Failed, Some("It broke."), [], None, None, 0)),
   ]
   let html = drawn(opened(start(home.OperatorCeiling, failed)))
 
@@ -264,9 +268,9 @@ pub fn a_failed_run_is_named_test() {
 // The quiet sessions are one line of names and are not rows.
 pub fn quiet_sessions_fold_to_one_line_test() {
   let quiet = [
-    #("A", Report(sessions.Idle, None, [], None, None)),
-    #("B", Report(sessions.Idle, None, [], None, None)),
-    #("C", Report(sessions.Working, None, [], None, None)),
+    #("A", Report(sessions.Idle, None, [], None, None, 0)),
+    #("B", Report(sessions.Idle, None, [], None, None, 0)),
+    #("C", Report(sessions.Working, None, [], None, None, 0)),
   ]
   let html = drawn(opened(start(home.OperatorCeiling, quiet)))
 
@@ -281,7 +285,7 @@ pub fn quiet_sessions_fold_to_one_line_test() {
 // With nothing waiting or running the page keeps the list, and an owner
 // with no capability to create sees the old page.
 pub fn nothing_to_read_leaves_the_list_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, [], None, None))]
+  let quiet = [#("A", Report(sessions.Idle, None, [], None, None, 0))]
   let html = drawn(opened(start(home.OperatorCeiling, quiet)))
 
   assert !string.contains(html, "<h1>Inbox</h1>")
@@ -618,14 +622,13 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   let landed = drawn(model)
   assert string.contains(landed, "<h1>Inbox</h1>")
   assert !string.contains(landed, "home-new home-inbox")
-  assert !string.contains(landed, "Back to the inbox")
 
   let listed = run(model, home.ShowingList)
   assert string.contains(drawn(listed), "home-new home-inbox")
   assert !string.contains(drawn(listed), "<h1>Inbox</h1>")
 
   let composing = run(model, home.ShowingNew)
-  assert string.contains(drawn(composing), "Back to the inbox")
+  assert string.contains(drawn(composing), "class=\"folder need\"")
 
   // The control returns to the inbox from either, and the selection kept.
   let pressed = run(model, home.InboxOpened("C"))
@@ -637,6 +640,41 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   )
   let back = run(run(pressed, home.ShowingNew), home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
+}
+
+// The rail draws the inbox's folders whatever the centre is, so the composer and
+// the list have the inbox one press away, and no folder is marked while the
+// inbox is not on screen. A folder's press brings the inbox back with that
+// folder chosen, and the selection the person made is kept.
+pub fn the_rail_folders_lead_back_to_the_inbox_from_any_centre_test() {
+  let model = opened(creating())
+  let composing = run(model, home.ShowingNew)
+  let listed = run(model, home.ShowingList)
+
+  // Both centres draw the folders, and neither marks one as the list's filter.
+  assert string.contains(drawn(composing), "rail-folders")
+  assert string.contains(drawn(listed), "rail-folders")
+  assert !string.contains(
+    drawn(composing),
+    "aria-pressed=\"true\" class=\"folder\"",
+  )
+  assert !string.contains(drawn(composing), "<h1>Inbox</h1>")
+
+  // A press from the composer, and from the list, lands on the inbox.
+  let pressed = run(model, home.InboxOpened("C"))
+  let from_form =
+    run(run(pressed, home.ShowingNew), home.FolderPicked(inbox_rule.Everything))
+  assert string.contains(drawn(from_form), "<h1>Inbox</h1>")
+  assert string.contains(
+    drawn(from_form),
+    "<span class=\"inbox-name\">docs sweep</span>",
+  )
+  let from_list =
+    run(
+      run(pressed, home.ShowingList),
+      home.FolderPicked(inbox_rule.Everything),
+    )
+  assert string.contains(drawn(from_list), "<h1>Inbox</h1>")
 }
 
 // The control is a click beneath the table's region, which every home's socket
@@ -663,7 +701,14 @@ pub fn the_default_thread_is_sticky_test() {
   let only_working = [
     #(
       "C",
-      Report(sessions.Working, None, [Glance("s2", "", "reading")], None, None),
+      Report(
+        sessions.Working,
+        None,
+        [Glance("s2", "", "reading")],
+        None,
+        None,
+        0,
+      ),
     ),
   ]
   let model = opened(start(home.OperatorCeiling, only_working))
@@ -711,7 +756,7 @@ pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
   let later = run(listed, home.Observed(reports()))
 
   assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Back to the inbox")
+  assert string.contains(drawn(later), "class=\"folder need\"")
 }
 
 // A kept report is drawn for its thread but is not counted as read: the
@@ -820,7 +865,7 @@ fn saved_only() -> List(Entry) {
 // landed on the composer keeps it when a session starts working later, and
 // offers the "Inbox" control, which is the way back.
 pub fn a_session_starting_later_does_not_change_the_centre_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, [], None, None))]
+  let quiet = [#("A", Report(sessions.Idle, None, [], None, None, 0))]
   let model =
     opened(
       home.Start(
@@ -830,9 +875,10 @@ pub fn a_session_starting_later_does_not_change_the_centre_test() {
     )
   assert !string.contains(drawn(model), "<h1>Inbox</h1>")
 
+  assert !string.contains(drawn(model), "class=\"folder need\"")
   let later = run(model, home.Observed(reports()))
   assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Back to the inbox")
+  assert string.contains(drawn(later), "class=\"folder need\"")
 
   let back = run(later, home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
@@ -851,7 +897,7 @@ pub fn a_missed_read_does_not_change_the_centre_test() {
     "<span class=\"inbox-name\">vetting lint</span>",
   )
 
-  let quiet = [#("A", Report(sessions.Idle, None, [], None, None))]
+  let quiet = [#("A", Report(sessions.Idle, None, [], None, None, 0))]
   let calm = run(model, home.Observed(quiet))
   assert string.contains(drawn(calm), "<h1>Inbox</h1>")
 }
@@ -894,7 +940,6 @@ pub fn the_inbox_control_follows_the_threads_test() {
         create: Some(fn(_, _, _, _, _, _, _) { Nil }),
       ),
     )
-  assert !string.contains(drawn(empty), "Back to the inbox")
   assert !string.contains(drawn(run(empty, home.ShowingList)), "‹ Inbox")
 }
 

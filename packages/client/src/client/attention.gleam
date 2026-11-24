@@ -66,6 +66,7 @@
 //// bound has room.
 
 import core/attention
+import core/attention_dismissal.{type Dismissal}
 import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import gleam/bool
@@ -214,10 +215,7 @@ pub fn summarize(
 ) -> AttentionSummary {
   let pending =
     list.count(escalations, fn(record) { record.status == escalation.Pending })
-  let owner_asks =
-    list.filter(asks, fn(ask) {
-      ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
-    })
+  let owner_asks = open_owner_asks(asks)
   let open_finds =
     list.filter(finds, fn(find) { find.state == attention.FindOpen })
   let times =
@@ -232,6 +230,22 @@ pub fn summarize(
     oldest_open_at: list.reduce(times, int.min) |> option.from_result,
     updated_at: now,
   )
+}
+
+/// The asks that wait on the owner: open, and routed to the owner. An ask
+/// routed to a strand needs no person, so it is not counted here. The attention
+/// summary and the `asks` count of `sessions.activity` (protocol-change/050,
+/// the addendum on open asks) both read it, so the two cannot disagree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.open_owner_asks([]) == []
+/// ```
+pub fn open_owner_asks(asks: List(attention.Ask)) -> List(attention.Ask) {
+  list.filter(asks, fn(ask) {
+    ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
+  })
 }
 
 /// Where a record stands for the purposes of the bound and of pruning.
@@ -368,6 +382,92 @@ pub fn finds(runtime: api.Runtime) -> Result(List(attention.Find), String) {
   list.filter_map(cells, fn(cell) {
     attention.decode_find(cell.1) |> result.replace_error(Nil)
   })
+}
+
+// --- stuck strand dismissals (protocol-change/131) ---------------------------
+
+/// Why a dismissal was not written.
+pub type DismissFault {
+  /// The strand's cell moved between the read and the write, so another
+  /// dismissal of the same strand got there first.
+  DismissalMoved
+
+  /// The store could not be used, and why.
+  DismissalFailed(reason: String)
+}
+
+/// Reads every dismissal in the session, leaving out a cell that does not
+/// decode, as `asks` leaves out a damaged ask. A damaged cell covers nothing, so
+/// the strand it was written for is listed again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.dismissals(runtime)
+/// ```
+pub fn dismissals(runtime: api.Runtime) -> Result(List(Dismissal), String) {
+  // The prefix is the dismissals' own, so no guard cell shares it.
+  use cells <- result.map(
+    api.reserved_facts(runtime, prefix: attention_dismissal.prefix)
+    |> result.map_error(string.inspect),
+  )
+  list.filter_map(cells, fn(cell) {
+    attention_dismissal.decode(cell.1) |> result.replace_error(Nil)
+  })
+}
+
+/// Records a dismissal in the strand's own cell, replacing an earlier one.
+///
+/// A cell that already holds this strand and this failed operation is left as
+/// it is and the call succeeds, so a second press changes nothing and does not
+/// move the time or the person. The write is guarded by the sequence number read
+/// here, so two dismissals of one strand cannot both write over a third.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.record_dismissal(runtime, dismissal)
+/// ```
+pub fn record_dismissal(
+  runtime: api.Runtime,
+  dismissal: Dismissal,
+) -> Result(Nil, DismissFault) {
+  let key = attention_dismissal.key(dismissal.strand)
+  use cell <- result.try(
+    api.fact_cell(runtime, key)
+    |> result.map_error(fn(error) { DismissalFailed(string.inspect(error)) }),
+  )
+
+  // A cell that already acknowledges this failure is the answer to the repeat.
+  let already = case cell {
+    Some(found) ->
+      case attention_dismissal.decode(found.value) {
+        Ok(held) ->
+          attention_dismissal.covers(
+            [held],
+            dismissal.strand,
+            dismissal.operation,
+          )
+        Error(_) -> False
+      }
+    None -> False
+  }
+
+  use <- bool.guard(when: already, return: Ok(Nil))
+
+  // The write names the sequence it read, so a lost race writes nothing.
+  case
+    api.put_reserved_fact_expecting(
+      runtime,
+      key,
+      attention_dismissal.encode(dismissal),
+      expected: option.map(cell, fn(found) { found.seq }),
+    )
+  {
+    Ok(_) -> Ok(Nil)
+    Error(api.RaceLost) -> Error(DismissalMoved)
+    Error(error) -> Error(DismissalFailed(string.inspect(error)))
+  }
 }
 
 // --- reading and settling --------------------------------------------------

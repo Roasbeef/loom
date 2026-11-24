@@ -10,13 +10,17 @@
 ////    last-result listing, one listing each, so a row costs a fixed number of
 ////    store calls whatever the session holds.
 //// 2. `stuck_strands` names the strands that stopped on a failed run and were
-////    not run again, with what the failure entry and the lineage ledger say
-////    about each (`Evidence`). `row_of` reduces the three kinds to counts and
-////    short items.
+////    not run again and whose failure the owner has not dismissed, with what
+////    the failure entry and the lineage ledger say about each (`Evidence`).
+////    `row_of` reduces the three kinds to counts and short items.
 //// 3. `shed` removes items until the encoded row fits the row bound, and
 ////    `encode` words it. A count is never reduced.
 //// 4. `record_json` words one record for `attention.read`, from the typed
 ////    record, with the revision and whether the caller may act on it.
+//// 5. `dismiss_stuck` is the one write this module makes
+////    (protocol-change/131): it checks that a strand is still stuck at the
+////    operation the caller read and records the owner's dismissal, which
+////    `stuck_strands` then honours.
 ////
 //// ## Why only identities and heads
 ////
@@ -35,12 +39,15 @@
 
 import client/attention as store
 import core/attention.{type Ask, type Find}
+import core/attention_dismissal.{type Dismissal, Dismissal}
+import core/clock.{type Clock}
 import core/entry.{type Entry}
 import core/glance
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message
 import core/register
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -78,7 +85,7 @@ const strand_bytes = 96
 
 /// The most items a section holds before shedding. A session holds at most 32
 /// asks and 128 finds, and no row has room for that many, so the lists are cut
-/// here first and the shedding loop re-encodes a short list.
+/// here first to bound the work of fitting the row.
 const item_cap = 40
 
 /// The longest path a row carries, in bytes. A longer one is left out with its
@@ -141,6 +148,11 @@ pub type Stuck {
     /// The strand that spawned this one, from the lineage ledger and cut to
     /// `strand_bytes`. Absent for a strand with no ledger cell.
     parent: Option(String),
+    /// The operation of the failed run, in canonical UUID text: the identity of
+    /// the failure. A page names it when it dismisses the strand
+    /// (protocol-change/131), so the daemon can tell the failure the owner saw
+    /// from one that happened since.
+    operation: String,
   )
 }
 
@@ -218,15 +230,16 @@ pub fn feed(runtime: api.Runtime) -> Result(JsonValue, String) {
   use asks <- result.try(store.asks(runtime))
   use finds <- result.try(store.finds(runtime))
   use states <- result.try(strand_states(runtime))
-  use results <- result.map(last_results(runtime))
+  use results <- result.try(last_results(runtime))
+  use dismissals <- result.map(store.dismissals(runtime))
 
   // The evidence only adds a time, a hint and a parent to a stuck item. A read of
   // it that fails must not cost the row its asks, finds and stuck strands, so the
   // items are listed without it.
   let evidence =
-    evidence_for(runtime, states, results)
+    evidence_for(runtime, states, results, dismissals)
     |> result.lazy_unwrap(fn() { no_evidence() })
-  row_of(asks, finds, stuck_strands(states, results, evidence))
+  row_of(asks, finds, stuck_strands(states, results, evidence, dismissals))
   |> shed
   |> encode
 }
@@ -241,10 +254,7 @@ pub fn feed(runtime: api.Runtime) -> Result(JsonValue, String) {
 /// assert attention_feed.row_of([], [], []).asks.count == 0
 /// ```
 pub fn row_of(asks: List(Ask), finds: List(Find), stuck: List(Stuck)) -> Row {
-  let owed =
-    list.filter(asks, fn(ask) {
-      ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
-    })
+  let owed = store.open_owner_asks(asks)
   let open = list.filter(finds, fn(find) { find.state == attention.FindOpen })
   Row(
     waiting_since: oldest(list.map(owed, fn(ask) { ask.header.created_at })),
@@ -334,22 +344,32 @@ fn find_item(find: Find) -> FindItem {
 /// on its strand, so "not run again" holds by construction: a later run,
 /// compaction or navigation takes the strand out of the set.
 ///
+/// A strand whose failed run the owner dismissed is left out as well
+/// (protocol-change/131). The dismissal names the failed run's operation, so a
+/// strand that failed again is a new failure and is listed again.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// assert attention_feed.stuck_strands([], [], attention_feed.no_evidence()) == []
+/// assert attention_feed.stuck_strands([], [], attention_feed.no_evidence(), []) == []
 /// ```
 pub fn stuck_strands(
   states: List(#(String, Option(OpId))),
   results: List(#(String, operation.LastResult)),
   evidence: Evidence,
+  dismissals: List(Dismissal),
 ) -> List(Stuck) {
   list.filter_map(results, fn(entry) {
     let #(strand, last) = entry
-    use failure <- result.map(failed_without_retry(strand, last, states))
-    let #(error, leaf) = failure
+    use failure <- result.try(failed_without_retry(strand, last, states))
+    let #(error, leaf, failed_run) = failure
+    let failed_run = ids.op_id_to_string(failed_run)
+    use <- bool.guard(
+      when: attention_dismissal.covers(dismissals, strand, failed_run),
+      return: Error(Nil),
+    )
     let #(failed_at, retry_after_ms) = failure_entry(evidence, leaf)
-    Stuck(
+    Ok(Stuck(
       strand: glance.clip(strand, strand_bytes),
       failed_at:,
       reason: reason_word(error.code),
@@ -357,7 +377,87 @@ pub fn stuck_strands(
       parent: dict.get(evidence.parents, strand)
         |> result.map(glance.clip(_, strand_bytes))
         |> option.from_result,
-    )
+      operation: failed_run,
+    ))
+  })
+}
+
+/// Why a strand's failure was not dismissed.
+pub type DismissFault {
+  /// The session has no strand of that name with a failed run to dismiss: the
+  /// name is unknown, or it is `main` or the advisor's, whose failures the feed
+  /// never lists.
+  UnknownStrand
+
+  /// The strand is no longer stuck at that operation: it ran since, or failed
+  /// again, so the failure the caller read is not the one the strand holds.
+  StaleFailure
+
+  /// The cell moved between the read and the write.
+  DismissalLost
+
+  /// The store could not be read or written, and why.
+  DismissalUnavailable(reason: String)
+}
+
+/// Dismisses a stuck strand's failure on behalf of `by`: the strand must be
+/// stuck by the rule of `stuck_strands`, with the failed run's operation the
+/// caller names, and the dismissal is then written to its cell
+/// (protocol-change/131).
+///
+/// A strand that is not in the session's last results is unknown. One that is
+/// there but is not stuck, or is stuck at another operation, is stale: the
+/// caller saw a failure the strand no longer holds. A failure that is already
+/// dismissed succeeds and writes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_feed.dismiss_stuck(runtime, time, "sub:main/a", "0194...", "owner")
+/// ```
+pub fn dismiss_stuck(
+  runtime: api.Runtime,
+  time: Clock,
+  strand: String,
+  failed_run: String,
+  by: String,
+) -> Result(Nil, DismissFault) {
+  use states <- result.try(
+    strand_states(runtime) |> result.map_error(DismissalUnavailable),
+  )
+  use results <- result.try(
+    last_results(runtime) |> result.map_error(DismissalUnavailable),
+  )
+  use last <- result.try(
+    list.key_find(results, strand) |> result.replace_error(UnknownStrand),
+  )
+
+  // `main` and the advisor are never stuck, so they have nothing to dismiss.
+  use <- bool.guard(
+    when: strand == primary_strand || strand == advisor_strand,
+    return: Error(UnknownStrand),
+  )
+
+  // The failure the caller read must still be the strand's own.
+  use held <- result.try(
+    failed_without_retry(strand, last, states)
+    |> result.replace_error(StaleFailure),
+  )
+  use <- bool.guard(
+    when: ids.op_id_to_string(held.2) != failed_run,
+    return: Error(StaleFailure),
+  )
+
+  let #(now, _) = clock.read(time)
+  store.record_dismissal(
+    runtime,
+    Dismissal(strand:, operation: failed_run, at: now, by:),
+  )
+  |> result.map_error(fn(fault) {
+    case fault {
+      store.DismissalMoved -> DismissalLost
+      store.DismissalFailed(reason:) -> DismissalUnavailable(reason)
+    }
   })
 }
 
@@ -419,12 +519,12 @@ fn retry_after(diagnostics: Option(JsonValue)) -> Option(Int) {
 }
 
 /// For a strand whose last result is a failed run and that is neither `main`,
-/// the advisor nor running, the run's error and its leaf entry.
+/// the advisor nor running, the run's error, its leaf entry and its operation.
 fn failed_without_retry(
   strand: String,
   last: operation.LastResult,
   states: List(#(String, Option(OpId))),
-) -> Result(#(operation.OperationError, Option(EntryId)), Nil) {
+) -> Result(#(operation.OperationError, Option(EntryId), OpId), Nil) {
   // A strand that is running has moved past its last failure.
   let running = case list.key_find(states, strand) {
     Ok(Some(_)) -> True
@@ -434,8 +534,13 @@ fn failed_without_retry(
   // Only a failed run of an idle strand is stuck; no other result is.
   case strand == primary_strand || strand == advisor_strand || running, last {
     False,
-      operation.RunLastResult(outcome: operation.RunFailed(error:), leaf:, ..)
-    -> Ok(#(error, leaf))
+      operation.RunLastResult(
+        operation: failed_run,
+        outcome: operation.RunFailed(error:),
+        leaf:,
+        ..,
+      )
+    -> Ok(#(error, leaf, failed_run))
     True, _
     | False, operation.RunLastResult(..)
     | False, operation.CompactionLastResult(..)
@@ -451,8 +556,9 @@ fn evidence_for(
   runtime: api.Runtime,
   states: List(#(String, Option(OpId))),
   results: List(#(String, operation.LastResult)),
+  dismissals: List(Dismissal),
 ) -> Result(Evidence, String) {
-  case stuck_strands(states, results, no_evidence()) {
+  case stuck_strands(states, results, no_evidence(), dismissals) {
     [] -> Ok(no_evidence())
     [_, ..] -> read_evidence(runtime, results)
   }
@@ -545,44 +651,73 @@ pub fn last_results(
 /// assert attention_feed.shed(row) == row
 /// ```
 pub fn shed(row: Row) -> Row {
-  case string.byte_size(json.to_string(encode(row))) <= row_bytes {
-    True -> row
-    False ->
-      case without_oldest(row) {
-        Ok(smaller) -> shed(smaller)
-        Error(Nil) -> row
+  // A sparse row usually fits after one serialization. Cap this preliminary
+  // work at three items so a crowded row goes straight to prefix sizing.
+  let sparse =
+    list.length(row.asks.items)
+    + list.length(row.stuck.items)
+    + list.length(row.finds.items)
+    <= 3
+  use <- bool.lazy_guard(sparse, fn() {
+    case string.byte_size(json.to_string(encode(row))) <= row_bytes {
+      True -> row
+      False -> fit_row(row)
+    }
+  })
+  fit_row(row)
+}
+
+/// Fits a crowded row using its empty envelope and the retained prefixes.
+fn fit_row(row: Row) -> Row {
+  let empty =
+    Row(
+      ..row,
+      asks: Section(..row.asks, items: []),
+      finds: Section(..row.finds, items: []),
+      stuck: Section(..row.stuck, items: []),
+    )
+  let budget = row_bytes - string.byte_size(json.to_string(encode(empty)))
+
+  // Taking the newest prefix of each section in reverse eviction order
+  // leaves the same row as dropping old finds, then stuck items, then asks.
+  let #(asks, budget) = fit_items(row.asks.items, budget, ask_json)
+  let #(stuck, budget) = fit_items(row.stuck.items, budget, stuck_json)
+  let #(finds, _) = fit_items(row.finds.items, budget, find_json)
+  Row(
+    ..empty,
+    asks: Section(..empty.asks, items: asks),
+    finds: Section(..empty.finds, items: finds),
+    stuck: Section(..empty.stuck, items: stuck),
+  )
+}
+
+/// Fits a section prefix with exact item bytes and inter-item commas.
+/// A negative remainder closes the budget to every lower-priority section.
+fn fit_items(
+  items: List(item),
+  budget: Int,
+  encode_item: fn(item) -> JsonValue,
+) -> #(List(item), Int) {
+  let #(kept, remaining) =
+    list.fold_until(items, #([], budget), fn(acc, item) {
+      let #(kept, remaining) = acc
+      use <- bool.guard(remaining < 0, list.Stop(acc))
+
+      // The empty-row envelope already accounts for both array delimiters.
+      let comma = case kept {
+        [] -> 0
+        [_, ..] -> 1
       }
-  }
-}
 
-/// The row with its next item gone, or nothing when it holds none.
-fn without_oldest(row: Row) -> Result(Row, Nil) {
-  case row.finds.items, row.stuck.items, row.asks.items {
-    [_, ..], _, _ ->
-      Ok(
-        Row(
-          ..row,
-          finds: Section(..row.finds, items: drop_last(row.finds.items)),
-        ),
-      )
-    [], [_, ..], _ ->
-      Ok(
-        Row(
-          ..row,
-          stuck: Section(..row.stuck, items: drop_last(row.stuck.items)),
-        ),
-      )
-    [], [], [_, ..] ->
-      Ok(
-        Row(..row, asks: Section(..row.asks, items: drop_last(row.asks.items))),
-      )
-    [], [], [] -> Error(Nil)
-  }
-}
+      let cost = string.byte_size(json.to_string(encode_item(item))) + comma
 
-/// A list without its last item, which is the oldest in a newest-first list.
-fn drop_last(items: List(item)) -> List(item) {
-  list.take(items, list.length(items) - 1)
+      // A skipped item would leave a hole in the newest prefix.
+      case cost <= remaining {
+        True -> list.Continue(#([item, ..kept], remaining - cost))
+        False -> list.Stop(#(kept, -1))
+      }
+    })
+  #(list.reverse(kept), remaining)
 }
 
 /// The row as the reply carries it, without the session identity the daemon
@@ -663,6 +798,7 @@ fn stuck_json(item: Stuck) -> JsonValue {
       [
         #("strand", json.String(item.strand)),
         #("reason", json.String(item.reason)),
+        #("operation", json.String(item.operation)),
       ],
       optional_int("failed_at", item.failed_at),
       optional_int("retry_after_ms", item.retry_after_ms),

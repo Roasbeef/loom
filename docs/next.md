@@ -1,124 +1,269 @@
 # Current handoff
 
-The web view and desktop section is written on November 23 against `main` at
-`c07f6af67` plus `web/live-fixes`. The project mode section was last updated
+The web view and desktop sections were written on November 23 against `main`
+at `d0a8d99d0`, and on November 24 against `0e4f6b3e8`, where `make check` and
+`make doc-check` exit 0. The project mode section was last updated
 on November 21. The session hot-path section was re-baselined on November 13
 against source `3e28c16f4`. Other sections retain their upstream baselines;
 this scoped update does not revalidate their hosted CI or live status.
+
+## Checkpoint threshold hook
+
+The [fixed replay](review/checkpoint-threshold-replay-2026-11-23.md) moves the
+threshold hook to the running checkpoint passes that can consume its answer.
+The held-assistant fixture returned the same planner action and used seven
+SQLite queries for reload and plan, down from eight. The running-checkpoint
+case retains its hook and still responds to a crossed threshold.
+
+## Bounded inbox and snapshot read replay
+
+The [fixed replay](review/bounded-read-replay-2026-11-23.md) follows three
+paths from the November 23 profile. Crowded inbox rows fit newest prefixes
+using exact encoded item sizes. Gateway escalations reuse each request's lookup
+keys. Snapshot captures batch admitted payloads inside the existing SQLite
+transaction. The replay preserves complete rows, missing IDs, snapshot cuts
+and corruption faults. It records the measured latency and heap words,
+including the gap between a 114-fold query reduction and a 1.86-fold speedup
+for a complete 1,024-cell cut.
+
+## The web view and the desktop app: the 2026-11-24 batch
+
+This batch took items 1 to 3 and 6 of the November 23 list below, and step 1 of
+the project-mode plan on #1167. Every loom PR here merged on local gates, each
+checked by its own exit code, after a Fable review whose findings were fixed or
+dispositioned on the PR. The gated signoff host was still unreachable.
+
+**What landed in loom.**
+
+- #1368: a steer refused because the parent's next-run queue is full
+  (`NextRunFull`) now says so, instead of "no run open". The 119 addendum
+  counts the 33rd held item and records a gap: an input held after the answer
+  reached the strand and before its record settles waits for the strand's next
+  run start, since settling does not wake the strand. `models.md` counts seven
+  roles, with `router`.
+- #1369: the terminal's ask read rests 15 s when the last read found no open
+  ask (4 s otherwise), repaints when a stale card goes away, and is cancelled at
+  quit. A `code_mode` ask, or a sub-strand's ask while another strand runs, ends
+  no run, so it waits out the 15 s.
+- #1370: 133 `///` blocks in `client/agency.gleam` and `client/advisor.gleam`
+  that an earlier stanza sweep (a458c3931) left in reverse line order read top
+  to bottom again.
+- #1371: the project worker's question is drawn as Markdown, whole. The remote
+  peek stays plain text: protocol-change/090 rules that a remote page is drawn
+  as data, and the peek includes tool output. The Projects popover from the
+  drive did not reproduce; no popover opens on a ticket click.
+- #1372: on a stopped session page, the page's own session leaves the running
+  group, so the count, the group heading and the rows agree; it reads "saved".
+  The stopped notice takes its own row under the title, and the bar's controls
+  stay on the title row.
+- #1374: the admin page's folders go back to the inbox by history
+  (`<loom-back>`). A session page opened from a bare `--session` link keeps its
+  folders as text by design: an operating link grants one session, and giving
+  it the owner's home was rejected (051 addendum, "the way back to the inbox").
+  The facts the `.loom-inbox` frame hid show again; on a phone the role chip
+  shrinks before the session name does.
+- #1373: project settings (step 1 of #1167), rebased from 34 commits to 11. Per
+  project `check`, `setup`, `publish` and the rest are held in the project's
+  ledger and set with `loom project settings|set|unset|init` or the daemon
+  commands `projects.settings`, `projects.set_settings` and `projects.propose`,
+  all owner-only, with no restart. `propose` suggests a check and setup from
+  named files in the repository and runs nothing. A check that finishes under a
+  command the owner has since changed is not taken; the row reruns. Turning
+  publish on by any write must name the URL. The 106 addendum has the shapes and
+  refusals. git-cow ships in the release.
+
+**What is open in loom-desktop.** Slices 3 and 5 of `docs/native-pass.md` are
+built, reviewed and fixed, and held for one foreground UI run, since the screen
+was locked for every run and 29 display-dependent scenarios were blocked:
+
+- #8, slice 3: an Inbox menu (next and previous thread, open session, open in a
+  new window, retry, close find, message session) with Allow and Deny moved
+  into it, still enabled only while an armed approval card is in the focused
+  window; context menus carry only actions that decide nothing, so no retry or
+  close. Inbox threads are deduplicated across daemons.
+- #9, slice 5: notifications for approvals, asks, stuck strands and failed runs
+  only, with agent text labelled untrusted and escaped. A row posts only once
+  its session was on the previous board and, for asks and stuck strands, once
+  the feed had answered for it, so a daemon that connects late does not
+  announce its backlog. Clicking opens the thread and decides nothing.
+
+Merge both after `make uitest-foreground` passes with the screen unlocked; the
+approval-menu scenario was not run on #8's final head. Slice 4 (native controls
+in the reading pane) starts after #8 lands, since both touch the pane.
+`archive_and_delete_ask_first` fails about one run in three on `main` and on
+both branches, at the Stop Session step; it is a timing flake in that scenario.
+
+**Next, in order.**
+
+1. Merge loom-desktop #8 and #9 after a foreground UI run, then slice 4.
+2. Project mode, step 2 of #1167: the web page slice (create a project by
+   picking a workspace, a request composer, the ticket page with the diff, the
+   check output and every action). Fix first: the bundled `erl` on the jail
+   `PATH`, `loom project retry setup` returning `not_found`.
+3. The fidelity pass against `design-notes/attention-inbox/final/mockup.html`,
+   which is still the owner's first ask (below).
+4. Insight triage slice 0 needs about an hour of the owner's time.
+
+**Found in this batch and not done.**
+
+- A session page's sidebar never shows "to review" for other sessions. Home
+  computes it from its own worktree scan (`review_scan_rule.to_review`), which
+  the session page does not run; giving every session page that scan is a new
+  read capability and git reads per page. Decide whether the word is worth it.
+- #1373 leaves three small items: a dropped stale check answer waits out the
+  full deferral before its rerun, and the drop spends a retry attempt
+  (`project_host.gleam`, `check_settled`); `loom project unset publish` cannot
+  name the URL its refusal asks for, so the sentence should name the `set` form.
+- loom-desktop: a session's composer still decides an approval with `/approve`
+  by id prefix with no arming delay, and a card counts as armed while scrolled
+  out of view.
+- Plain text where Markdown may be meant, named by a review and not checked one
+  by one: a ticket's messages and failure line in `projects.gleam`, ask prompts
+  in `attention_thread.gleam`, held messages in `live.gleam`, memory notes.
+- A pushed doorbell for asks would replace the terminal's poll;
+  protocol-change/120 defers it.
 
 ## The web view and the desktop app: what is next (2026-11-23)
 
 The owner's order, also posted on #1167: finish the web view's fidelity to the
 attention-inbox mockup, then the desktop's Mac-native pass, then project mode
-usable from the web.
+usable from the web. The work on the inbox itself is now built and has been
+driven end to end. What is left is a list of fixes, and two pieces that wait on
+the owner.
 
-**Where it is.**
+**Where the tree is.** `main` at `d0a8d99d0` (the merge of #1364). Every PR
+below merged on 2026-11-23. The gated signoff host was unreachable all day, so
+each landed on local gates, checked by exit code, plus a Fable review. Hex API
+rate limits broke a `make check` run twice; that is environmental, and a rerun
+passed.
 
-- The attention inbox is merged: the stack as #1316, then #1308, #1309, #1318
-  and #1322 as the queue #1328. #1330 stops a session that waits on the owner
-  from also folding as quiet. #1331 admits any top-level navigation to
-  `/ui/signin`, so a link opened from another app no longer reads "forbidden
-  navigation". #1332 redesigns the first-run Home.
-- The owner runs a release built from that `main` (installed 2026-11-23,
-  `~/.local/lib/loom/server`).
-- `web/live-fixes` fixes what the owner found on that release: a blocked
-  sidebar row whose notice squeezed its name to nothing and pushed its menu
-  off the column, the stream's strand dot touching the time, and the sidebar
-  that could not be dragged wider (`grip_rule` now has a sidebar side, 180 to
-  480px, default 232px, saved under `loom.sidebar.width.v1`; the column had
-  been 184px on every page, because a later `.loom-inbox` rule overrode the
-  288px base rule).
-- loom-desktop (`Roasbeef/loom-desktop`): #1 to #4 are merged. That covers
-  the inbox port, answering asks, and native slice 1 (one needs-you count on
-  every surface, approvals decided only beside their evidence). Slice 2 (the
-  inbox as an `HSplitView` with one selection) is a single `wip:` commit on
-  `native/split-inbox`. It is not verified: run the full UI suite and a release
-  build, take its captures, split the commit, then open its PR.
-  `docs/native-pass.md` there is the plan, and `docs/next.md` there is its
-  handoff.
+**What landed.**
 
-**Next, in order.**
+- *The inbox, before today.* The stack as #1316, then #1308, #1309, #1318 and
+  #1322 as the queue #1328. #1330 stops a session that waits on the owner from
+  also folding as quiet. #1331 admits any top-level navigation to
+  `/ui/signin`. #1332 redesigns the first-run Home. The live-fixes branch
+  fixed the blocked sidebar row, the strand dot touching the time, and the
+  sidebar width (a `grip_rule` sidebar side, 180 to 480px, default 232px,
+  saved under `loom.sidebar.width.v1`).
+- *Asks.* #1348 draws an open ask as a card above the composer and draws the
+  answer as readable text, not the wire record (protocol-change/130). #1350
+  gives the ask a thread and a rail entry. #1355 holds wakes while an ask is
+  open: they wait in `pending_next_run` (cap 32) and are placed after the
+  answer (an addendum to protocol-change/119). #1357 adds the field hint.
+  #1362 draws the ask card in the terminal (`Alt+a`, `Ctrl+s`), reading asks on
+  its own connection. #1363 shows "asked" for other sessions in the sidebar:
+  open asks are counted on the `sessions.activity` row (an addendum to
+  protocol-change/050). The same PR marks a stopped page's rail out of date and
+  offers "Go back".
+- *Navigation and folders.* #1345 puts the inbox folders on every page that can
+  draw them. #1353 is the folder picker in the web composer
+  (protocol-change/132): the daemon lists directories below the owner's home
+  for the owner's page alone, reads at most 1000 entries (a larger directory is
+  refused, not cut), shows 200 rows, goes 8 levels deep, leaves out hidden names
+  and `~/Library`, and refuses a link that leaves the home. The page sends an
+  index or a depth, never a path, and the chosen folder reaches the daemon as
+  the typed `~/` path that `new_folder.check` judges as before.
+- *Stuck strands and the advisor.* #1351 dismisses a stuck strand
+  (protocol-change/131). #1342 makes the advisor send one verdict per turn
+  (`advise` returns `TerminateRun`). #1343 puts the model name in the stream head
+  and one placement tag on it.
+- *Insights.* #1352 is the insight triage design note. #1358 folds insights
+  into Updates. #1359 adds the top-across-sessions band.
+- *Sidebar timers and quotes.* #1361 wakes the sidebar for its own reads, so
+  its timers stay live. #1364 draws inbox quotes as Markdown (`block_clip`,
+  `markdown_view.quoted`; addenda to protocol-change/125 and 050), and
+  `last_message` now keeps its newlines.
+- *loom-desktop* (`Roasbeef/loom-desktop`): #1 to #4 are the inbox port,
+  answering asks and native slice 1. #6 draws the ask card in the session
+  screen, above the composer. #7 is native slice 2, the inbox as a split view
+  with one selection.
 
-1. **A fidelity pass of the web view against
-   `design-notes/attention-inbox/final/mockup.html`.** The owner's words: 100%
-   fidelity to the mockups, and do not feel attached to the earlier versions.
-   - Method: a fresh daemon built from `main` with seeded sessions in every
-     state (running, idle, needs-you, saved, blocked, failed start, moving,
-     relayed). Capture each page at desktop and phone widths beside the
-     mockup's frames, list every difference, and fix them in slices with
-     before and after captures.
-   - Section 7 of the design note lists the deliberate departures. Re-argue
-     each one against the mockup, not against the code as it stands.
-   - Known differences: the stream's strand dot, which the mockup does not
-     draw (the mockup marks the strand with a `.strand` label); the sidebar's
-     row anatomy and spacing; the composer's chips.
-2. **A folder picker in the web composer.** "Choose a folder…" in the Code
-   list only opens a typed path field, and the owner does not want to type
-   paths. A browser's native file dialog cannot return a path on the daemon's
-   machine, so the picker is drawn in the page and walks the daemon's
-   directories. That needs a protocol change: an owner-only, read-only
-   directory listing below the owner's home, bounded in entries and depth,
-   with no symlink escapes (`host/bootstrap.list_directory_bounded` is the
-   existing bounded reader). The recent folders stay as the list's first
-   section. loom-desktop already has the Finder picker (`NSOpenPanel`).
-3. **The desktop's Mac-native pass**, slices 2 to 5 in loom-desktop's
-   `docs/native-pass.md`.
+**The drive.** A fresh daemon built from `main` at `d0a8d99d0`, with the fake
+model scripted by `scripts/web_seed` (the harness commit on
+`drive/inbox-e2e`). Features a to m all passed. Screenshots are in
+`~/loom-drives/inbox-e2e/` and are not committed.
+
+- a: Home lands on the threads, or on the new-session form when nothing waits.
+- b: an approval thread shows its evidence and is decided from the session's
+  dock.
+- c: an ask with every answer kind; the typed values arrive as typed.
+- d: a notice appears under Finds, in the live rail, and pinned in the review
+  pane.
+- e: the review pane shows worktree hunks; a verdict, a find action and a file
+  comment go out in one Send, with a receipt.
+- f: Queue and Steer from an Update thread; the held input is shown.
+- g: the rail pins asks, approvals and stuck strands, folds insights, and jumps
+  to the stream row.
+- h: a stuck delegate's thread retries.
+- i: a project ticket at `person/answer` has a thread with Answer, Close and
+  Stop. A second drive reached `person/check` (now drawn raw) and pressed Retry
+  on a ticket whose worker was stopped, which started a new worker.
+- j: ask and notice work from a `code_mode` program.
+- k: a restart keeps a pending approval counted.
+- l: the phone viewport shows the inbox and the live sheet.
+- m: an observer sees the threads and has no controls.
+
+The drive checked behaviour, not pixels. The comparison against
+`design-notes/attention-inbox/final/mockup.html` at desktop and phone widths
+has not been repeated since these PRs, so the fidelity pass below is still
+open. The one thing seen and not confirmed: the Projects folder popover may
+stay drawn after a ticket thread is clicked.
+
+**Next, in order.** Items 1 to 3 are done or held as the November 24 batch
+above records; items 4 and 5 carry over to its list.
+
+1. **Desktop native slices 3 to 5** (`docs/native-pass.md` in loom-desktop).
+   Slice 3 is the quote's dashed border. Check the detail and digest views in
+   `Attention.swift` now that `last_message` can hold newlines. Slice 2 is
+   merged (#7).
+2. **Web fixes the drive found**, each a small PR.
+   - A session page's sidebar never shows "to review" for other sessions:
+     `component.gleam` passes `NothingToRead` on every row.
+   - The stopped notice overlaps the top bar's chips, and "N running" stays
+     stale on a stopped page.
+   - Flat text where Markdown is expected: the project worker's question
+     (`projects.gleam`) and the remote's said text (`peek.gleam`).
+   - The Projects popover that may stay open after a ticket click.
+   - The admin page and a session page opened from a bare link cannot get back
+     to the inbox, because neither can mint a home ticket. Their folders are
+     still text.
+   - Facts that the `.loom-inbox` CSS hides: `tag-code` on the admin page,
+     the state headings, the session subtitle, and the role chip on a phone.
+3. **Terminal asks.**
+   - Poll less often when no ask is open: each attached terminal reconnects
+     every 4 s.
+   - Repaint when `ask_control` sees a session mismatch.
+   - Cancel the Asks job at quit.
+   - Watch `tui_e2e_test.the_real_tui_drives_the_real_server`. It failed once
+     under full load and passed alone. Write the log to a file before a rerun.
 4. **Project mode usable from the web** (the project mode section below, and
    the 2026-11-21 plan on #1167).
+5. **Insight triage, slice 0.** `design-notes/insight-triage.md` proposes a
+   `triage` role: a cheap model that labels the rows the attention classifier
+   lifted with a weight and a reason, drawn as the model's opinion. Slice 0 is
+   an offline ordering test on 30 past sessions and needs about an hour of the
+   owner's time. It gates any triage code, and the note ends with eight
+   questions for the owner. Nothing is built.
 
-**An open ask was missed on a session's page (2026-11-23).** An agent
-called `ask` and the daemon recorded it (`catalogue_session_attention` showed
-`open_asks = 1`), but the owner, reading the session's transcript in the
-desktop app, saw no question. They typed "continue", and the agent took that
-as no answer and went ahead on its recommended option. An open ask must be
-visible and answerable where the owner is reading: in the stream as the
-mockup's tinted `lifted · Ask` row and beside the composer, not only in the
-inbox and the rail. In loom-desktop today an ask is drawn only as an Inbox
-thread and in the Inspector's lifted rail, which starts hidden (⌥⌘I);
-`ComposerStack` in `App/Sources/SessionScreen.swift` draws approval cards above
-the composer but never an ask. Give an ask the same place, with its answer
-form (`AskAnswer.swift`). In the web view, check the session page with the
-rail closed and at phone width.
+**The fidelity pass is still the owner's first ask.** Their words: 100%
+fidelity to the mockups, and do not feel attached to the earlier versions. The
+method is a fresh daemon with sessions seeded in every state (running, idle,
+needs-you, saved, blocked, failed start, moving, relayed), each page captured
+at desktop and phone widths beside the mockup's frames, every difference
+listed, and fixes in slices with before and after captures. The seed now
+covers most of those states. Section 7 of the design note lists the deliberate
+departures; argue each against the mockup, not against the code. The owner's
+list from the 2026-11-23 release, as the PRs above answer it:
 
-**What the owner found on the release, 2026-11-23, in their words where it
-matters.** The owner's verdict: "the site really needs a lot of work". Every
-item here is for the fidelity pass, in both clients where it applies.
-
-- *Navigation.* The New session page's sidebar has no Inbox entry; the only
-  way back is the small "Back to the inbox" link at the top right. A session's
-  page has the inbox's folders ("Everything, by need", "Needs you" and the
-  rest) and the New session page does not. The inbox should be one click from
-  every page, in the same place.
-- *The sidebar.* Blocked rows lost their names and pushed their menu off the
-  column (fixed in `web/live-fixes`). A lone "box not reachable" line sits
-  under the saved rows with no row of its own. Saved rows show only
-  "laptop" as their second line. The sidebar could not be widened (fixed: it
-  now drags, default 232px). Re-check the whole column against the mockup.
-- *The ask thread on Home.*
-  - The question is drawn twice: once as the truncated title ("…so the site
-    shows the gap state? N…") and once in bold above its card, sitting outside
-    the card's border.
-  - An option's description sits beside its label for one option and under it
-    for the others.
-  - "Other" is a radio and a separate text field.
-  - The agent's message has a dashed border, which the house rules forbid.
-  - Section headers are tracked capitals. "Message pull the lastest version of
-    the repo -- where are we in teh" puts the session's whole first prompt in
-    a capitalised header.
-  - The verdict buttons, the stage buttons and Open session are three button
-    styles in one pane.
-- *An answer is delivered as raw JSON.* After the owner answered, the session's
-  transcript showed a user message "Answer to ask-b0244f75fb:" followed by a
-  fenced `json` block: `{"ask":…,"answers":{"q1":null},"other":{"q1":"already
-  answered"}}`. Both clients must draw an answer as the question and the option
-  chosen (or the Other text), never the wire record. Check where the delivery
-  text is built in the daemon (the answer's delivery into the session,
-  protocol-change/120) as well as how each client draws it. The model should
-  still receive what it needs.
-- *An ask the owner could not see* (above).
-- *The stream.* The strand dot sat on the time (moved in `web/live-fixes`); the
-  mockup draws no dot at all.
-- *Folder choice.* Only a typed path; see item 2 under "Next".
+- Navigation, the ask card above the composer, the answer shown as JSON, the
+  folder choice, the sidebar's width and blocked rows, and the stream's strand
+  dot: fixed by #1345, #1348, #1353 and the live-fixes branch. Confirm each on
+  the owner's next release; the drive covered the behaviour, not the layout.
+- The ask thread's layout (the question drawn twice, an option's description
+  placed inconsistently, "Other" as a radio beside a field, tracked capital
+  headers, three button styles in one pane) was the subject of #1348 and #1350.
+  No capture has compared the result with the mockup, so treat it as open.
 
 **Smaller follow-ups the owner's passkey test raised.**
 
@@ -361,7 +506,7 @@ callers but does not force the original check-to-monitor scheduling window.
 The work to make it first class (#1167, with #1168 for its GitHub controls on
 the page) is paused by the owner. Three stacked branches are pushed and
 unreviewed: `project/warm-template`, `project/visible-failures` and
-`project/project-settings`. The attention-inbox section above leaves open
+`project/project-settings`. The attention-inbox design note (section 3, question 6) leaves open
 whether to take the pure half of `visible-failures` or merge `warm-template`
 first. The bullets that follow describe #1164 as
 it landed.

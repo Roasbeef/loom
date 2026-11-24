@@ -62,3 +62,24 @@ pub fn a_refused_or_missing_read_shows_nothing_test() {
   assert brief_rule.shown(Some(session_brief.Unseen("no")), Some(1), Some(1))
     == None
 }
+
+fn said_at(at: Int) -> session_brief.Brief {
+  Brief(
+    ..brief(),
+    assistant: Some(session_brief.Assistant(
+      text: session_brief.untrusted("Done."),
+      at:,
+    )),
+  )
+}
+
+// A brief is current when its message is not older than the overview's last
+// finished one, and a brief with no message is never current.
+pub fn a_brief_older_than_the_last_finished_message_is_not_current_test() {
+  assert brief_rule.current(said_at(10), Some(10))
+  assert brief_rule.current(said_at(11), Some(10))
+  assert !brief_rule.current(said_at(9), Some(10))
+  assert brief_rule.current(said_at(1), None)
+  assert !brief_rule.current(brief(), Some(10))
+  assert !brief_rule.current(brief(), None)
+}

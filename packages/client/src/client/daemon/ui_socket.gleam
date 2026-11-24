@@ -194,6 +194,7 @@
 import broker/token
 import client/attention as store
 import client/daemon/attention_door
+import client/daemon/folder_listing
 import client/daemon/manager
 import client/daemon/new_folder
 import client/daemon/project_start
@@ -261,6 +262,7 @@ import web_view/component
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
+import web_view/folder_browse
 import web_view/grants
 import web_view/home
 import web_view/invites
@@ -385,9 +387,9 @@ type Phase {
 /// already holds, so it too reads nothing and sends nothing (the addendum to
 /// protocol-change/070 on messages), and is admitted at its two exact paths.
 /// A sixth is `component.rail_click`, the live rail's insight press, at exactly
-/// the shape that predicate names, where each handler is an unopened insight's
-/// button and its message asks the page to
-/// draw that insight folded from then on: a key the server drew into the
+/// the shape that predicate names, where each handler is an insight's
+/// button, whole or folded, and its message asks the page to
+/// draw that insight folded, or whole again if it is folded: a key the server drew into the
 /// handler, so the frame cannot name one, and a change of what the page
 /// draws that reads and sends nothing (the addendum to protocol-change/051 on
 /// the live rail). The buttons beneath a stuck strand's or a find's card on that
@@ -1048,6 +1050,19 @@ pub fn upgrade_home(
             |> close_outcome
           })
         },
+        dismiss_stuck: fn(session, strand, operation, deliver) {
+          read_task(deliver, fn() {
+            dismiss_stuck_for(
+              standing,
+              open,
+              attachment.attention_reach.endpoint,
+              session,
+              strand,
+              operation,
+            )
+            |> dismiss_outcome
+          })
+        },
         strand: fn(session, strand, text, delivery, deliver) {
           thread_send_within(
             fn() {
@@ -1145,6 +1160,16 @@ pub fn upgrade_home(
               Error(_) -> []
             }
           })
+        },
+        // The folder picker's directory listing (protocol-change/132) is a read
+        // of the filesystem, so it runs in a task of its own like the reads
+        // above and never in the page's runtime.
+        browse: fn(trail, deliver) {
+          browse_within(
+            fn() { browse_for(standing, open, new_folder.home, trail) },
+            browse_ms,
+            deliver,
+          )
         },
       ),
     )
@@ -1647,7 +1672,7 @@ fn admit_live(
       },
       activity: session_activity_for(
         role,
-        server.states_of(attachment.activity),
+        server.watches_of(attachment.activity),
       ),
       open: fn(session) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
@@ -2325,6 +2350,41 @@ pub fn close_find_for(
   }
 }
 
+/// Dismisses a stuck strand's failure from a home page, or says why not
+/// (protocol-change/131), under the standing check of `close_find_for`: only the
+/// owner's operating page is admitted, and the door reads the caller's authority
+/// again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.dismiss_stuck_for(standing, open, endpoint, session, "sub:main/a", "0194f7b2-...")
+/// ```
+@internal
+pub fn dismiss_stuck_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  session: String,
+  strand: String,
+  operation: String,
+) -> Result(Nil, attention_door.Refusal) {
+  case authorized_owner(standing, open) {
+    Error(_) ->
+      Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+    Ok(_) ->
+      attention_door.dismiss_stuck(
+        reach_of(standing, endpoint),
+        session,
+        strand,
+        operation,
+      )
+  }
+}
+
 /// The door's reach for a page: the registry and credential are the page's
 /// standing and nothing else, so a pair that disagrees cannot be built. Only
 /// the resident's peer endpoint comes from outside, since the standing does
@@ -2552,6 +2612,23 @@ pub fn close_outcome(
   }
 }
 
+/// What the door's dismissal says to the page, in fixed words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.dismiss_outcome(Ok(Nil)) == home.Succeeded("Dismissed.")
+/// ```
+@internal
+pub fn dismiss_outcome(
+  result: Result(Nil, attention_door.Refusal),
+) -> home.ActOutcome {
+  case result {
+    Ok(Nil) -> home.Succeeded("Dismissed.")
+    Error(refusal) -> home.Failed("Not dismissed: " <> refusal.words)
+  }
+}
+
 /// The row a session's own page reads for its rail: the feed row of the one
 /// session, or fixed words when the daemon had none for it.
 ///
@@ -2636,6 +2713,35 @@ pub fn page_close_for(
     Error(_) ->
       Error(attention_door.Refusal("forbidden", "this page cannot close a find"))
     Ok(_) -> attention_door.close_find(reach, session, find, revision, closure)
+  }
+}
+
+/// Dismisses a stuck strand's failure from a session's own page, or says why
+/// not (protocol-change/131). The page must still be open, and the door reads the
+/// caller's authority from the registry, so only the owner and an Operator
+/// member dismiss one. The strand is the session's own: the page names no
+/// session, so a strand of another session cannot be reached from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_dismiss_for(reach, open, session, "sub:main/a", "0194f7b2-...")
+/// ```
+@internal
+pub fn page_dismiss_for(
+  reach: attention_door.Reach(instance),
+  open: fn() -> Result(Int, Nil),
+  session: String,
+  strand: String,
+  operation: String,
+) -> Result(Nil, attention_door.Refusal) {
+  case open() {
+    Error(_) ->
+      Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+    Ok(_) -> attention_door.dismiss_stuck(reach, session, strand, operation)
   }
 }
 
@@ -3416,6 +3522,19 @@ fn admit(
               |> rail_outcome
             })
           },
+          dismiss_stuck: fn(strand, operation, deliver) {
+            read_task(deliver, fn() {
+              page_dismiss_for(
+                reach_of(standing, attachment.attention_reach.endpoint),
+                open,
+                attachment.session_id,
+                strand,
+                operation,
+              )
+              |> dismiss_outcome
+              |> rail_outcome
+            })
+          },
         ),
       ),
     )
@@ -3772,9 +3891,9 @@ pub fn listed_for(
 @internal
 pub fn activity_for(
   role: Role,
-  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ask: fn(List(String)) -> List(#(String, sessions.Watch)),
   ids: List(String),
-  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+  deliver: fn(List(#(String, sessions.Watch))) -> Nil,
 ) -> Nil {
   // This branch resolves role before the operation continues.
   case role {
@@ -5360,6 +5479,82 @@ pub fn recent_for(
   }
 }
 
+/// How long one directory listing for the folder picker may take, in
+/// milliseconds. A listing makes up to `folder_browse.inspect_limit` names
+/// canonical, and a stale network mount under the home can stall one, so the
+/// whole read runs under this deadline.
+const browse_ms = 5000
+
+/// Runs a folder listing in a weft run of its own under `within` milliseconds and
+/// delivers its answer, or `Unreadable` if the deadline passed first. The
+/// deadline kills the read, so a listing that stalls on the filesystem cannot
+/// outlive the press that asked for it, and a person who closes and reopens the
+/// picker cannot pile up reads. It returns at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.browse_within(fn() { answer }, 5000, deliver)
+/// ```
+@internal
+pub fn browse_within(
+  attempt: fn() -> folder_browse.Answer,
+  within: Int,
+  deliver: fn(folder_browse.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        let outcomes =
+          weft.new([fn() { Ok(attempt()) }])
+          |> weft.deadline(within)
+          |> weft.start
+
+        // A listing that passed its deadline is answered all the same, so the
+        // picker never waits for one that will not come.
+        case outcomes {
+          [weft.Completed(value: answer, ..)] -> deliver(answer)
+          _ -> deliver(Error(folder_browse.Unreadable))
+        }
+
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// One directory below the owner's home as the composer's folder picker may draw
+/// it (protocol-change/132). The same owner check as a creation runs first
+/// (`authorized_owner`), so a page that may not create is told nothing about the
+/// filesystem and costs none: the home, which is a path resolution, is read only
+/// after the check, through `home`. A page that fails the check and one whose
+/// registry did not answer get the refusal a missing folder gets, so the answer
+/// does not say which it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.browse_for(standing, open, fn() { Ok("/Users/o") }, ["code"])
+/// ```
+@internal
+pub fn browse_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: fn() -> Result(String, creations.Reason),
+  trail: List(String),
+) -> folder_browse.Answer {
+  // This branch resolves authorized_owner standing open before the operation continues.
+  case authorized_owner(standing, open) {
+    Ok(_) ->
+      case home() {
+        Ok(directory) -> folder_listing.list_in(directory, trail)
+        Error(_) -> Error(folder_browse.NoHome)
+      }
+    Error(_) -> Error(folder_browse.NotAFolder)
+  }
+}
+
 /// The other orchestrators' sessions as the owner's home may draw them
 /// (protocol-change/085). The same owner check as a creation runs first
 /// (`authorized_owner`), so a page that may not create is told of nothing and the
@@ -5584,7 +5779,8 @@ pub fn forget_for(
 /// `deliver` is called, from that run, with what `ask` returned.
 ///
 /// `ask` is the daemon's `sessions.activity` read (`server.home_activity`, whose
-/// answers are reports, or `server.session_activity`, whose are states),
+/// answers are reports, `server.session_watches`, whose are states and ask
+/// counts for the session page, or `server.session_activity`, whose are states),
 /// which asks every named session concurrently under one deadline of its own
 /// and leaves out any that did not answer, so the run ends within that
 /// deadline. The run is linked to the calling process, which is the page's

@@ -160,7 +160,7 @@ fn step(each: Step) -> List(Element(message)) {
 }
 
 /// The peer messages that reached the session after the time the read named, as
-/// dashed quotes under the label `In this session since it asked`. Each says
+/// quotes under the label `In this session since it asked`. Each says
 /// that it is a peer message, which session and strand sent it, when, and that
 /// it is untrusted text. `name_of` words a session's identity as the page does.
 /// The page draws them and claims nothing about whether they bear on the

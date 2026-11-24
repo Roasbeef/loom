@@ -39,11 +39,16 @@
 ////
 //// There is no periodic tick. After every transition the component asks
 //// the lane when it next has something to do (`session_channel.next_due`:
-//// the in-flight deadline, or the idle refresh) and arms one timer for that
-//// reading, cancelling the one it armed before. When it fires, `Ticked`
-//// runs the same reduction at the reading taken when the timer message was
-//// received. An idle page therefore wakes once per refresh interval, five
-//// seconds once the daemon has pushed, and not four times a second.
+//// the in-flight deadline, or the idle refresh) and arms one timer for the
+//// earliest of that reading and the page's other reasons to wake (`next_wake`),
+//// cancelling the one it armed before. The sidebar is one of those reasons:
+//// its list is due `sessions_refresh_ms` after the last read and its running
+//// rows' activity `activity_refresh_ms` after the last ask, so a page whose
+//// own lane has nothing due still keeps the other rows current. When the timer
+//// fires, `Ticked` runs the same reduction at the reading taken when the timer
+//// message was received. An idle page therefore wakes once per refresh
+//// interval, five seconds once the daemon has pushed, and not four times a
+//// second.
 ////
 //// The transport is supplied by the host that starts the component, because
 //// what a socket is belongs to that host. In the daemon it is a relay into
@@ -157,6 +162,7 @@ import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/server_component
 import session_view/advisor_history
 import session_view/advisor_pending
@@ -257,6 +263,7 @@ import web_view/view/queue_input
 import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
+import web_view/view/stamp
 import web_view/view/strand_detail
 import web_view/view/stream_head as stream_head_view
 import web_view/view/strip
@@ -441,8 +448,8 @@ pub const evolution_path = "0\t3\t6"
 /// Strands pane's fifth and last child, after the title, the strip, the strand
 /// detail and the advisor's commentary (`view/panel`), so that placing it
 /// there moved no path the socket admits. Most handlers beneath it are one
-/// insight's press, which asks the page to draw that insight folded from now on
-/// (`RailOpened`). That reads nothing and sends no command, so an observer's
+/// insight's press, which asks the page to draw that insight folded, or whole
+/// again when it is already folded (`RailOpened`). That reads nothing and sends no command, so an observer's
 /// socket admits a `click` at exactly `rail_click`'s shape and nowhere else
 /// beneath the rail (`client/daemon/ui_socket.observer_accepts`,
 /// protocol-change/051, the addendum on the live rail). The others are an ask's
@@ -712,6 +719,11 @@ pub type Act {
     /// (`thread_send.retry_prompt`). The page names the strand and never the
     /// words.
     retry: fn(String, fn(AnswerOutcome) -> Nil) -> Nil,
+    /// Dismisses a stuck strand's failure so the feed stops listing it until the
+    /// strand fails again (protocol-change/131): the strand, the operation of the
+    /// failed run the page read from its feed row, and the function the daemon's
+    /// word goes to.
+    dismiss_stuck: fn(String, String, fn(AnswerOutcome) -> Nil) -> Nil,
   )
 }
 
@@ -744,6 +756,10 @@ pub type Watch {
     sending: Option(String),
     /// The page's word on the last answer, in the daemon's fixed words.
     words: String,
+    /// The part of `words` that answers an ask, or empty. A find's close and a
+    /// stuck strand's retry write `words` too, and the ask cards in the dock
+    /// show only this one, so they do not repeat another row's word.
+    ask_words: String,
   )
 }
 
@@ -792,7 +808,7 @@ pub type Transport(socket) {
     /// from there with one state for each session that answered, so the page's
     /// runtime never waits for it. An observer's page lists nothing and asks
     /// nothing.
-    activity: fn(List(String), fn(List(#(String, sessions.Activity))) -> Nil) ->
+    activity: fn(List(String), fn(List(#(String, sessions.Watch))) -> Nil) ->
       Nil,
     /// Asks the daemon for a ticket to open the named session, for an
     /// operator's page that pressed its row: the daemon checks that the page's
@@ -1179,7 +1195,8 @@ type View(socket) {
     said: List(String),
     /// The keys of the rail's insights the reader has opened, the most
     /// recently opened first and at most `open_insights`. An insight is drawn
-    /// whole until its key is here and folded to one line after, for the life
+    /// whole until its key is here and folded to one line while it is, and a
+    /// press on a folded insight removes the key, for the life
     /// of the strand on screen: a strand the reader leaves forgets them, as it
     /// forgets `said`, because the keys name rows of that strand's lane. The
     /// keys are `attention.Lifted.key` values, which are daemon identities;
@@ -1286,11 +1303,12 @@ type View(socket) {
     /// daemon or the browser except as a name `listing.chosen` found among the
     /// pills the page drew.
     filter: listing.Filter,
-    /// What the sidebar's running sessions were last said to be doing, by
-    /// identity. It is asked for after each read of the list and again every
-    /// `activity_refresh_ms`, and a session with no answer says "running".
-    /// The page's own session is never read from here (`session_activity`).
-    activity: dict.Dict(String, sessions.Activity),
+    /// What the sidebar's running sessions were last said to be doing and how
+    /// many asks wait on the owner, by identity. It is asked for after each
+    /// read of the list and again every `activity_refresh_ms`, and a session
+    /// with no answer says "running". The page's own session's state is never
+    /// read from here (`session_activity`); its asks are.
+    activity: dict.Dict(String, sessions.Watch),
     /// When the activity was last asked for on the transport's clock, so the
     /// next ask on a `Ticked` waits `activity_refresh_ms`.
     activity_asked_at: Option(Int),
@@ -1472,7 +1490,8 @@ pub type Msg(socket) {
   /// messages).
   MessageToggled(key: String)
 
-  /// An insight on the live rail was pressed: draw it folded from now on. The
+  /// An insight on the live rail was pressed: draw it folded, or whole again
+  /// when it is already folded. The
   /// insight is named by the key the view drew into the handler, never by
   /// anything the browser sent, and a key that names no insight the rail holds
   /// changes nothing. It changes only what this page draws and sends no
@@ -1506,6 +1525,12 @@ pub type Msg(socket) {
   /// row still holds it stuck. The words sent are the daemon's own.
   RailRetried(strand: String)
 
+  /// "Dismiss" was pressed on a stuck strand's card. The strand is the one the
+  /// row was drawn for, and the page honours it only while the feed row still
+  /// holds it stuck, naming the failed run that row read. The daemon refuses a
+  /// failure the strand no longer holds.
+  RailDismissed(strand: String)
+
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
   /// sent, because a handler's message is fixed when the tree is drawn and
@@ -1538,11 +1563,11 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
 
-  /// The daemon's answer to the activity read a list started: one state for
-  /// each running session that answered. Like `SessionsListed` it is the
-  /// effect's own message, dispatched from the daemon's task, and no handler
-  /// carries it.
-  ActivityObserved(rows: List(#(String, sessions.Activity)))
+  /// The daemon's answer to the activity read a list started: one state and
+  /// one count of owner asks for each running session that answered. Like
+  /// `SessionsListed` it is the effect's own message, dispatched from the
+  /// daemon's task, and no handler carries it.
+  ActivityObserved(rows: List(#(String, sessions.Watch)))
 
   /// The daemon judged which browser sign-ins a remembered permission came
   /// from have ended. It is the effect's own message, dispatched from the
@@ -1716,6 +1741,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
         problems: dict.new(),
         sending: None,
         words: "",
+        ask_words: "",
       ),
       jobs_asked_at: None,
       decided: Owed,
@@ -1990,6 +2016,7 @@ pub fn update(
     RailClosed(key:, closure:) -> rail_closed(model, key, closure)
 
     RailRetried(strand:) -> rail_retried(model, strand)
+    RailDismissed(strand:) -> rail_dismissed(model, strand)
 
     FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
@@ -4416,7 +4443,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       cache: outlook(shared, line.id),
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
-      own_model: apart_from_main(shared, line.id),
+      own_model: model_of(shared, line.id),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
       answer: row |> option.then(answer_line),
     )
@@ -4459,16 +4486,6 @@ fn model_of(shared: Session(socket), strand: String) -> Option(String) {
   option.then(shared.captured, fn(shown) {
     agent_view.catalogue_name(shown.1, strand)
   })
-}
-
-// The strand's model name when it is not the main strand's. A strand with no
-// configuration in the capture, or a capture with none for `main`, has no
-// difference to report, since an unknown model is not evidence of another one.
-fn apart_from_main(shared: Session(socket), strand: String) -> Option(String) {
-  case model_of(shared, agent_roster.primary), model_of(shared, strand) {
-    Some(main), Some(own) if own != main -> Some(own)
-    _, _ -> None
-  }
 }
 
 /// The first line of a strand's latest answer, or nothing while it has given
@@ -7493,6 +7510,7 @@ pub fn lift(
       attention.lift_all(pieces, model.shared.approvals, rail_records(model)),
       dock,
       rail_time(model),
+      placement_time(model),
     ),
     dock:,
   )
@@ -7537,9 +7555,39 @@ fn rail_time(model: Model(socket)) -> fn(String) -> Option(Int) {
   }
 }
 
+/// When a lifted row may be matched to a turn of the transcript on screen: the
+/// row's time (`rail_time`), except that an ask of another strand has none. An
+/// ask's time is compared with the times of this lane's turns, and a turn of
+/// another strand is not in this lane, so such a match would tint a turn that
+/// did not ask.
+fn placement_time(model: Model(socket)) -> fn(String) -> Option(Int) {
+  let time = rail_time(model)
+
+  // The keys of the asks whose strand is not the one on screen.
+  let elsewhere = case model.view.watching.row {
+    None -> []
+    Some(row) ->
+      list.filter_map(row.asks.items, fn(ask) {
+        // Only an ask of a strand other than the one on screen is withheld.
+        case ask.strand == model.shared.active_strand {
+          True -> Error(Nil)
+          False -> Ok(attention.ask_key(ask.id))
+        }
+      })
+  }
+
+  fn(key) {
+    // A withheld ask has no time to place by; every other row keeps its own.
+    case list.contains(elsewhere, key) {
+      True -> None
+      False -> time(key)
+    }
+  }
+}
+
 /// The rail's drawing inputs: what was lifted, which insights the reader has
 /// opened, the strand on screen, and how to name a session. `open` is the
-/// rail's handler for an unopened insight, or `None` for the sheet, whose rows
+/// rail's handler for an insight, or `None` for the sheet, whose rows
 /// send nothing.
 fn lifted_rail(
   model: Model(socket),
@@ -7598,6 +7646,118 @@ pub fn sheet(
   observed: fn(Msg(socket)) -> message,
 ) -> Element(message) {
   lifted_view.sheet(lifted_rail(model, lift, None, observed))
+}
+
+/// The cards of the asks waiting on the owner, one for each open owner-routed
+/// ask in the session's feed row, oldest first, or nothing when none is open.
+/// The operator's page draws them in the dock above the composer and the
+/// observer's above its bar, so an open ask is on screen with the live rail
+/// closed and at a phone's width, where the rail is a sheet.
+///
+/// A card's header names when the ask has waited since and the strand that
+/// asked. Its body is the questions: the form for a page that may answer, sent
+/// as the rail's form is (`RailAnswered`), and the same questions as text for a
+/// page that may not. Until the ask has been read in full the body is the
+/// feed's cut of the first question. A card leaves with the next read of the
+/// row after its ask is answered or closed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.asks(model, fn(message) { message })
+/// ```
+pub fn asks(
+  model: Model(socket),
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  let watching = model.view.watching
+
+  // Only a page that has read its feed row has an ask to show.
+  case watching.row {
+    None -> element.none()
+    Some(row) ->
+      case
+        list.sort(row.asks.items, fn(left, right) {
+          int.compare(left.created_at, right.created_at)
+        })
+      {
+        [] -> element.none()
+        waiting ->
+          html.section(
+            [
+              attribute.class("ask-dock"),
+              attribute.aria_label("Asks waiting"),
+            ],
+            [
+              keyed.div(
+                [attribute.class("ask-list")],
+                list.map(waiting, fn(ask) {
+                  #(ask.id, ask_card(model, ask, observed))
+                }),
+              ),
+              case watching.ask_words {
+                "" -> element.none()
+                words ->
+                  html.p([attribute.class("ask-words")], [html.text(words)])
+              },
+            ],
+          )
+      }
+  }
+}
+
+/// One card: the header, and under it the ask's questions as the page may
+/// draw them.
+fn ask_card(
+  model: Model(socket),
+  ask: attention_feed.Ask,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  html.article([attribute.class("ask-card")], [
+    html.p([attribute.class("ask-head")], [
+      html.span([attribute.class("ask-kind")], [html.text("Ask")]),
+      html.text(" · waiting since "),
+      stamp.time(ask.created_at, "ask-since"),
+      html.text(" · " <> ask.strand),
+    ]),
+    ask_body(model, ask, observed),
+  ])
+}
+
+/// The questions of one card. A page that may answer and has read the ask in
+/// full draws the rail's form, so both send one `RailAnswered`. A page that may
+/// not draws the questions as text. An ask not yet read in full is the feed's
+/// first question, which the daemon cut.
+fn ask_body(
+  model: Model(socket),
+  ask: attention_feed.Ask,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  let watching = model.view.watching
+
+  // The record is the questions. The capability decides form or text, and a
+  // page that has ended draws text, because a submit there is dropped.
+  case
+    dict.get(watching.records, ask.id),
+    model.view.transport.attention,
+    model.view.status
+  {
+    Ok(item_pane.AskRecord(ask: full, ..)), _, Ended(_)
+    | Ok(item_pane.AskRecord(ask: full, ..)),
+      Some(Attention(answer: None, ..)),
+      _
+    | Ok(item_pane.AskRecord(ask: full, ..)), None, _
+    -> attention_thread.questions_only(full)
+    Ok(item_pane.AskRecord(..)),
+      Some(Attention(answer: Some(_), ..)),
+      Connecting
+    | Ok(item_pane.AskRecord(..)),
+      Some(Attention(answer: Some(_), ..)),
+      Connected
+    -> rail_filled(watching, ask.id, "Send", observed)
+    Ok(item_pane.FindRecord(..)), _, _ | Error(Nil), _, _ ->
+      html.p([attribute.class("ask-cut")], [html.text(ask.head)])
+  }
 }
 
 /// How often the page asks for the session's feed row, in milliseconds of the
@@ -7696,20 +7856,14 @@ fn rail_heard(
       let kept =
         dict.filter(watching.records, fn(id, _) { list.contains(held, id) })
 
-      // Only a page that may answer draws an ask's form, so only it reads the
-      // asks in full. A find is read in full only by a page that may close it,
-      // because the close names the revision the page read.
+      // Every page draws an open ask's questions in its card, so every page
+      // reads the asks in full. A find is read in full only by a page that may
+      // close it, because the close names the revision the page read.
       let wanted =
-        list.append(
-          case reads.answer {
-            Some(_) -> asks
-            None -> []
-          },
-          case reads.act {
-            Some(_) -> finds
-            None -> []
-          },
-        )
+        list.append(asks, case reads.act {
+          Some(_) -> finds
+          None -> []
+        })
       let missing = list.filter(wanted, fn(id) { !dict.has_key(kept, id) })
 
       #(
@@ -7778,24 +7932,30 @@ fn rail_form(
 ) -> Element(message) {
   let watching = model.view.watching
 
-  // Only an ask's key names a form, and only a page with an answer draws it.
-  case model.view.transport.attention, watching.row {
-    Some(Attention(answer: Some(_), ..)), Some(row) ->
+  // Only an ask's key names a form, and only a page with an answer that has not
+  // ended draws it: a submit on an ended page is dropped.
+  case model.view.transport.attention, watching.row, model.view.status {
+    _, _, Ended(_) -> element.none()
+    Some(Attention(answer: Some(_), ..)), Some(row), Connecting
+    | Some(Attention(answer: Some(_), ..)), Some(row), Connected
+    ->
       case
         list.find(row.asks.items, fn(ask) { attention.ask_key(ask.id) == key })
       {
-        Ok(ask) -> rail_filled(watching, ask.id, observed)
+        Ok(ask) -> rail_filled(watching, ask.id, "Send answer", observed)
         Error(Nil) -> element.none()
       }
-    Some(_), _ | None, _ -> element.none()
+    Some(_), _, _ | None, _, _ -> element.none()
   }
 }
 
 /// The form of one ask the page has read in full, or nothing while the read is
-/// out.
+/// out. `send` is the submit button's words, which the rail and the dock's card
+/// word differently.
 fn rail_filled(
   watching: Watch,
   id: String,
+  send: String,
   observed: fn(Msg(socket)) -> message,
 ) -> Element(message) {
   // The record is the ask's questions, and without it there is nothing to draw.
@@ -7807,7 +7967,7 @@ fn rail_filled(
         option.from_result(dict.get(watching.problems, id)),
         case watching.sending == Some(id) {
           True -> "Sending…"
-          False -> "Send answer"
+          False -> send
         },
         fn(fields) { observed(RailAnswered(id, fields)) },
       )
@@ -7854,6 +8014,7 @@ fn rail_answered(
                 problems: dict.delete(watching.problems, id),
                 sending: Some(id),
                 words: "",
+                ask_words: "",
               ),
             ),
           ),
@@ -7900,7 +8061,13 @@ fn rail_offer(
     Ok(_), attention.StuckStrand(strand:) ->
       case watching.sending == Some(attention.stuck_key(strand)) {
         True -> lifted_view.OfferSent
-        False -> lifted_view.RetryOffer(observed(RailRetried(strand)))
+        False ->
+          lifted_view.RetryOffer(
+            observed(RailRetried(strand)),
+            option.map(rail_failure(watching, strand), fn(_) {
+              observed(RailDismissed(strand))
+            }),
+          )
       }
     Ok(_), attention.FindOpen(..) ->
       rail_find_offer(watching, row.key, observed)
@@ -8024,6 +8191,46 @@ fn rail_retried(
   }
 }
 
+/// The failed run the feed row holds for a stuck strand, when the row names it.
+fn rail_failure(watching: Watch, strand: String) -> Option(String) {
+  case watching.row {
+    Some(row) ->
+      list.find_map(row.stuck.items, fn(stuck) {
+        case stuck.strand == strand {
+          True -> option.to_result(stuck.operation, Nil)
+          False -> Error(Nil)
+        }
+      })
+      |> option.from_result
+    None -> None
+  }
+}
+
+/// Dismisses a stuck strand's failure, naming the failed run the feed row held.
+/// A page that may not act, a strand the row does not hold stuck with an
+/// operation, an action already out and a page that ended ask nothing.
+fn rail_dismissed(
+  model: Model(socket),
+  strand: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let id = attention.stuck_key(strand)
+
+  // The failure is dismissed only while the row still holds it.
+  case rail_acting(model), rail_failure(watching, strand), watching.sending {
+    Ok(act), Some(operation), None -> #(rail_sent(model, id), {
+      use dispatch <- effect.from
+      act.dismiss_stuck(strand, operation, fn(outcome) {
+        dispatch(RailAnswerDone(id, outcome))
+      })
+    })
+    Ok(_), Some(_), Some(_) | Ok(_), None, _ | Error(Nil), _, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
 /// The page with an action out for this identifier, and no word on the last
 /// one.
 fn rail_sent(model: Model(socket), id: String) -> Model(socket) {
@@ -8033,7 +8240,7 @@ fn rail_sent(model: Model(socket), id: String) -> Model(socket) {
     ..model,
     view: View(
       ..model.view,
-      watching: Watch(..watching, sending: Some(id), words: ""),
+      watching: Watch(..watching, sending: Some(id), words: "", ask_words: ""),
     ),
   )
 }
@@ -8063,7 +8270,13 @@ fn rail_answer_done(
           ..model,
           view: View(
             ..model.view,
-            watching: Watch(..watching, sending: None, words:, asked_at: asked),
+            watching: Watch(
+              ..watching,
+              sending: None,
+              words:,
+              ask_words: ask_words_of(watching, id, words),
+              asked_at: asked,
+            ),
           ),
         )
 
@@ -8074,6 +8287,22 @@ fn rail_answer_done(
         AnswerSent(..), None | AnswerFailed(..), _ -> #(model, effect.none())
       }
     }
+  }
+}
+
+/// The daemon's `words` when `id` names an ask the page holds, and nothing
+/// otherwise, so a find's close or a retry never reaches the ask cards.
+fn ask_words_of(watching: Watch, id: String, words: String) -> String {
+  // A page with no row holds no ask.
+  let is_ask = case watching.row {
+    None -> False
+    Some(row) -> list.any(row.asks.items, fn(ask) { ask.id == id })
+  }
+
+  // Only the word on an ask's answer is kept for the ask cards.
+  case is_ask {
+    True -> words
+    False -> ""
   }
 }
 
@@ -8104,23 +8333,30 @@ pub fn rail_submit(path: String) -> Bool {
   }
 }
 
-/// Remembers that an insight was opened. A key that names no insight the rail
-/// holds, a key already opened, and a press on a page that is not following a
-/// session change nothing, as with a fold.
+/// Toggles an insight between whole and folded: a first press adds the key to
+/// the opened set, which draws the insight folded, and a second press removes
+/// it, which draws the insight whole again. A key that names no insight the rail
+/// holds and a press on a page that is not following a session change nothing,
+/// as with a fold.
 fn rail_opened(model: Model(socket), key: String) -> Model(socket) {
   let known =
     lifted(model)
     |> attention.insights
     |> list.any(fn(row) { row.key == key })
 
-  // Only a followed session, a current insight and a first press change the
-  // set; the other combinations leave the page as it was.
-  case model.view.status, known, list.contains(model.view.opened, key) {
-    Connected, True, False -> {
-      let opened = list.take([key, ..model.view.opened], open_insights)
+  // Only a followed session and a current insight change the set, and which way
+  // it changes is whether the key is already in it.
+  case model.view.status, known {
+    Connected, True -> {
+      // A key in the set is taken out, and one not in it is put first.
+      let opened = case list.contains(model.view.opened, key) {
+        True -> list.filter(model.view.opened, fn(each) { each != key })
+        False -> list.take([key, ..model.view.opened], open_insights)
+      }
+
       Model(..model, view: View(..model.view, opened:))
     }
-    Connected, _, _ | Connecting, _, _ | Ended(_), _, _ -> model
+    Connected, False | Connecting, _ | Ended(_), _ -> model
   }
 }
 
@@ -8183,8 +8419,9 @@ pub fn rail_click(path: String) -> Bool {
 /// is an item of the "Needs you" group (the groups' first child), whose list is
 /// that group's second child. The card holds its own button, the ask's place
 /// (empty for any row but an ask) and then the actions, so the actions are the
-/// item's third child, and Retry is their first and only button: a click is at
-/// `rail_path`, then `1\t0\t1`, then the item's position, then `2\t0`.
+/// item's third child, and Retry is their first button, with Dismiss (`rail_dismiss`)
+/// second when the page may dismiss: a click is at `rail_path`, then `1\t0\t1`,
+/// then the item's position, then `2\t0`.
 ///
 /// No socket consults this predicate: an operator's or an owner's socket admits
 /// a click at any path, and an observer's admits `rail_click` and the other
@@ -8203,6 +8440,27 @@ pub fn rail_click(path: String) -> Bool {
 pub fn rail_retry(path: String) -> Bool {
   case string.split(path, "\t") {
     ["0", "3", "0", "4", "1", "0", "1", position, "2", "0"] ->
+      is_counter(position)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is the "Dismiss" button of a stuck strand's card
+/// in the live rail (protocol-change/131). It is the second button of the same
+/// actions as Retry, so its path is `rail_retry`'s with the last step `1`. The
+/// socket admissions are those of `rail_retry`: an operator's or an owner's
+/// socket admits a click at any path, and an observer's page draws no such
+/// button and its socket admits no event here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t1")
+/// assert !component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t0")
+/// ```
+pub fn rail_dismiss(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "0", "1", position, "2", "1"] ->
       is_counter(position)
     _ -> False
   }
@@ -8381,14 +8639,7 @@ fn perform(
 /// is not yet due does nothing.
 fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   let _ = option.map(model.view.armed, process.cancel_timer)
-  let due =
-    earliest(
-      option.then(model.shared.channel, session_channel.next_due),
-      earliest(
-        surfaces.context_deferred_until(model.shared),
-        earliest(surfaces.btw_due(model.shared), evolution_wake(model, now)),
-      ),
-    )
+  let due = next_wake(model, now)
 
   // Re-arm timer if interval is due.
   let armed = case model.view.timer, due {
@@ -8398,6 +8649,64 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   }
 
   Model(..model, view: View(..model.view, armed:))
+}
+
+/// The instant the page next needs a `Ticked`, or `None` when nothing is due.
+///
+/// Five reasons to wake share the one timer: the lane's deadline or idle
+/// refresh, the context board's deferred read, the side conversation's due
+/// reading, the Evolution tab, and the sidebar's own reads (`sidebar_wake`).
+/// The sidebar's reads do not depend on the lane. A page whose lane has
+/// closed under a runtime that is still up, as a relayed page does while it
+/// reconnects, has no lane deadline, so without them no `Ticked` reaches
+/// `reobserved` and the other rows keep the word they had when the list was
+/// read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.next_wake(model, 1000)
+/// ```
+pub fn next_wake(model: Model(socket), now: Int) -> Option(Int) {
+  earliest(
+    option.then(model.shared.channel, session_channel.next_due),
+    earliest(
+      surfaces.context_deferred_until(model.shared),
+      earliest(
+        surfaces.btw_due(model.shared),
+        earliest(evolution_wake(model, now), sidebar_wake(model)),
+      ),
+    ),
+  )
+}
+
+/// When the sidebar next needs a read: the list `sessions_refresh_ms` after
+/// the last one, and the activity of its running rows `activity_refresh_ms`
+/// after the last ask. The activity read is due only while the list names a
+/// running session, which is the case `observing` asks for, so a list with
+/// none costs one wake in `sessions_refresh_ms` and not one in five seconds.
+/// A page that has not yet asked has the `Opened` read owed and no instant
+/// of its own.
+fn sidebar_wake(model: Model(socket)) -> Option(Int) {
+  let list_due =
+    option.map(model.view.listed_at, fn(before) { before + sessions_refresh_ms })
+
+  // Name whether the list holds a running session the activity read covers.
+  let running =
+    list.any(model.view.groups, fn(group) {
+      list.any(group.entries, fn(entry) { entry.residency == sessions.Live })
+    })
+
+  // The activity read is due only while a running session is listed.
+  let activity_due = case running {
+    True ->
+      option.map(model.view.activity_asked_at, fn(before) {
+        before + activity_refresh_ms
+      })
+    False -> None
+  }
+
+  earliest(list_due, activity_due)
 }
 
 // When the Evolution tab next needs a tick: the earliest staging poll or
@@ -8594,7 +8903,26 @@ fn queue_action(
 /// // sidebar.view(component.session_groups(model), component.session_id(model))
 /// ```
 pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
-  model.view.groups
+  case final_ending(model) {
+    // A page whose own session stopped is sent no more reads, so the listing it
+    // holds still says that session runs. The stop is what ended the page, so
+    // the row moves to the sessions that are not running, where it is worded
+    // as saved, and the running group and the count no longer include it.
+    Some(ending.SessionStopped) ->
+      list.map(model.view.groups, fn(group) {
+        sessions.Group(
+          ..group,
+          entries: list.map(group.entries, fn(entry) {
+            case entry.id == model.shared.session, entry.residency {
+              True, sessions.Live ->
+                sessions.Entry(..entry, residency: sessions.Saved)
+              _, _ -> entry
+            }
+          }),
+        )
+      })
+    Some(_) | None -> model.view.groups
+  }
 }
 
 /// The name of the daemon serving the page: the machine every session on the
@@ -8668,8 +8996,10 @@ pub fn waiting_count(model: Model(socket)) -> Int {
 
 /// The second line of each running session's row in the rail, by identity, in
 /// the words of `watch_rule`. The page reads no attention feed, so a line says
-/// what the session is doing and its project and nothing of the live rail's
-/// count: `running`, `approval`, `aegis · quiet`.
+/// what the session is doing, whether it has asks open for the owner (from the
+/// activity read), and its project, and nothing of the live rail's count:
+/// `running`, `approval`, `aegis · asked`, `aegis · quiet`. On a page that has
+/// ended every line says `out of date` instead.
 ///
 /// ## Examples
 ///
@@ -8678,12 +9008,13 @@ pub fn waiting_count(model: Model(socket)) -> Int {
 /// ```
 pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
   let activity = session_activity(model)
+  let asking = session_asks(model)
 
   // The approvals the page holds are read once for the render, not once for
   // each listed session.
   let held = pending(model)
 
-  listing.entries(model.view.groups)
+  listing.entries(session_groups(model))
   |> list.filter_map(fn(entry) {
     // Only a session a process runs has a line in "Watch live".
     case entry.residency {
@@ -8700,7 +9031,7 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
           watch_rule.words(watch_rule.Facts(
             activity: doing,
             pinned:,
-            asks: 0,
+            asks: dict.get(asking, entry.id) |> result.unwrap(0),
             review: watch_rule.NothingToRead,
             project: option.map(entry.project, creations.folder),
           )),
@@ -8713,9 +9044,33 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
     }
   })
   |> dict.from_list
+  |> out_of_date_once_ended(model)
 }
 
+/// The rail's lines for a page that has ended: each says `out_of_date_words`
+/// where it said what the session was doing. An ended page is sent no more
+/// reads, so the words it holds are the last ones it received, and a line that
+/// kept saying `running` for a session that has since finished would be read as
+/// current.
+fn out_of_date_once_ended(
+  watching: dict.Dict(String, String),
+  model: Model(socket),
+) -> dict.Dict(String, String) {
+  // A page that is connecting, connected or retrying keeps the words it was
+  // given, since the reads still reach it.
+  case final_ending(model) {
+    Some(_) -> dict.map_values(watching, fn(_, _) { out_of_date_words })
+    None -> watching
+  }
+}
+
+/// What a row of the rail says once its page has ended.
+pub const out_of_date_words = "out of date"
+
 /// How many sessions the rail lists as running, for the line above its folders.
+///
+/// It counts the rows of `session_groups`, so the count, the "Watch live" group
+/// and its heading always agree about a session whose page has stopped.
 ///
 /// ## Examples
 ///
@@ -8723,7 +9078,7 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
 /// // component.running_count(model)
 /// ```
 pub fn running_count(model: Model(socket)) -> Int {
-  list.count(listing.entries(model.view.groups), fn(entry) {
+  list.count(listing.entries(session_groups(model)), fn(entry) {
     case entry.residency {
       sessions.Live -> True
       sessions.Saved
@@ -8761,10 +9116,29 @@ pub fn can_go_home(model: Model(socket)) -> Bool {
 pub fn session_activity(
   model: Model(socket),
 ) -> dict.Dict(String, sessions.Activity) {
+  let observed =
+    dict.map_values(model.view.activity, fn(_, watch) { watch.activity })
+
+  // The page's own lane, when it has captured one, outranks the daemon's read
+  // of the session, which is a few seconds old.
   case live_activity(model) {
-    Some(own) -> dict.insert(model.view.activity, model.shared.session, own)
-    None -> model.view.activity
+    Some(own) -> dict.insert(observed, model.shared.session, own)
+    None -> observed
   }
+}
+
+/// How many asks each running session has open and routed to the owner, by
+/// identity, as the activity read last said. The page's own session is read
+/// from here too, since the page's lane holds approvals and strands but not
+/// the asks, which the daemon keeps.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_asks(model)
+/// ```
+pub fn session_asks(model: Model(socket)) -> dict.Dict(String, Int) {
+  dict.map_values(model.view.activity, fn(_, watch) { watch.asks })
 }
 
 /// What the page's own session is doing, from the strip it draws. The rule is
@@ -8850,6 +9224,29 @@ pub fn strand(model: Model(socket)) -> String {
 /// ```
 pub fn status(model: Model(socket)) -> Status {
   model.view.status
+}
+
+/// Why the page has no connection to its session for good, or nothing while it
+/// has one, is making one, or will make one by itself. A `Final` ending closes
+/// the page's socket (`ending.close`), so the page is sent nothing more and
+/// what it draws is the last frame it received. A `Retry` ending leaves the
+/// page held open, and it keeps receiving the sidebar's reads, so it is not
+/// marked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.final_ending(model) == Some(ending.SessionStopped)
+/// ```
+pub fn final_ending(model: Model(socket)) -> Option(Ending) {
+  case ended_ending(model.view.status) {
+    Some(reason) ->
+      case ending.close(reason) {
+        ending.Final -> Some(reason)
+        ending.Retry -> None
+      }
+    None -> None
+  }
 }
 
 /// The escalations still waiting for a decision, in the order the capture
@@ -9242,10 +9639,10 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       },
 
       // The operator's page draws its session switcher here. The observer's
-      // has none, and the empty node keeps the strip at the index it has on
-      // the operator's page, so one path admits the context figure's Refresh
-      // on both.
-      element.none(),
+      // draws the open asks in the slot, as text, and nothing when none is
+      // open, so the strip stays at the index it has on the operator's page and
+      // one path admits the context figure's Refresh on both.
+      asks(model, fn(message) { message }),
 
       // The phone's sheet is the centre's last child but one, so no admitted
       // path moves with it; the stylesheet orders it above the bar.
@@ -9793,6 +10190,7 @@ pub fn stream_head(
         False, Idle -> "idle"
       },
       turn: turn_started(model),
+      model: model_of(model.shared, model.shared.active_strand),
       goal: goal_words(goal(model)),
     ),
     figures.view(

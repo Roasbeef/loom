@@ -161,7 +161,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:3648`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:3762`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -820,6 +820,7 @@ already have.
 | Proposals review | `Alt+p` (owner only), or the `proposals N` badge on the input frame's bottom rule | The `proposals_get` board: proposed standing rules newest first, one as a red and green diff, with approve and reject | `proposals` (in `session_view`), `proposal_panel` |
 | Evolution review | `/evolution`, or the `evolution N` badge on the input frame's bottom rule | The `board` read (protocol-change/099): candidates by kind with their approval, evidence and generation, the history of decisions and a read-only core card. `a`, `s`, `r` and `b` ask and only `y` sends; a staging selection draws on its row. The shared step reads a watched board again once it is a minute old (`tick.watch_evolution`) | `evolution`, `evolution_pending` (in `session_view`), `evolution_panel` |
 | Memory overview | `Alt+m` (owner only) | The `memory_get` board, read-only (protocol-change/087): the `[memory] inject` mode and the size of each file a run reads, the newest typed notes, the approved rules and the pending proposal count; arrows and page keys scroll, `Esc` closes. The shared step reads it again once a minute while the overlay is open (`tick.watch_memory`) | `memory_overview` (in `session_view`), `memory_panel` |
+| Ask card | Automatically, as rows above the composer while the attached session has an open ask routed to the owner; `Alt+a` gives it the keyboard | The feed's count and the first two open asks read in full (`sessions.attention`, `attention.read`, protocol-change/120 and 128): who asked and since when, each question with the choices its kind offers, a recommended option marked, Other and fill text typed in place; `Ctrl+s` sends `attention.answer`, a refusal is worded on the card, and an observer sees the questions and no controls | `ask_board`, `ask_form`, `ask_panel`, `ask_control`, `ask_jobs` |
 | Project board | `/project`, `loom project board --watch` (owner only) | `projects.board` polled by `revision`, `projects.ticket`, `projects.answer`, `projects.close` and `projects.retry` (protocol-change/106): tickets that need a person grouped by stage word with title and age, one line for the rest, and a ticket page with its mandate in words, its question and an answer input, and the worker's session | `project_board` (in `session_view`), `project_screen`, `project_control`, `project_jobs` |
 
 The peer-link path starts in `tui/interaction`: `l` on a resident `/sessions`
@@ -920,6 +921,51 @@ The approval dialog deserves one more sentence because it carries consent. It
 captures the escalation's sequence, action and grants when it opens, selects no
 choice by default, and a decision echoes exactly what was captured. Metadata
 refreshes behind the dialog cannot change the question.
+
+### The ask card
+
+An agent's `ask` tool records an open question for the owner
+(protocol-change/119) and ends its run, so the strand reads idle until a
+person answers. The card makes the question visible and answerable in the
+terminal. It differs from the approval dialog in one respect that matters for
+safety: an approval opens over the composer when it arrives, and an ask does
+not. The card is carved out of the transcript's rows, directly above the input
+frame, and the composer keeps the keyboard until the owner presses `Alt+a`. No
+key that reaches the composer can become an answer, and the card says which
+key takes it.
+
+The terminal learns of asks by polling. `session_control.service_activity`
+calls `ask_control.service` on the tick, and one job (`ask_jobs.read_asks`,
+started as `job.Asks`) reads the session's attention feed row and then the first
+two asks in full, so the card has each question, option and the revision an
+answer must name. The job opens a control connection of its own and closes it,
+as the picker's activity poll does, so a slow daemon never holds the borrowed
+connection that `/sessions`, renames and the peer and access screens wait on. A
+read rests four seconds, a failed one ten, and a failed read says nothing,
+because an older daemon or a saved session cannot read asks and the owner cannot
+act on that. A read that fails on any ask fails whole, so the card keeps what it
+drew; only an ask the daemon says is gone is left out. The answer is sent on the
+borrowed connection, since the owner starts it, and a send that finds that
+connection busy keeps the draft and says to try again.
+
+`ask_board` holds what the daemon said (the forms, the feed's count, the phase
+of the one request, who has the keyboard) and decodes the daemon's documents
+with `core/attention.decode_ask`, the decoder that stores the record. `ask_form`
+holds the owner's draft for one ask and checks it with
+`core/attention_answer.check`, the rule the daemon applies, so the terminal
+never offers an answer the daemon would refuse for its content and implements no
+validation of its own. `ask_panel` draws and measures, and `ask_control` is the
+shell: it starts the jobs, files their outcomes and routes keys. At most two
+asks are drawn, oldest first, with a line counting the rest. A `choice` or
+`confirm` question draws radio marks, a `multiple` or `checklist` question draws
+boxes, Other is one more row whose text is typed in place and replaces the
+options (as the daemon requires), and a `fill` question is one text row.
+
+The answer is delivered as the readable prompt of protocol-change/130, which
+arrives as a user message. `session_view/composer.transcript_text` shows it
+whole, because it would otherwise count as a large paste and fold into one
+clipped row, and the `ask` call's own row reads `ask · 2 questions: <first
+prompt>` and not the JSON that carried it (`transcript_lines.tool_call_summary`).
 
 ## Rendering
 
@@ -1120,6 +1166,9 @@ the module named.
   `daemon`, `job_runner`).
 - **A decision echoes exactly what was displayed** (`approval`,
   `approval_panel`).
+- **An ask never takes the composer's keys.** The card draws without the
+  keyboard and only `Alt+a` gives it one; an observer's card has no controls
+  (`ask_control`, `ask_board`).
 - **A step performs no fire-and-forget I/O.** Writes, closes, cancels,
   discards, the clipboard sequence, Herdr reports and recording appends are
   returned as effects and performed by the runtime, in the order the step
@@ -1190,6 +1239,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `session_view/outbound`, `session_view/event_fold`, `session_view/lane_fold` | Sending frames and folding the lane's disposition (`outbound`); applying each pushed event (`event_fold`) and each lane update and replay change, captured cuts included (`lane_fold`), over `Shared` alone. |
 | `session_view/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed), their replies, the edge detectors and the goal commands, over `Shared` alone. |
 | `session_view/commands`, `session_view/step` | The operator's commands to the session (`commands`), and the shared step's settle after every event, a tick's side-surface reads and clocks, and `update`, the whole-event entry the web view calls and the terminal does not (`step`), over `Shared` alone. |
+| `tui/ask_board`, `tui/ask_form`, `tui/ask_panel`, `tui/ask_control`, `tui/ask_jobs` | The open asks of the attached session and who has the keyboard; one ask's draft, keys and check; the card's rows and height; the polling, key routing and sending; and the control job that reads the feed and sends the answer. |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
 | `tui/live_tail` | The live answer's rows, rebuilt each frame from what changed: settled blocks, checked text, and the open tail. |

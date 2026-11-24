@@ -26,9 +26,9 @@ page keys and nonces, and the relay into the session's gateway.
 
 **The inbox's layout and parts** (the fidelity pass, protocol-change/051's addendum on the rail's folders): `view/inbox` draws a full-height split, a 388px list (`inbox_parts.band` for each group, `inbox_parts.row` or `static_row` for each thread, `folded` for the quiet line) and a reading pane (`inbox_parts.pane`: a scrolling body over an outbox bar pinned to the foot). `view/attention_thread`, `view/ticket_thread` and `view/review_thread` call the same parts, so a row is one shape. Every page's frame carries the class `loom-inbox` (a 44px bar, a 184px rail): the `Inbox` audience is gone, and a session's page, the admin page and Home share the frame. `inbox_rule.Folder` names the rail's folders and `Model.folder` is the page-local filter (`FolderPicked`, `InboxClosed` for the pane's back control on a phone); `home.folder_counts` is each folder's count and the pill in the top bar (`home_bar.with(needing:)`, the bar's seventh child, so `admin_path` does not move). `sidebar.Folders` is drawn at the top of the home's sidebar and ends with the count note (`inbox_rule.count_note`). Where the mockup draws data the page lacks, the field is an `Option`: `inbox.Offer.waited` (an approval's age), `inbox_parts.eyebrow`'s `since`, `ticket_thread.Offer.check` (check output). The message form has one `Send` in the bar, naming the form in its `form` attribute; a working session's Queue/Steer are radios inside the form (`inbox-deliver`), so the draft and the delivery submit together. A row's dot is `inbox_parts.Reading` (`Model.opened`, page-local); an approval's title is composed by `attention_thread.approval_title`; tickets at `person/check` or `person/review` are `ticket_rule.Reviewing` and sit under To review; `inbox_parts.pane_with` puts the message block beside the body so its rule starts at the pane's edge.
 
-**One frame on every page (2026-11-19):** the figures and placement chips moved from `view/heading` to `view/stream_head` (`view/figures`), so `component.context_refresh_path` is `0\t2\t7\t5\t0\t1\t0\t0` and the observer's centre keeps an empty node at index 5 to match the operator's. `heading.view` draws `loom`, `‹ Inbox` (`home_path` unchanged), the crumb, `● live`, the need pill and a role chip. `sidebar.view` takes `Folders` (counts optional, `pick` optional: the admin page draws text) and `Page.watching`, the second line of a Watch live row (`watch_rule`). The review pane's diff is `diff.view_review`, a variant of the shared drawer.
+**One frame on every page (2026-11-19):** the figures and placement chips moved from `view/heading` to `view/stream_head` (`view/figures`), so `component.context_refresh_path` is `0\t2\t7\t5\t0\t1\t0\t0` and the observer's centre keeps an empty node at index 5 to match the operator's. `heading.view` draws `loom`, `‹ Inbox` (`home_path` unchanged), the crumb, `● live`, the need pill and a role chip. `sidebar.view` takes `Folders` (counts optional, `way` a `Pick`, `Return` or `Text`: the admin page's folders are `<loom-back>` controls) and `Page.watching`, the second line of a Watch live row (`watch_rule`). The review pane's diff is `diff.view_review`, a variant of the shared drawer.
 
-**The attention threads** (phase 1, protocol-change/051's addendum "the attention threads"): `Start.attention` is `Some(Attention(feed, saved, record, approvals, review, act))` on every page that reads the feed, and `act` (`Act(answer, close, strand)`) is `Some` only for the owner's operating page (`ui_socket.home_attention_capability`). `attention_rule` (pure) flattens feed rows into `Item`s (`AskItem | FindItem | StuckItem`), ranks them by wait (`needs_you`, `finds`, unknown times last), words ages (`age_line`), keys a thread (`Key(sort, session, id)`, compared and never drawn) and tallies the headline across running and saved sessions. `answer_rule` (pure) reads an ask form's fields back into the wire object (a question is its key, an option its position, never a label) and asks `core/attention_answer.check` for validity. `item_pane` (pure) is the open thread's state: the record read, the one outbox (a staged answer and a staged note) and the send's progress. `view/attention_thread` draws rows and the pane; every word a session wrote is a text node. `Model` holds `feed`, `saved`, `item` and `item_presses`; the messages are `FeedRead`, `SavedRead`, `ItemPicked`, `RecordRead`, `ItemStaged`, `ItemNoted`, `ItemCleared`, `ItemSent`, `ItemClosed`, `ItemRetried`, `ItemActed`, `ItemNoteAnswered` and `ItemRetryAnswered`. `CentreChoice` stays `Awaiting` until the first round of reads is complete (`landing_rule`), so a summary, a ticket or an ask that counts something is weighed with the activity read whichever came first.
+**The attention threads** (phase 1, protocol-change/051's addendum "the attention threads"): `Start.attention` is `Some(Attention(feed, saved, record, approvals, review, act))` on every page that reads the feed, and `act` (`Act(answer, close, dismiss_stuck, strand)`) is `Some` only for the owner's operating page (`ui_socket.home_attention_capability`). `attention_rule` (pure) flattens feed rows into `Item`s (`AskItem | FindItem | StuckItem`), ranks them by wait (`needs_you`, `finds`, unknown times last), words ages (`age_line`), keys a thread (`Key(sort, session, id)`, compared and never drawn) and tallies the headline across running and saved sessions. `answer_rule` (pure) reads an ask form's fields back into the wire object (a question is its key, an option its position, never a label) and asks `core/attention_answer.check` for validity. `item_pane` (pure) is the open thread's state: the record read, the one outbox (a staged answer and a staged note) and the send's progress. `view/attention_thread` draws rows and the pane; every word a session wrote is a text node. `Model` holds `feed`, `saved`, `item` and `item_presses`; the messages are `FeedRead`, `SavedRead`, `ItemPicked`, `RecordRead`, `ItemStaged`, `ItemNoted`, `ItemCleared`, `ItemSent`, `ItemClosed`, `ItemRetried`, `ItemDismissed`, `ItemActed`, `ItemNoteAnswered` and `ItemRetryAnswered`. `CentreChoice` stays `Awaiting` until the first round of reads is complete (`landing_rule`), so a summary, a ticket or an ask that counts something is weighed with the activity read whichever came first.
 
 **The review pane** (protocol-change/051's addendum "the review pane", [123](../../protocol-change/123-review-hunks.md)): `Attention.review` reads one session's worktree as a `review_feed.Review` and is `Some` for an operator's page (owner's or member's), never an observer's (`ui_socket.home_attention_capability`, `ui_socket.review_for`). `review_scan_rule` (pure) decides who is "To review" (every idle session with a last message whose tree is not known clean, so a session moves to "Waiting" only on a clean read): one read at a time, once for each last message, a `Seen` for each session and never the review, whose `verdict` (the last successful read, for the message it was read for) survives a read out, a failure and an allowance refusal, so a session does not flap between "To review" and "Waiting"; `inbox_rule.grouped_with` moves those idle sessions out of "Waiting". `review_pane` (pure) is the open thread: the `Loaded` review, the revisions of its finds, `review_stage_rule.Staging` (verdict, one comment for each file, find actions) and the Send as a machine (`send` → `closed_with` → `prompted`; a refused close halts it and no prompt goes). `review_outbox_rule` (pure) words the one prompt and refuses past `composer.prompt_limit` before any close. `review_pin_rule` (pure) anchors a find at a line a shown hunk holds, else loose in its file, else at the pane's top. `view/review_thread` draws it through `view/diff.view_with`, with every session word a text node and each form keyed by session, open count and position (a delivered Send raises the count, so the comment boxes empty). `Model` holds `reviews`, `review` and `review_presses`; the messages are `ReviewScanned`, `ReviewRead`, `ReviewFindRead`, `ReviewVerdictChosen`, `ReviewCommented`, `ReviewFindStaged`, `ReviewCleared`, `ReviewSent`, `ReviewClosed` and `ReviewPrompted`.
 
@@ -36,20 +36,22 @@ page keys and nonces, and the relay into the session's gateway.
 
 **Data for the final inbox mockup** (protocol-change/050, 120 addenda, 125, 126). `sessions.Report` gains `last_message_at` and `turn_started_at` (`Option(Int)`, Unix ms; the page formats them). `attention_feed.Stuck` gains `reason`, `retry_after_ms` and `parent`, and its `failed_at` is exact. `approval_evidence.Item` gains `raised_at`, `network` (`NetworkOn`/`NetworkOff`), `policy` (`Policy(sandbox, network)`). `session_brief` (pure) is the codec of `session.brief`: `Brief(assistant, steps, strands, goal, peers, command)`, with model text in the opaque `Untrusted` (read only through `untrusted_text`), `to_json` for the daemon and a total `decode`. `Attention.brief` reads one session's brief, spends the credential's brief allowance, and answers `BriefRead` into `Model.briefs`; `Attention.brief` is read for the open thread only, by `approving` and `ItemPicked`, and never for a row that is not open.
 
+**Sidebar asks and a stopped page** (protocol-change/050, addendum on open asks). `sessions.Report` gains `asks` (open asks routed to the owner, 0 when the daemon predates it). The session page's activity read returns `sessions.Watch(activity, asks)`, so `component.session_watching` feeds `watch_rule.Facts.asks` and a row reads `asked`, as Home's does. A page whose connection ended (`component.ending`) draws every rail row as `out of date`, says so in the rail note, and its notice (`view/ended`) offers `<loom-back>` after a `Final` ending: a server-wired button is dead once the socket closes, `history.back()` is not.
+
 **The data drawn (2026-11-19, `web/inbox-wiring`).** Every Option slot the layers left is filled.
 - *Times.* `thread_words` (pure) words a wait (`short_age`, "1h 22m"; `overdue` at an hour), a turn (`turn_words`), and a stuck strand from its reason code through the closed table `kind_of` (rate_limited, overloaded, timeout, other) as a `Phrase`, a list of `Words` and `Clock(ms)` that `view/phrase` draws, each instant as `<loom-time at=ms>` so the browser's zone is used. No server formats a clock. `inbox_parts.eyebrow` takes `Option(Moment)` (`waiting since`, `finished`, `asked`, `failed`). `inbox.Offer.waited` is now `dated: List(#(session, Dated(age, moment, state)))`, built by `home.dated_threads`: an approval from `approval_evidence.oldest_raised`, an idle session from `Report.last_message_at`, a working one from `Report.turn_started_at` ("working, 14 min into a turn"). A session whose data holds no time has no entry.
 - *Approval rows.* `attention_thread.approval_item` draws `Network` from `Item.network` and `Policy today` from `Item.policy` in the daemon's words, and omits a row whose word is absent. The grant row is now "Wants a network grant". The "no time" line appears only when no item has a time.
 - *The brief* (`view/brief_view`, all text under an `untrusted text` label): `latest` (the agent's latest message and its time), `steps` (a monospace card; the outcome word is `brief-ok`, `brief-bad` or `brief-run`), `peers` ("In this session since it asked": session name, strand and time, never a claim of relevance), `coordinator` (goal, status, `delegates` counts, tokens as `412k of 1.2M`, a line per strand; no phase), `command` (the pill "last command: X, exit N"). An ask draws `stopped` and `coordinator`; a working session draws `latest` and `steps` in place of the glances ("Last few steps"), and a link to its open ask; a review draws the last message between its counts and its verdict (`review_thread.Offer.message`, `.command`).
 - *Peers are shown only under a matching read.* `brief_rule.shown` keeps `Brief.peers` only for an approval whose brief was read with `since` equal to its oldest raise time (`Model.brief_since`, set from `BriefRead.since`); any other thread draws none, so the label never misdescribes them. An approval's brief waits for its evidence (`home.evidence_awaited`) and `ApprovalsRead` starts it.
 - *Brief reads.* `brief_rule.due`: once when a thread opens (debounced one second), and on the refresh only when the last read is 15 s old or the read asked after another time. `Model.brief_reads` holds the last read's start and `since`. `home.brief_session` names the session whose pane needs one: an open ask's, or the shown session's for an approval, working or idle thread; never a stuck strand, a find, a ticket, a failed or settled session. A refused read keeps a brief already held.
-- *Stuck.* The row head is `thread_words.stuck_head` (no time; the row's age says how long). The pane's title is `stuck_title`, its sentence is `stuck_phrase(kind, failed_at, retry_after_ms)` and a `Parent` row draws `Stuck.parent`.
+- *Stuck.* Its Decide section draws Retry and, when `Stuck.operation` is present, Dismiss (`Acting.dismiss`, `ItemDismissed`, which sends `Act.dismiss_stuck(session, strand, operation)`; protocol-change/131). The row head is `thread_words.stuck_head` (no time; the row's age says how long). The pane's title is `stuck_title`, its sentence is `stuck_phrase(kind, failed_at, retry_after_ms)` and a `Parent` row draws `Stuck.parent`.
 - *Committed work* (protocol-change/123's addendum). `committed_patch` (pure) reads `Board.committed.patch` into files; `review_feed.of_board` merges them under the same bounds. A subject line is dropped with its `commit` line and hunks are read by their counts, so a commit message never becomes a patch line.
 
 **Approval evidence** (protocol-change/120's addendum): `Attention.approvals` reads a running session's pending approvals through `approval.read`; `approval_evidence` (pure) decodes the reply into `Evidence(count, items)` of `Item(id, revision, tool, preview, source, reason, wanted, asked)`, and `view/attention_thread.evidence` draws it in the approval thread above the one control that leads to the session's page. An item's `raised_at`, `network` and `policy` are drawn (see the next paragraph). `Model.evidence` holds the last read for each session whose thread was shown.
 
 **The live rail's records** (protocol-change/051's addendum "the live rail, answered"): `component.Transport.attention` is `Some(Attention(read, record, answer))` on a session page; `answer` is `Some` only for an operator's page (`ui_socket.rail_answer_capability`). `View.watching` (`Watch`) holds the session's feed row, the asks read in full, the refusals of the form and the answer being sent. `attention_due` reads the row on `Opened` and `Ticked` every `rail_refresh_ms`; `session_view/attention.lift_all` lifts the open asks and stuck strands (pinned) and finds (folding) beside the lane's rows. `lifted_view.Rail.under` draws an ask's form (`attention_thread.answer_form`) under its row, in the rail and the phone's sheet, and `RailAnswered` checks it with `answer_rule` and sends it at the revision read. Each form is keyed by its ask (the inbox's by its press count), because radios carry no `checked` and an unkeyed form would keep a departed ask's picks. `component.rail_submit` names the rail form's path, ending in the ask's key, as a test helper only: no socket consults it, operator sockets admit any submit and an observer's admits none, so the phone sheet's form needs no entry of its own.
 
-**The live rail's actions** (protocol-change/051's addendum "the live rail's actions"): `component.Attention.act` is `Some(Act(close, retry))` only for an operator's page (`ui_socket.rail_act_capability`, the same rule as `answer`). `lifted_view.Rail.offer` maps a row to an `Offer` (`NoOffer | RetryOffer | CloseOffer | OfferSent`) that `view/lifted` draws as the card's third child, `div.lift-acts`, after the card's button and the ask's `under` place, so no existing path moves. A stuck strand's card offers "Retry the last step" (`RailRetried(strand)`, which sends `thread_send.retry_prompt`, the words the home's Retry sends) and a find's offers "File issue" and "Dismiss" (`RailClosed(key, Filed | Dismissed)`, through `attention_door.close_find`, the home's close). A page that may act reads each open find in full beside the asks (`rail_heard`, `rail_recorded`) because a close names the revision read; a find with no record offers nothing. The actions ride `RailAnswerDone`, so one is out at a time (`Watch.sending` holds an ask or find id or `session_view/attention.stuck_key`), its word is said in the rail and a settled one reads the row again. `component.rail_retry` (`rail_path` then `1\t0\t1`, position, `2\t0`) and `rail_close` (`1\t1\t1`, position, `2`, `0` or `1`) are documented test helpers like `rail_submit`: no socket consults them, an operator's or owner's socket admits a click anywhere but an owner's control, and an observer's admits neither shape because `observer_path` names neither and `rail_click` is nine segments where they are ten. `rail_actions_test` and `ui_socket_test` pin it.
+**The live rail's actions** (protocol-change/051's addendum "the live rail's actions"): `component.Attention.act` is `Some(Act(close, retry, dismiss_stuck))` only for an operator's page (`ui_socket.rail_act_capability`, the same rule as `answer`). `lifted_view.Rail.offer` maps a row to an `Offer` (`NoOffer | RetryOffer | CloseOffer | OfferSent`) that `view/lifted` draws as the card's third child, `div.lift-acts`, after the card's button and the ask's `under` place, so no existing path moves. A stuck strand's card offers "Retry the last step" (`RailRetried(strand)`, which sends `thread_send.retry_prompt`, the words the home's Retry sends) and, when the feed row names the failed run (`Stuck.operation`), "Dismiss" (`RailDismissed(strand)`, which names that operation to `attention_door.dismiss_stuck`, protocol-change/131), and a find's offers "File issue" and "Dismiss" (`RailClosed(key, Filed | Dismissed)`, through `attention_door.close_find`, the home's close). A page that may act reads each open find in full beside the asks (`rail_heard`, `rail_recorded`) because a close names the revision read; a find with no record offers nothing. The actions ride `RailAnswerDone`, so one is out at a time (`Watch.sending` holds an ask or find id or `session_view/attention.stuck_key`), its word is said in the rail and a settled one reads the row again. `component.rail_retry` (`rail_path` then `1\t0\t1`, position, `2\t0`), `rail_dismiss` (the same with `2\t1`) and `rail_close` (`1\t1\t1`, position, `2`, `0` or `1`) are documented test helpers like `rail_submit`: no socket consults them, an operator's or owner's socket admits a click anywhere but an owner's control, and an observer's admits none of the three shapes because `observer_path` names neither and `rail_click` is nine segments where they are ten. `rail_actions_test` and `ui_socket_test` pin it.
 
 - `component.Start(socket)`: what the daemon supplies when it starts a
   component: the session ID, the catalogue's `Label(name, workspace)` for
@@ -299,10 +301,11 @@ page keys and nonces, and the relay into the session's gateway.
   `Model.delivered`, which keys the box so it is drawn empty. The form submits
   beneath `table_path`, which `home_owner_accepts` already admits for
   `Submitting`, so no admission is added. `ShowingInbox` sets `centre_choice`
-  to `Decided(InboxCentre)`; `inbox_return` offers it ("‹ Inbox" in `home_table`,
-  "Back to the inbox" in the composer) on a list or composer, whether the
+  to `Decided(InboxCentre)`; `inbox_return` offers it ("‹ Inbox" in `home_table`) on a list, whether the
   centre is `Decided` as anything but `InboxCentre` or still `Awaiting`, while
-  the inbox has content. The centre's first child is an empty node, so
+  the inbox has content. The rail's folders (`rail_folders`) are drawn on
+  every centre, and `FolderPicked` brings the inbox to the centre, closing a
+  ticket or a relayed page. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it
@@ -512,7 +515,17 @@ page keys and nonces, and the relay into the session's gateway.
   `sentence`. `view/new_session` draws it at `home.table_path`, so the owner's
   socket admits its clicks and its one submit there as before, and the code
   picker's search is the one `input` the owner's socket now admits
-  (`ui_socket.home_event`), beneath that region only. Every row is a button whose
+  (`ui_socket.home_event`), beneath that region only. The folder picker
+  (protocol-change/132) replaces that list while "Choose a folder…" has it open:
+  `composer.State.browser` (`Closed`, `Reading`, `Browsing`, `Failed`), the messages
+  `OpenedBrowser`, `Descended(index)`, `Ascended(depth)`, `ChosePicked` and
+  `ClosedBrowser`, the intent `Browse(trail)`, `composer.browsed` (applies the
+  daemon's answer only for the trail awaited) and `Target.Picked(trail)`, which
+  `place` writes as the typed `~/` path. `web_view/folder_browse` is the pure
+  vocabulary (`Listing`, `Child`, `Cut`, `Refusal`, the bounds, `component_ok`,
+  `trail_ok`, `below`, `above`); `Folders.browse` is the home's read, answered as
+  `FolderBrowsed`. A press names an index into the listing the page holds, never a
+  path. Every row is a button whose
   message carries a value the server built; the form's decoder (`new_session.fields`)
   takes exactly the name field and the one more field the chosen target needs. The
   composer creates through `Start.create` with `creations.Private`, so the server
@@ -1296,6 +1309,18 @@ page keys and nonces, and the relay into the session's gateway.
   program body and an answer's fence share it; a line the scanner has no
   class for is one text node. The rows are memoized per line, so a streamed
   delta scans only the line being written.
+- `markdown_view.quoted(text)`: the same renderer for a quote in the inbox's
+  reading panes (`inbox_parts.quote_nodes`, so every quoted agent or peer
+  message). It runs `text_hygiene.multiline` and `markdown.parse`, then turns each
+  link whose destination does not start with `http://` or `https://` into its
+  label as a code span; an `http(s)` link keeps `<loom-link>` and its browser
+  check. `block_clip.clip(text, bytes)` bounds the text first, between blocks
+  (a blank line outside a fence), with an oversized first block cut between its
+  lines and a fenced one closed. The daemon uses it for the brief's assistant text
+  (`assistant_bytes`, 1600) and the overview's last message (280), both of which
+  keep their newlines (protocol-change/125 addendum). `inbox_rule.head` is the
+  first line with its markers removed, and `brief_rule.current` decides whether a
+  held brief is as new as the overview's last message.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the
@@ -1981,8 +2006,8 @@ strand focus clears the opened set; `View.opened` holds the keys, newest
 first, at most `component.open_insights`, and `rail_opened` accepts only a key
 naming a current insight. Every button carries `data-loom-jump`; the lane draws
 each row with `data-loom-row` (`lane.row_attribute`, the piece key), a "lifted"
-tag from `Marks.lifted`, and the `needs-you` tint only for a pinned row (none
-exists in the lane until phase 1b adds asks). `component.sheet` is the phone's
+tag from `Marks.lifted`, and the `needs-you` tint only for a pinned row (an
+ask's row is one, `view/lifted.ask_row`). `component.sheet` is the phone's
 `<details>` bar and sheet, appended as the centre's last child and ordered above
 the dock by CSS; its rows are not handlers. `lifted_test` pins all of this with
 seed 20261118. The jump itself is `web_client/follow`'s.
@@ -2025,6 +2050,31 @@ per fragment. The composer's line reads
 Steer do. A stuck strand's rail card has no Retry button: a send from the rail
 would be a new handler beneath `rail_path`, which an observer's socket already
 admits for the insights' presses.
+
+## The ask in the dock (protocol-change/051, the addendum on the ask in the dock)
+
+`component.asks(model, observed)` draws one `article.ask-card` for each open
+owner-routed ask of the session's feed row (`Watch.row.asks`), oldest first, in a
+`section.ask-dock` labelled "Asks waiting", or `element.none()` with none. The
+operator's page puts it last in the dock, after the composer (the stylesheet lays
+the dock out as a column and orders it above the composer, so the composer's path
+does not move); the observer's puts it in the centre's sixth child, the slot the
+operator's page gives the session switcher. A card's header is `Ask · waiting since
+<loom-time> · <strand>`. Its body is the rail's form with a `Send` button on a page
+that may answer (`rail_filled`, so the submit is `RailAnswered` and nothing new
+reaches the socket), `view/attention_thread.questions_only` (the questions as
+text, no control) on a page that may not, and the feed's cut of the first question
+until the ask is read in full. `rail_heard` now reads every open ask in full on
+every page for that reason; a find is still read only by a page that may act. The
+daemon's word on the last answer is drawn under the cards while it is not empty.
+`view/lifted.ask_row` names the lane row of an ask: the newest `Plain` or `Work`
+piece whose stamp (`lifted.items`' `at`) is at or before the ask's `created_at`,
+because a settled turn holds no steps to match a call against. That row is tinted
+and tagged `lifted · Ask` and the rail's press jumps to it; none marks nothing.
+The form's options and the read-only
+options share the rail's stylesheet block (`.lift ...,.ask-card ...`), the note in
+the second grid row under the label for every option. `ask_card_test` pins all of
+it.
 
 ## Evolution tab (protocol-change/099)
 
@@ -2390,8 +2440,8 @@ Things that break if changed carelessly:
   cuts the working-tree file it ended in (`review_feed.stream_cut`). The
   "Comment" verdict stays: `review_stage_rule.Comment` is a real state.
 - **The phone (640px and below).** The bar keeps `loom`, `‹ Inbox`, the name, the
-  live mark and the need pill; the role chip, Search, Theme, the workspace and the
-  panel's toggle are hidden, and a session's page also hides the sidebar's toggle
+  live mark, the need pill and the role chip (which ellipsizes before the name
+  does); Search, Theme, the workspace and the panel's toggle are hidden, and a session's page also hides the sidebar's toggle
   and the strand panel, so the stream comes first. The rail's sheet
   (`lifted.sheet`) is the bar above the composer; opened, the details element
   leaves the flow, its summary shows `lift-bar-title` and `lift-bar-close` in place

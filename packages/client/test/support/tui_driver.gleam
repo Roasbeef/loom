@@ -28,6 +28,7 @@
 //// A sample is not a server barrier: the test must wait for the condition
 //// it needs, under a real deadline, before asserting convergence.
 
+import client/internal/ffi_os
 import etui/backend
 import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
@@ -106,13 +107,46 @@ pub fn start_recorded(
   session: String,
   path: String,
 ) -> actor.StartResult(Subject(Message)) {
+  start_with_clock(address, token, session, path, fn() { -10_000 })
+}
+
+/// Starts an independent terminal whose clock advances with real time.
+///
+/// Every other driver freezes the presentation clock so a script is
+/// deterministic. A surface that polls on a rest, as the ask card does, never
+/// asks again when time stands still, so a scenario that waits for the daemon to
+/// say something new uses this one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(driver) = tui_driver.start_advancing(address, token, "session")
+/// ```
+pub fn start_advancing(
+  address: String,
+  token: String,
+  session: String,
+) -> actor.StartResult(Subject(Message)) {
+  let origin = ffi_os.system_time_ms()
+  start_with_clock(address, token, session, "", fn() {
+    ffi_os.system_time_ms() - origin - 10_000
+  })
+}
+
+fn start_with_clock(
+  address: String,
+  token: String,
+  session: String,
+  path: String,
+  clock: fn() -> Int,
+) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(10_000, fn(subject) {
     let inbox = connection.new_inbox()
     let model =
       tui.new_model_with_clock(
         inbox,
         workspace.Context(path: "/test/workspace", branch: None),
-        fn() { -10_000 },
+        clock,
       )
       |> tui.connect_remote(inbox, address, session, token)
       |> tui.with_recording(path)

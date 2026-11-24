@@ -300,9 +300,9 @@ fn same(got: List(Asked), want: List(Asked)) -> Bool {
   && list.all(want, fn(each) { list.contains(got, each) })
 }
 
-// A ticket waiting on a person is a row under Needs you, in the board's order,
-// and one that needs nobody is not a thread. The headline counts the tickets as
-// their own clause.
+// A ticket waiting on a person is a row, in the board's order: under Needs you,
+// or under To review for a review or a failed check. One that needs nobody is
+// not a thread. The headline counts the tickets as their own clause.
 pub fn waiting_tickets_are_rows_under_needs_you_test() {
   let #(model, _) = owner(accepting())
   let html = drawn(model)
@@ -310,7 +310,8 @@ pub fn waiting_tickets_are_rows_under_needs_you_test() {
   assert string.contains(html, "Needs you")
   assert string.contains(html, "<span class=\"inbox-kind\">Ticket</span>")
   assert string.contains(html, " · review</span>")
-  assert string.contains(html, "t-check · check failed")
+  assert string.contains(html, "t-check · person/check")
+  assert !string.contains(html, "t-check · check failed")
   assert string.contains(
     html,
     "<span class=\"nm\">Projects</span><span class=\"n\">4</span>",
@@ -318,13 +319,15 @@ pub fn waiting_tickets_are_rows_under_needs_you_test() {
   assert !string.contains(html, "building")
 }
 
-// A failed check is named in words, and the pane draws only what the daemon
+// A failed check keeps the daemon's stage word, person/check, until the owner
+// rules on what the inbox calls it, and the pane draws only what the daemon
 // lists: here a Retry and nothing else, so no Recheck.
 pub fn person_check_is_named_with_only_what_is_listed_test() {
   let #(model, _) = owner(accepting())
   let html = drawn(picked(model, "t-check"))
 
-  assert string.contains(html, "t-check · check failed")
+  assert string.contains(html, "t-check · person/check")
+  assert !string.contains(html, "t-check · check failed")
   assert string.contains(html, "Retry")
   assert !string.contains(html, "Recheck")
   assert !string.contains(html, "Close ticket")
@@ -810,7 +813,6 @@ pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
   let calm = drawn(model)
   assert string.contains(calm, "<h1>New session</h1>")
-  assert !string.contains(calm, "Back to the inbox")
 
   let later =
     drawn(run(
@@ -821,7 +823,7 @@ pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
       ),
     ))
   assert string.contains(later, "<h1>New session</h1>")
-  assert string.contains(later, "Back to the inbox")
+  assert string.contains(later, "class=\"folder need\"")
 }
 
 // A first list that cannot be read is no answer: a board that answers beside it

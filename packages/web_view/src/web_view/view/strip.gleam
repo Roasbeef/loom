@@ -116,11 +116,9 @@ pub type Chip {
     /// The model the strand runs on, as the capture reported it, or empty
     /// when it did not.
     model: String,
-    /// The catalogue's name for the strand's model when it is not the main
-    /// strand's, which the card draws under the status. `None` for `main`
-    /// itself, for a strand on the main strand's model, and while either
-    /// model is unknown, so a card names a model only where it tells the
-    /// reader something the heading has not.
+    /// The catalogue's name for the strand's model, or `None` while the
+    /// page has not read the strand's configuration. Every live strand's card
+    /// names its model, so a reader never has to open a strand to learn it.
     own_model: Option(String),
     /// The tools the strand's current operation ran most recently, oldest
     /// first, as `agent_view` bounds them.
@@ -434,7 +432,7 @@ fn seen(line: agent_roster.Line) -> Element(message) {
   }
 }
 
-// The model of a strand that runs on another one than `main`, as plain quiet
+// The strand's model, as plain quiet
 // text. The name is the catalogue's, a text node, and an empty node stands in
 // for it so the card's children keep their places either way.
 fn own_model(model: Option(String)) -> Element(message) {

@@ -804,6 +804,37 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
       assert field(field(denied, "body"), "code") == json.String("forbidden")
         as "session membership cannot mutate peer communication authority"
     })
+
+    // A project's settings are the owner's alone: a member is refused before
+    // the project is looked up, for the read, the write and the proposal.
+    let project_fields = [
+      #("project", json.String("p-0123456789ab")),
+      #("revision", json.Int(0)),
+      #(
+        "changes",
+        json.Array([
+          json.Object([
+            #("key", json.String("check")),
+            #("value", json.Array([json.String("make check")])),
+          ]),
+        ]),
+      ),
+    ]
+    list.each(
+      ["projects.settings", "projects.set_settings", "projects.propose"],
+      fn(command) {
+        let denied =
+          send(
+            socket,
+            32,
+            command,
+            json.Object(project_fields),
+            within_ms: 1000,
+          )
+        assert field(field(denied, "body"), "code") == json.String("forbidden")
+          as "a member cannot read or change a project's settings"
+      },
+    )
     assert access.revoke_credential(store, digest) == Ok(Nil)
     let revoked = send(socket, 4, "status", json.Object([]), within_ms: 1000)
     assert field(field(revoked, "body"), "code") == json.String("unauthorized")
@@ -1656,6 +1687,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.ApprovalRead
           | peer_mail.SessionBrief(..)
           | peer_mail.AttentionSettle(..)
+          | peer_mail.StuckDismiss(..)
           | peer_mail.Inbox(..)
           | peer_mail.InboxGet(..)
           | peer_mail.History(..)
@@ -2344,7 +2376,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       let read =
         server.home_activity(config, ready.registry, digest_of(credential))
       assert read(asked)
-        == [#(idle_id, sessions.Report(sessions.Idle, None, [], None, None))]
+        == [#(idle_id, sessions.Report(sessions.Idle, None, [], None, None, 0))]
 
       // A pending approval moves it to needs you.
       let assert Ok(Nil) =
@@ -2352,7 +2384,10 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         as "an approval is pending"
       assert read([idle_id])
         == [
-          #(idle_id, sessions.Report(sessions.NeedsYou, None, [], None, None)),
+          #(
+            idle_id,
+            sessions.Report(sessions.NeedsYou, None, [], None, None, 0),
+          ),
         ]
 
       // A member holding the session, at any role, is answered for it, and for
@@ -2361,7 +2396,10 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         server.home_activity(config, ready.registry, digest_of("holder-token"))
       assert held(asked)
         == [
-          #(idle_id, sessions.Report(sessions.NeedsYou, None, [], None, None)),
+          #(
+            idle_id,
+            sessions.Report(sessions.NeedsYou, None, [], None, None, 0),
+          ),
         ]
 
       // A member holding nothing gets exactly what an unknown identity gets: no
@@ -2404,7 +2442,7 @@ fn glance(strand: String, title: String, summary: String) -> json.JsonValue {
 // they are well-formed and are no message and no glances when they are not.
 pub fn a_row_decodes_into_a_report_with_or_without_its_extras_test() {
   assert server.report_of(row([]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None, 0)))
 
   assert server.report_of(
       row([
@@ -2426,14 +2464,15 @@ pub fn a_row_decodes_into_a_report_with_or_without_its_extras_test() {
         ],
         None,
         None,
+        asks: 0,
       ),
     ))
 
   // A null message is none, and so is one of the wrong type.
   assert server.report_of(row([#("last_message", json.Null)]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None, 0)))
   assert server.report_of(row([#("last_message", json.Int(3))]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None, 0)))
 }
 
 // A malformed glance is dropped alone: its neighbours and the row's state and
@@ -2472,11 +2511,12 @@ pub fn a_malformed_glance_is_dropped_and_never_fails_the_row_test() {
         ],
         None,
         None,
+        asks: 0,
       ),
     ))
 
   assert server.report_of(row([#("glances", json.String("nope"))]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None, 0)))
 }
 
 // A row the page cannot read at all, an unknown state or no session, is no
@@ -2506,9 +2546,9 @@ pub fn a_reports_activity_follows_the_approvals_count_test() {
   }
 
   assert server.report_of(needs(0))
-    == Ok(#("S", sessions.Report(sessions.Failed, None, [], None, None)))
+    == Ok(#("S", sessions.Report(sessions.Failed, None, [], None, None, 0)))
   assert server.report_of(needs(2))
-    == Ok(#("S", sessions.Report(sessions.NeedsYou, None, [], None, None)))
+    == Ok(#("S", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)))
 }
 
 fn sha256_hex(text: String) -> String {

@@ -25,7 +25,7 @@
 //// names the file that moved:
 ////
 ////   5816fc74c9ad456210316687f1f3169919cbee4c8e8b0e484caf1716b6b8db48  packages/cap/src/cap/actor.gleam
-////   97d04b38582ed6ff9e4027ee92d1010a510b2b4d26f11824ff7db1615d8084fd  packages/cap/src/cap/attention.gleam
+////   775345f5c9bc8aad2de91d110f1f0fbd2941e33be247117f76c42cd3c7535fd4  packages/cap/src/cap/attention.gleam
 ////   73e82f83d61ecead880a5b8d63b5bbbd1bc8564cf814196fa197189d51edd598  packages/cap/src/cap/evolution.gleam
 ////   215a3ee1f03e0eff219cb883816afc22a914b25983feebdd681a8c4b6aaf996e  packages/cap/src/cap/execution.gleam
 ////   1023007f1155f92e80a7aa5b2af956929d4d123d491696a379bad82e205aee68  packages/cap/src/cap/fs.gleam
@@ -50,7 +50,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): 237b6d5a19ed04d787b91a4095fc5223192bfa44774ac7777a08ccf23faf9ee3
+//// Body digest (every line after the marker): 568e59fcaed2760147c230cf5617d90b456626ee8f3d5605fe8626a33073db5b
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -224,9 +224,11 @@ pub fn alternative(String) -> Alternative
 /// session when `to` names one, and returns the ask's id. It records the
 /// ask and returns at once, and it does not end your turn: end it
 /// yourself after the program returns. The answer arrives later as a
-/// message from the person holding one fenced JSON object. At most 32
-/// asks may be open at once. Capability: attention.ask. The execution
-/// allows at most 8 calls.
+/// message from the person that names the ask's id and lists each
+/// question, numbered, with the answer under it: Yes or No, the chosen
+/// option labels in double quotes, the typed text, or \"Other (not one of
+/// the options):\" and the text. At most 32 asks may be open at once.
+/// Capability: attention.ask. The execution allows at most 8 calls.
 ///
 ///  ## Examples
 ///

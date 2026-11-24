@@ -501,6 +501,96 @@ pub fn untracked_runtime_caches_do_not_hide_tracked_changes_test() {
   assert string.contains(file(board, "new-source.txt").patch, "+real source")
 }
 
+// A tool home or build tree can hold thousands of untracked files. Each wholly
+// untracked directory is one entry drawn without a patch, so the listing stays
+// small and the tracked edit is still observed.
+pub fn untracked_directories_are_single_entries_test() {
+  use wiring <- worktree_wiring.with_fixture("untracked-directories")
+  setup(wiring, ["init", "--quiet"])
+  write(wiring, "tracked.txt", "before\n")
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c",
+    "commit.gpgsign=false", "commit", "--quiet", "-m", "tracked fixture",
+  ])
+  write(wiring, "tracked.txt", "after\n")
+  write(wiring, "loose.txt", "loose\n")
+  list.each([".cache", ".crush", "vendor/deep/er"], fn(directory) {
+    let assert Ok(Nil) =
+      simplifile.create_directory_all(wiring.workspace <> "/" <> directory)
+      as "the untracked directory exists"
+    int.range(from: 1, to: 1000, with: Nil, run: fn(_, index) {
+      write(
+        wiring,
+        directory <> "/generated-file-with-a-long-name-" <> int.to_string(index),
+        "x\n",
+      )
+    })
+  })
+  let assert Ok(board) = worktree_diff.capture(wiring)
+    as "thousands of untracked files do not fail the board"
+  assert board.total == 5
+  assert board.omitted == 0
+  assert board.extent == worktree_diff.Complete
+  assert string.contains(file(board, "tracked.txt").patch, "+after")
+  assert string.contains(file(board, "loose.txt").patch, "+loose")
+  let cache = file(board, ".cache/")
+  assert cache.kind == worktree_diff.MetadataOnly
+  assert cache.patch == ""
+  assert file(board, "vendor/").kind == worktree_diff.MetadataOnly
+}
+
+// A listing of loose files longer than the status bound is cut at a whole
+// record. The board is limited, not failed, and the tracked edit survives.
+pub fn an_oversized_untracked_listing_degrades_the_board_test() {
+  use wiring <- worktree_wiring.with_fixture("untracked-oversized")
+  setup(wiring, ["init", "--quiet"])
+  write(wiring, "tracked.txt", "before\n")
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c",
+    "commit.gpgsign=false", "commit", "--quiet", "-m", "tracked fixture",
+  ])
+  write(wiring, "tracked.txt", "after\n")
+  let padding = string.repeat("p", 120)
+  int.range(from: 1, to: 2800, with: Nil, run: fn(_, index) {
+    write(wiring, padding <> int.to_string(index), "")
+  })
+  let assert Ok(board) = worktree_diff.capture(wiring)
+    as "an oversized untracked listing does not fail the board"
+  assert board.extent == worktree_diff.Limited
+
+  // The cut listing holds fewer records than the 2,799 files written.
+  assert board.total > 1 && board.total < 2799
+  assert string.contains(file(board, "tracked.txt").patch, "+after")
+}
+
+// A mass change to tracked files, such as a deleted vendored tree, can push the
+// tracked status past its byte bound. The board keeps the whole records that
+// fit and reports limited instead of failing.
+pub fn an_oversized_tracked_status_degrades_the_board_test() {
+  use wiring <- worktree_wiring.with_fixture("tracked-oversized")
+  setup(wiring, ["init", "--quiet"])
+  let padding = string.repeat("t", 120)
+  int.range(from: 1, to: 2800, with: Nil, run: fn(_, index) {
+    write(wiring, padding <> int.to_string(index), "before\n")
+  })
+  write(wiring, "edited.txt", "before\n")
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c",
+    "commit.gpgsign=false", "commit", "--quiet", "-m", "tracked fixture",
+  ])
+  int.range(from: 1, to: 2800, with: Nil, run: fn(_, index) {
+    write(wiring, padding <> int.to_string(index), "after\n")
+  })
+  let assert Ok(board) = worktree_diff.capture(wiring)
+    as "an oversized tracked status does not fail the board"
+  assert board.extent == worktree_diff.Limited
+  assert board.total > 1 && board.total < 2799
+  assert board.entries != []
+}
+
 // A session whose workspace is a linked worktree under a hidden directory, as
 // Claude Code makes them (`<repo>/.claude/worktrees/<name>`), has a `.git`
 // that is a file naming metadata outside the workspace. The observation must

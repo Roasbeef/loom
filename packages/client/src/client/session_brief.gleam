@@ -54,6 +54,7 @@ import session/session
 import session_view/step_words
 import session_view/tool_activity
 import storage/storage
+import web_view/block_clip
 import web_view/session_brief.{type Brief}
 
 /// How many message entries of main's branch a brief looks back over. The
@@ -161,8 +162,8 @@ fn latest_assistant(
         ..,
       ) ->
         case
-          glance.clip(
-            string.join(assistant_texts(content), " "),
+          block_clip.clip(
+            string.join(assistant_texts(content), "\n\n"),
             session_brief.assistant_bytes,
           )
         {

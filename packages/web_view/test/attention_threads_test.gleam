@@ -24,6 +24,7 @@ import web_view/saved_attention
 import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
 import web_view/thread_send
+import web_view/view/attention_thread
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: element.Element(message)) -> List(String)
@@ -34,7 +35,12 @@ const ask_id = "ask-0123456789"
 
 const find_id = "find-0123456789"
 
-const strand = "sub:main/audit"
+// A first question longer than the feed's head limit, so the head the row and
+// the old title carried is a cut of it.
+const long_prompt =
+  "Which branch should the audit run against, given that the release branch is frozen and the nightly branch carries the migration the audit has to read first?"
+
+const strand = "sub:main/audit-0123456789abcdef"
 
 fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
   Entry(
@@ -52,8 +58,8 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
 
 fn reports() -> List(#(String, sessions.Report)) {
   [
-    #("A", Report(sessions.Idle, Some("Done."), [], None, None)),
-    #("B", Report(sessions.Idle, None, [], None, None)),
+    #("A", Report(sessions.Idle, Some("Done."), [], None, None, 0)),
+    #("B", Report(sessions.Idle, None, [], None, None, 0)),
   ]
 }
 
@@ -99,6 +105,7 @@ fn feed_rows() -> List(#(String, attention_feed.Row)) {
             reason: None,
             retry_after_ms: None,
             parent: None,
+            operation: Some(failed_run),
           ),
         ]),
       ),
@@ -129,7 +136,7 @@ fn the_ask() -> attention.Ask {
     questions: [
       attention.Question(
         key: "q1",
-        prompt: "Which branch?",
+        prompt: long_prompt,
         kind: attention.Choice,
         options: [
           attention.Alternative(
@@ -205,6 +212,9 @@ fn read_of(id: String) -> Result(item_pane.Record, String) {
   }
 }
 
+/// The failed run the stuck row of session B names.
+const failed_run = "0194f7b2-aaaa-7000-8000-000000000001"
+
 pub type Acted {
   Answered(session: String, ask: String, revision: Int, form: JsonValue)
   Closed(
@@ -214,6 +224,7 @@ pub type Acted {
     closure: attention.Closure,
   )
   Messaged(session: String, strand: String, text: String)
+  Dismissed(session: String, strand: String, operation: String)
 }
 
 fn start(
@@ -289,6 +300,10 @@ fn acting(
     },
     close: fn(session, find, revision, closure, deliver) {
       process.send(asked, Closed(session, find, revision, closure))
+      deliver(outcome)
+    },
+    dismiss_stuck: fn(session, strand, operation, deliver) {
+      process.send(asked, Dismissed(session, strand, operation))
       deliver(outcome)
     },
     strand: fn(session, strand, text, _delivery, deliver) {
@@ -404,6 +419,66 @@ pub fn an_asks_questions_are_fixed_controls_and_model_text_is_text_test() {
   assert !string.contains(html, "\" onclick=\"")
 }
 
+// A question is the pane's title in full and is not drawn a second time as a
+// visible heading, and Other is one option whose text field is inside it, so
+// choosing it is what shows the field.
+pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
+  let html = drawn(run(owner(), home.ItemPicked(ask_key())))
+
+  assert string.contains(
+    html,
+    "<h1 class=\"inbox-title\">" <> long_prompt <> "</h1>",
+  )
+  assert string.contains(html, "<span>Other</span><input")
+  assert string.contains(html, "inbox-other")
+  assert string.contains(html, "Message this session")
+  assert !string.contains(html, "Message web ui")
+
+  // Between Other's own control and its text field, no option closes.
+  let assert Ok(#(_, from_other)) = string.split_once(html, "value=\"other\"")
+  let assert Ok(#(inside, _)) =
+    string.split_once(from_other, "name=\"q1-other\"")
+  assert !string.contains(inside, "</label>")
+}
+
+// A record of a sub-agent's strand is named on its row by the strand, without
+// the identifier the agency appends, so two rows of one session differ.
+pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
+  let html = drawn(owner())
+
+  assert string.contains(html, ">sub:main/audit-…cdef</span>")
+  assert !string.contains(html, "0123456789abcdef</span>")
+}
+
+// A find whose text the title already holds draws no quote that repeats it.
+pub fn a_short_find_is_not_drawn_twice_test() {
+  let html = drawn(run(owner(), home.ItemPicked(find_key())))
+
+  // The list row and the title hold it, and no quote holds it a third time.
+  assert count_of(html, "No backoff in retry.") == 2
+}
+
+fn count_of(html: String, needle: String) -> Int {
+  list.length(string.split(html, needle)) - 1
+}
+
+// Two siblings of one purpose keep a short distinguishing tail, so their rows
+// do not read alike, and a long purpose is cut before the tail.
+pub fn sibling_strands_keep_a_distinguishing_tail_test() {
+  let a = attention_thread.strand_name("sub:main/audit-0123456789abcdef")
+  let b = attention_thread.strand_name("sub:main/audit-0123456789ab1234")
+  assert a == "sub:main/audit-…cdef"
+  assert b == "sub:main/audit-…1234"
+
+  let long =
+    attention_thread.strand_name(
+      "sub:main/review-the-meter-pricing-and-the-rate-card-0123456789abcdef",
+    )
+  assert string.length(long) == 36
+  assert string.ends_with(long, "…-…cdef")
+  assert attention_thread.strand_name("main") == "main"
+}
+
 // Submitting stages the answer into the outbox and sends nothing. Send then
 // names the revision the ask was read at, and the daemon's word is shown.
 pub fn staging_an_answer_sends_nothing_until_send_test() {
@@ -425,7 +500,7 @@ pub fn staging_an_answer_sends_nothing_until_send_test() {
 
   // The outbox lists the checked answer, and nothing has been asked of the daemon.
   let html = drawn(staged)
-  assert string.contains(html, "Which branch? — beta")
+  assert string.contains(html, long_prompt <> " — beta")
   assert string.contains(html, "Which files? — a.gleam, b.gleam")
   assert received(asked) == []
 
@@ -479,7 +554,7 @@ pub fn a_refusal_keeps_the_outbox_and_shows_its_words_test() {
   let html = drawn(run(staged, home.ItemSent))
 
   assert string.contains(html, "Not sent: that ask was already answered")
-  assert string.contains(html, "Which branch? — beta")
+  assert string.contains(html, long_prompt <> " — beta")
 }
 
 // One Send carries an answer and a note: the answer first, then the note to
@@ -552,7 +627,7 @@ pub fn a_find_closes_at_its_revision_test() {
     ))
   let picked = run(model, home.ItemPicked(find_key()))
   let html = drawn(picked)
-  assert string.contains(html, "The agent noticed (bug), untrusted text")
+  assert !string.contains(html, "The agent noticed (bug), untrusted text")
   assert string.contains(html, "src/retry.gleam:41")
 
   let _ = run(picked, home.ItemClosed(attention.Filed))
@@ -578,9 +653,73 @@ pub fn retry_prompts_the_stuck_strand_test() {
     ))
   let retried = run(run(model, home.ItemPicked(stuck_key())), home.ItemRetried)
 
-  let assert [Messaged(session: "B", strand: "sub:main/audit", ..)] =
-    received(asked)
+  let assert [
+    Messaged(session: "B", strand: "sub:main/audit-0123456789abcdef", ..),
+  ] = received(asked)
   assert string.contains(drawn(retried), "Delivered to the strand · admitted")
+}
+
+// The stuck pane is a card of rows, the strand's status first, and the nudge is
+// named in the final design's words.
+pub fn the_stuck_pane_is_a_card_of_what_the_page_knows_test() {
+  let html = drawn(run(owner(), home.ItemPicked(stuck_key())))
+
+  assert string.contains(html, "<td>Strand status</td>")
+  assert string.contains(html, "Send it a nudge")
+  assert string.contains(html, ">Retry the last step<")
+}
+
+// Dismiss names the strand and the failed run the page's feed read held, sends
+// nothing to the strand, and says the daemon's word.
+pub fn dismiss_names_the_strand_and_the_failed_run_test() {
+  let asked = process.new_subject()
+  let model =
+    opened(start(
+      listing(),
+      reports(),
+      [],
+      Some(acting(
+        asked,
+        home.Succeeded("Dismissed."),
+        thread_send.Delivered(thread_send.Admitted),
+      )),
+    ))
+  let picked = run(model, home.ItemPicked(stuck_key()))
+  assert string.contains(drawn(picked), ">Dismiss</button>")
+
+  // A note staged before the press is not sent: it would run the strand.
+  let noted = run(picked, home.ItemNoted("x"))
+  let dismissed = run(noted, home.ItemDismissed)
+  assert received(asked)
+    == [Dismissed(session: "B", strand:, operation: failed_run)]
+  assert string.contains(drawn(dismissed), "Dismissed.")
+}
+
+// A dismissal is asked only for a strand the page's feed row holds stuck, at a
+// thread that is a stuck strand's. An ask's thread has no Dismiss to press and a
+// message that arrives for it sends nothing.
+pub fn dismiss_is_not_sent_for_a_thread_that_is_not_a_stuck_strand_test() {
+  let asked = process.new_subject()
+  let model =
+    opened(start(
+      listing(),
+      reports(),
+      [],
+      Some(acting(
+        asked,
+        home.Succeeded("Answered."),
+        thread_send.Delivered(thread_send.Admitted),
+      )),
+    ))
+
+  // No thread is open.
+  let _ = run(model, home.ItemDismissed)
+
+  // An ask's thread is open.
+  let picked = run(model, home.ItemPicked(ask_key()))
+  assert !string.contains(drawn(picked), ">Dismiss</button>")
+  let _ = run(picked, home.ItemDismissed)
+  assert received(asked) == []
 }
 
 // An observer's page reads the same threads and the same record and has no
@@ -591,7 +730,9 @@ pub fn an_observer_reads_and_cannot_stage_or_send_test() {
   let html = drawn(picked)
 
   assert string.contains(html, ">Ask</span>")
-  assert string.contains(html, "Which branch?")
+  // The first question is the title and is not listed a second time.
+  assert count_of(html, long_prompt) == 1
+  assert string.contains(html, "<li>Which files?</li>")
   assert string.contains(
     html,
     "Only the owner&#39;s operating page can answer.",
@@ -610,7 +751,7 @@ pub fn an_observer_reads_and_cannot_stage_or_send_test() {
   assert drawn(forced) == html
 
   let stuck = drawn(run(model, home.ItemPicked(stuck_key())))
-  assert !string.contains(stuck, ">Retry<")
+  assert !string.contains(stuck, ">Retry the last step<")
   let found = drawn(run(model, home.ItemPicked(find_key())))
   assert !string.contains(found, ">Fixed<")
 }
@@ -796,7 +937,7 @@ pub fn an_approval_thread_lists_its_evidence_and_still_only_points_away_test() {
   let model =
     opened(start(
       listing(),
-      [#("A", Report(sessions.NeedsYou, None, [], None, None))],
+      [#("A", Report(sessions.NeedsYou, None, [], None, None, 0))],
       [],
       None,
     ))
@@ -849,6 +990,7 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
             reason: None,
             retry_after_ms: None,
             parent: None,
+            operation: None,
           ),
         ]),
       ),
@@ -1002,7 +1144,7 @@ fn quiet_and_saved() -> List(Entry) {
 }
 
 fn quiet_report() -> List(#(String, sessions.Report)) {
-  [#("A", Report(sessions.Idle, None, [], None, None))]
+  [#("A", Report(sessions.Idle, None, [], None, None, 0))]
 }
 
 // A saved session with nothing pending lands the composer once its summary has
@@ -1020,12 +1162,11 @@ pub fn a_summary_that_counts_nothing_lands_the_composer_test() {
   let html = drawn(model)
   assert string.contains(html, "<h1>New session</h1>")
   assert !string.contains(html, "<h1>Inbox</h1>")
-  assert !string.contains(html, "Back to the inbox")
 
   let later = drawn(run(model, home.SavedRead([approval_waiting()])))
   assert string.contains(later, "<h1>New session</h1>")
   assert !string.contains(later, "<h1>Inbox</h1>")
-  assert string.contains(later, "Back to the inbox")
+  assert string.contains(later, "class=\"folder need\"")
 }
 
 // The activity read answers first and says the one running session is quiet,
@@ -1085,7 +1226,7 @@ pub fn a_decided_composer_is_never_covered_by_a_later_read_test() {
     |> run(home.FeedRead(feed_rows()))
     |> run(home.SavedRead([approval_waiting()]))
     |> run(
-      home.Observed([#("A", Report(sessions.Working, None, [], None, None))]),
+      home.Observed([#("A", Report(sessions.Working, None, [], None, None, 0))]),
     )
   let html = drawn(later)
 
@@ -1106,11 +1247,11 @@ pub fn the_inbox_control_shows_on_a_decided_composer_with_a_summary_test() {
     )
   let calm = drawn(model)
   assert string.contains(calm, "<h1>New session</h1>")
-  assert !string.contains(calm, "Back to the inbox")
+  assert !string.contains(calm, "class=\"folder need\"")
 
   let html = drawn(run(model, home.SavedRead([approval_waiting()])))
   assert string.contains(html, "<h1>New session</h1>")
-  assert string.contains(html, "Back to the inbox")
+  assert string.contains(html, "class=\"folder need\"")
 }
 
 // With no saved session in the list no summary is coming, so nothing decides the
@@ -1184,5 +1325,5 @@ pub fn a_crashed_read_is_released_by_the_next_list_test() {
 
   assert string.contains(html, "<h1>New session</h1>")
   assert !string.contains(html, "<h1>Inbox</h1>")
-  assert string.contains(html, "Back to the inbox")
+  assert string.contains(html, "class=\"folder need\"")
 }

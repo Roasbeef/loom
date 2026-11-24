@@ -86,8 +86,8 @@ a model's request, and carries a `lineage/` cell naming its parent.
 `agent_send` and `agent_wait` check that cell before one strand may
 address another, and `strand.roster` lists strands from it.
 
-`ensure_strand` (`client/advisor.gleam:3661`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1757`) instead. That is the
+`ensure_strand` (`client/advisor.gleam:3705`) creates the advisor through
+`create_idle_strand` (`runtime/api.gleam:1779`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
 
@@ -331,7 +331,7 @@ name, so a verdict cannot be attributed to a strand that did not produce
 it. `judge` (`client/advisor.gleam:1652`) refuses any caller whose name
 is not `advisor`. The cost is set by the emission guard, described below.
 
-`decode_verdict` (`tools/advise.gleam:230`) is total and decodes the
+`decode_verdict` (`tools/advise.gleam:241`) is total and decodes the
 verdict and its text as one pair, because half the failure modes are
 disagreements between them. A `nudge` with nothing to say has no advice
 in it. A `quiet` carrying text is a model that chose to say something and
@@ -351,9 +351,19 @@ the run-end hook holds the boundary open until the advisor answers, would
 put a provider round trip on the driver process at every run end. See
 "Deferred" below.
 
-`Delivery` distinguishes the two admissions, and the advisor is told
-which one the message went through: `Steered` renders as "steered the
-primary's open run" and `Started` as "started a run on the idle primary".
+`Delivery` distinguishes the admissions, and the advisor is told which one
+the message went through: `Steered` renders as "steered the primary's open
+run", `Started` as "started a run on the idle primary", and `Held` as "held
+for the owner's answer to the primary's open ask".
+
+A primary that stopped on an `ask` is waiting for the owner, and the advisor
+does not wake it (protocol-change/119, "Addendum 2026-11-23: an open ask holds
+the strand"). A nudge stays in the guard cell and the turn's one unsolicited
+wake is not spent. The run-end hook places no nudge as a follow-up on the run
+that made the ask, because that would continue the run past its question. The
+queue reaches the primary at its next run start, which is the owner's message
+or the answer. A block and a goal continuation go through `send_to_strand`,
+which holds them as next-run items for the same reason.
 
 The run-end hook checks the pending nudge queue before the primary's
 terminal transaction. If a nudge is judged after that check while the
@@ -478,7 +488,7 @@ rather than becoming `Woke` or `Delivered`. A downgrade means the primary
 was *not* stopped for it, and either of those acks would claim
 otherwise. The wake is appended to the downgrade's own reason instead.
 
-The actor's `decide` (`client/advisor.gleam:3010`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:3027`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the
 send costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -825,7 +835,7 @@ feed_every_steps = 20           # default; 0 is the run-end-only cadence
 block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
-The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:476`). It is `model.Custom("advisor")` rather than
+The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:501`). It is `model.Custom("advisor")` rather than
 a sixth named variant, because `provider/model.Role`'s five names are the
 design vocabulary and `Custom` is what that type provides for a role an
 application defines. It is last in the canonical order because it is the
@@ -847,7 +857,7 @@ cases an operator could not otherwise tell apart. A catalogue with no
 catalogue that routes the role to a chain this host cannot serve would
 otherwise show only a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:2894`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:2945`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is. An unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

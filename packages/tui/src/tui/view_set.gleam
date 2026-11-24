@@ -177,6 +177,18 @@ pub fn activity_poll(view: View, activity_poll) -> View {
   View(..view, activity_poll:)
 }
 
+/// Replaces `View.asks`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// view_set.asks(model.view, value)
+/// ```
+@internal
+pub fn asks(view: View, asks) -> View {
+  View(..view, asks:)
+}
+
 /// Replaces `View.note_selected`; the record documents the field.
 ///
 /// ## Examples

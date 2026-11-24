@@ -112,7 +112,7 @@ is not in this list is refused.
 | `roles` | table | Which models serve which role. Required, and must route `main`. | [`[roles]`](#roles) |
 | `profiles` | table of `[profiles.<name>]` | Named alternatives to `[roles]`. | [`[profiles.<name>]`](#profilesname) |
 | `mcp` | table of `[mcp.<name>]` | Stdio and streamable-HTTP MCP servers exposed to code mode. | [`[mcp.<name>]`](#mcpname) |
-| `lsp` | table of `[lsp.<name>]` | Language servers behind the `lsp_*` tools. | [`[lsp.<name>]`](#lspname) |
+| `lsp` | table of `[lsp.<name>]` | Language servers behind `cap/lsp` and, when `[tools] lsp_tools = "on"`, the `lsp_*` tools. | [`[lsp.<name>]`](#lspname) |
 | `rule` | array of tables, `[[rule]]` | Triggered project rules. | [`[[rule]]`](#rule) |
 | `schedule` | array of tables, `[[schedule]]` | Operator-written scheduled heartbeats. | [`[[schedule]]`](#schedule) |
 | `schedules` | table | Whether the model may create schedules. | [`[schedules]`](#schedules) |
@@ -287,7 +287,8 @@ since a server in the executor's file can only run on the executor. See
 ## `[lsp.<name>]`
 
 Optional, one table per language server. Language servers are configured, never
-discovered: with no `[lsp]` table there are no `lsp_*` tools and nothing is
+discovered: with no `[lsp]` table there are no `lsp_*` tools, whatever
+`[tools] lsp_tools` says, and nothing is
 spawned. A table is a language profile
 ([ADR-016](adr/016-language-profiles.md)): an installed extension may ship the
 same table, one decoder reads both, and a table in this file with the same name
@@ -309,7 +310,7 @@ beyond the project. See [lsp](architecture/lsp.md).
 | `language_id` | string | the first extension without its dot | `[a-z0-9][a-z0-9+._-]*`, at most 40 characters | The `languageId` documents are opened with. |
 | `qualifier_separators` | array of strings | `["."]` | non-empty strings, never `/` | What a qualified symbol is split on, such as `["::"]` for Rust. The longest listed is tried first. |
 | `module_case` | string | `as-written` | `as-written`, `snake` | How a qualifier is compared with file and directory names. `snake` maps CamelCase segments first. |
-| `hint` | string | none | one line, at most 200 bytes | Appended to the `lsp_definition` tool description, so the model reads it on every request. |
+| `hint` | string | none | one line, at most 200 bytes | Appended to the `lsp_definition` tool description when `[tools] lsp_tools = "on"`, and to the code-mode `cap/lsp` guidance, so the model reads it on every request. |
 | `prepare` | string | none | `gleam-dependencies` | The operator approves networking for one finite dependency-preparation call while the server stays offline. Requires a command of the form `[<gleam>, "lsp"]`, `project = "writable"`, and `cache_env.XDG_CACHE_HOME`. |
 
 ## `[[rule]]`
@@ -417,6 +418,7 @@ fixed key list.
 | `env` | array of strings | none | non-empty variable names, no duplicates | Host variables passed into every jailed tool shell. |
 | `set` | table | none | variable name to string | Literal variables set in every jailed tool shell. |
 | `path` | array of strings | none | absolute directories, no duplicates | Appended to the shell's `PATH` after the server's own entries, which stay in front. |
+| `lsp_tools` | string | `off` | `off`, `on` | `on` registers five top-level language-server tools for a host whose agents call tools directly rather than through code mode: `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols` (a file's outline) and `lsp_diagnostics`. Each takes `symbol`, optionally narrowed by `path` and the 1-based `line` `fs_read` prints, except `lsp_symbols` (`path`) and `lsp_diagnostics` (optional `path`). They ask the session's one language-server door, so they exist only with a configured `[lsp.<name>]` server, and a file no server owns answers "language server unavailable". Their answers are bounded and say when they cut. `off` leaves the tool array unchanged. See [lsp](architecture/lsp.md#the-opt-in-query-tools). |
 
 ## `[secrets]`
 
@@ -539,10 +541,22 @@ for explicit links.
 ## `[project]`
 
 (From protocol-change 106.) Optional, read once when the daemon starts, like
-`[peers]`. Bounds the workers of every project the daemon runs. A project is made
-with `loom project init` and needs no table; the keys below only change its
-limits, what the host does with a worker's finished work, and where else work can
-come from. The composer is always a source. `[[project.source]]` and
+`[peers]`. It holds the **defaults** for every project the daemon runs. A project is
+made with `loom project init`, which sets up its `check` and `setup` for it, and needs
+no table at all. The keys below are what a project falls back to; `loom project settings`
+shows the value in force for each and where it came from.
+
+Five of the keys are also held per project, in the project's own ledger, and change with
+no restart: `check`, `setup`, `publish`, `max_workers` and `protected_paths`. The value in
+force is the project's own, else this table's, else the default shown below, so a file
+that changes while the daemon is down moves every project that did not set that key
+itself. `loom project set <key> <value>` sets one for the project of the working
+directory and `loom project unset <key>` gives it back to this table. See
+[Per-project settings](#per-project-settings). `token_ceiling`, `queue_limit`,
+`attention_limit` and the sources are daemon-wide and need this file and a restart.
+
+The keys change a project's limits, what the host does with a worker's finished work, and
+where else work can come from. The composer is always a source. `[[project.source]]` and
 `[[project.rule]]` add GitHub as one more.
 
 Each worker has a clone of the owner's repository under the daemon's state root
@@ -573,6 +587,37 @@ created, and opens a pull request through `gh api`. It never merges. A checkout 
 | `source` | array of tables | none | at most one, `kind = "github"` | An event source besides the composer. See [`[[project.source]]`](#projectsource). |
 | `rule` | array of tables | none | at most 32 | What an inferred trigger may become. See [`[[project.rule]]`](#projectrule). |
 
+### Per-project settings
+
+A person sets a project up without opening `loom.toml`:
+
+```sh
+loom project init                    # proposes setup and check from the repository, asks you to confirm
+loom project init --check "make unit" --setup "go mod download"
+loom project settings                # each key, its value, and where the value came from
+loom project set check "make check"  # takes effect with no restart
+loom project unset check             # back to loom.toml's value
+loom project set publish pull_request --publish-to https://github.com/o/r
+```
+
+- `init` reads the repository and proposes from a fixed table (a `Makefile` with a `check`, `test`,
+  `unit` or `lint` target; `go.mod`; `gleam.toml`; `Cargo.toml`; `package.json` scripts;
+  `pyproject.toml`). It runs nothing, follows no symbolic link, reads at most 256 KiB of a file, and
+  proposes only the table's own strings, never text from a file. It applies nothing until you answer
+  yes or type your own command. Without a terminal it prints what it would use and the command that
+  sets it.
+- A value is refused for the same reasons, in the same words, as the same value in this file.
+- Each change is recorded in the project's ledger with who made it and when, and survives a restart.
+- A changed `check` or `setup` rebuilds the project's template and proves the base check again.
+  New workers wait for it. Workers already running are not stopped.
+- Turning `publish` on is the one change that needs naming: the settings show the URL a published
+  branch would go to, and the write must carry that URL as `--publish-to`. A write that carries
+  other keys beside it is refused whole.
+- Only the owner can read or change settings. Nothing a router, a worker or a GitHub comment says
+  reaches them.
+- Two projects on one daemon keep their own commands and their own templates, and a change to one
+  leaves the other alone.
+
 ### The template
 
 A check runs worker-authored code, so it runs with the network off, and a real repository's
@@ -581,9 +626,12 @@ template at `<state>/projects/<id>/template`: a checkout of the recorded base co
 `setup` ran with the network on and `HOME` set to `<template>/.loom-check-home` and `TMPDIR` under it, and in which
 `check` then ran once with the network off to show that it passes on the clean base. The
 template is built only from that clean commit and never from anything a worker wrote. A worker's
-clone and each check tree are then copies of the template (`git-cow copy` when the binary is
-installed, a plain recursive copy otherwise), moved to the commit they need. The caches that
-`setup` wrote are carried along, and the check finds them offline.
+clone and each check tree are then copies of the template (`git-cow copy` with the binary a
+release ships at `bin/git-cow`, or the first one on `PATH` in a development tree, and a plain
+recursive copy otherwise), moved to the commit they need. The caches that `setup` wrote are
+carried along, and the check finds them offline. Before the template is swapped in, the build
+copies it once with the same copier, so a tree the copier refuses fails the build as a setup
+failure on the board and not at the first worker.
 
 - A ticket assigned while the template is being built waits, and nothing fails. If `setup` or
   the base check fails, no worker starts: the board's sources list shows what failed, with the

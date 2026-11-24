@@ -349,9 +349,9 @@ pub fn a_running_row_says_what_it_is_doing_test() {
       home.Start(..start(), activity: fn(ids, deliver) {
         process.send(asked, ids)
         deliver([
-          #("B", sessions.Report(sessions.Working, None, [], None, None)),
-          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
-          #("C", sessions.Report(sessions.Idle, None, [], None, None)),
+          #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
+          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
+          #("C", sessions.Report(sessions.Idle, None, [], None, None, 0)),
         ])
       }),
     )
@@ -391,8 +391,8 @@ pub fn an_activity_answer_replaces_the_last_test() {
     run(
       model,
       home.Observed([
-        #("B", sessions.Report(sessions.Working, None, [], None, None)),
-        #("A", sessions.Report(sessions.Idle, None, [], None, None)),
+        #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
+        #("A", sessions.Report(sessions.Idle, None, [], None, None, 0)),
       ]),
     )
   assert string.contains(
@@ -403,7 +403,7 @@ pub fn an_activity_answer_replaces_the_last_test() {
     run(
       model,
       home.Observed([
-        #("B", sessions.Report(sessions.Idle, None, [], None, None)),
+        #("B", sessions.Report(sessions.Idle, None, [], None, None, 0)),
       ]),
     )
   assert !string.contains(drawn(model), "working")
@@ -429,7 +429,7 @@ pub fn the_activity_word_is_its_own_span_test() {
     run(
       model,
       home.Observed([
-        #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        #("A", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
       ]),
     )
   let html = drawn(model)
@@ -495,7 +495,7 @@ pub fn an_ended_page_asks_for_no_activity_test() {
     run(
       ended,
       home.Observed([
-        #("B", sessions.Report(sessions.Working, None, [], None, None)),
+        #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
       ]),
     )
   assert process.receive(asked, 0) == Error(Nil)
@@ -580,14 +580,14 @@ pub fn an_observer_homes_only_running_rows_carry_a_press_test() {
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed(listing()) }))
   let keys = handlers(home.view(observer))
-  assert list.length(keys) == 4
+  assert list.length(keys) == 5
   assert list.all(keys, beneath_the_two_regions)
   assert list.length(
       list.filter(keys, string.starts_with(_, home.table_path <> "\t")),
     )
     == 2
   let html = element.to_string(home.view(observer))
-  assert list.length(string.split(html, "<button")) == 7
+  assert list.length(string.split(html, "<button")) == 8
   assert !string.contains(html, "<a ")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "href")
@@ -613,16 +613,16 @@ pub fn an_operator_home_presses_saved_rows_too_test() {
   let #(operator, _) =
     opened(start_with(home.OperatorCeiling, fn() { home.Listed(with_blocked) }))
   let keys = handlers(home.view(operator))
-  assert list.length(keys) == 8
+  assert list.length(keys) == 9
   assert list.all(keys, beneath_the_two_regions)
   let html = element.to_string(home.view(operator))
-  assert list.length(string.split(html, "<button")) == 11
+  assert list.length(string.split(html, "<button")) == 12
   assert string.contains(html, "title=\"Resume this session\"")
   assert string.contains(html, "stuck")
 
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed(with_blocked) }))
-  assert list.length(handlers(home.view(observer))) == 4
+  assert list.length(handlers(home.view(observer))) == 5
 }
 
 // A resume press hands the session to the daemon's task and returns: the row
@@ -639,12 +639,12 @@ pub fn a_resume_marks_its_row_and_a_second_press_asks_nothing_test() {
   assert string.contains(html, "Opening…")
 
   // Only the two running rows keep a press, in each region.
-  assert list.length(handlers(home.view(model))) == 4
+  assert list.length(handlers(home.view(model))) == 5
 
   let model = run(model, home.Resuming("D"))
   let model = run(model, home.Resuming("C"))
   assert process.receive(asked, 0) == Error(Nil)
-  assert list.length(handlers(home.view(model))) == 4
+  assert list.length(handlers(home.view(model))) == 5
 }
 
 // The task's answer arrives as a message from the task's own process: a ticket
@@ -663,7 +663,7 @@ pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   let html = drawn(model)
   assert string.contains(html, "to=\"" <> ticket <> "\"")
   assert string.contains(html, "Opening…")
-  assert list.length(handlers(home.view(model))) == 4
+  assert list.length(handlers(home.view(model))) == 5
 
   let #(model, _) =
     opened(
@@ -676,7 +676,7 @@ pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   assert string.contains(html, sessions.reason_words(sessions.NotOpened))
   assert !string.contains(html, "Opening…")
   assert !string.contains(html, " to=")
-  assert list.length(handlers(home.view(model))) == 8
+  assert list.length(handlers(home.view(model))) == 9
 }
 
 // A page minted to read has no resume to ask for, even if a frame named a
@@ -806,7 +806,7 @@ pub fn the_frame_is_the_session_pages_without_a_panel_test() {
     html,
     "<aside aria-label=\"Sessions\" class=\"sidebar\"",
   )
-  assert string.contains(html, "<p class=\"brand\"><span>Loom</span>")
+  assert string.contains(html, "rail-folders")
   assert !string.contains(html, "aria-current=\"true\"")
   assert !string.contains(html, "Strand panel")
 
@@ -1275,7 +1275,7 @@ pub fn a_page_without_the_capability_draws_no_creation_control_test() {
       ),
     )
   assert drawn(model) == html
-  assert list.length(handlers(home.view(model))) == 8
+  assert list.length(handlers(home.view(model))) == 9
 }
 
 // The owner's page has one button under each workspace, one more for another
@@ -1289,8 +1289,8 @@ pub fn the_owner_has_a_button_under_each_workspace_test() {
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
 
-  // The sidebar's "New session" button is one more.
-  assert list.length(keys) == 13
+  // The rail adds "Everything, by need" and its "+ New session".
+  assert list.length(keys) == 14
   assert list.all(keys, beneath_the_two_regions)
 }
 
@@ -1775,8 +1775,8 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
     opened(
       home.Start(..start(), activity: fn(_, deliver) {
         deliver([
-          #("B", sessions.Report(sessions.Working, None, [], None, None)),
-          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+          #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
+          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
         ])
       }),
     )
@@ -2022,8 +2022,8 @@ fn busy_owner(asked: Subject(#(actions.Action, String))) -> home.Model {
     opened(
       home.Start(..start(), manage: Some(ask), activity: fn(_, deliver) {
         deliver([
-          #("B", sessions.Report(sessions.Working, None, [], None, None)),
-          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+          #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
+          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
         ])
       }),
     )
@@ -2072,7 +2072,9 @@ pub fn a_stop_on_an_idle_row_acts_at_once_test() {
   let #(owner, _) =
     opened(
       home.Start(..start(), manage: Some(ask), activity: fn(_, deliver) {
-        deliver([#("A", sessions.Report(sessions.Idle, None, [], None, None))])
+        deliver([
+          #("A", sessions.Report(sessions.Idle, None, [], None, None, 0)),
+        ])
       }),
     )
   let model = run(owner, home.StopRequested("A"))
@@ -2281,8 +2283,8 @@ pub fn the_sidebar_dot_class_follows_the_activity_test() {
     run(
       model,
       home.Observed([
-        #("B", sessions.Report(sessions.Working, None, [], None, None)),
-        #("A", sessions.Report(sessions.Idle, None, [], None, None)),
+        #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
+        #("A", sessions.Report(sessions.Idle, None, [], None, None, 0)),
       ]),
     )
   let html = drawn(model)
@@ -2293,7 +2295,7 @@ pub fn the_sidebar_dot_class_follows_the_activity_test() {
     run(
       model,
       home.Observed([
-        #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        #("A", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
       ]),
     )
   assert string.contains(drawn(model), "residency live needs-you")
@@ -2343,6 +2345,7 @@ fn folder_keeper(
           process.send(forgotten, id)
           deliver(after)
         },
+        browse: fn(_, _) { Nil },
       ),
     ),
   )
@@ -2596,9 +2599,11 @@ pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
     home.Start(
       ..creator(ask),
       folders: Some(
-        home.Folders(recent: fn(deliver) { deliver(rows) }, forget: fn(_, _) {
-          Nil
-        }),
+        home.Folders(
+          recent: fn(deliver) { deliver(rows) },
+          forget: fn(_, _) { Nil },
+          browse: fn(_, _) { Nil },
+        ),
       ),
     )
   let #(model, _) = opened(start)

@@ -117,7 +117,7 @@ pub fn the_description_tells_the_model_to_stop_and_how_the_answer_arrives_test()
   let description = ask_tool().description
   assert string.contains(description, "your turn ends")
   assert string.contains(description, "message from the person")
-  assert string.contains(description, "fenced")
+  assert string.contains(description, "with the answer under it")
   assert string.contains(description, "Other")
 }
 
@@ -502,6 +502,20 @@ pub fn a_question_identifier_or_any_unknown_field_is_refused_test() {
       ]),
     ]),
     "unknown field `markup`",
+  )
+}
+
+// A model that puts a question's text under a guessed name is told the names
+// the schema takes, so the next call can be right.
+pub fn an_unknown_field_names_the_fields_that_are_taken_test() {
+  refused_with(
+    ask_args([
+      json.Object([
+        field("description", json.String("Keep it?")),
+        field("kind", json.String("confirm")),
+      ]),
+    ]),
+    "unknown field `description`; the fields are `prompt`, `kind`, `options`, `min`, `max`, `format`",
   )
 }
 

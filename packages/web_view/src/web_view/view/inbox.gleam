@@ -72,6 +72,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/operator.{type Delivery}
+import web_view/brief_rule
 import web_view/composer
 import web_view/inbox_rule.{type Folder, type Group, type Kind, type Thread}
 import web_view/session_brief.{type Brief}
@@ -696,7 +697,7 @@ fn compose(
       [
         html.section([attribute.class("inbox-section inbox-msg")], [
           html.h2([attribute.class("inbox-label")], [
-            html.text("Message " <> inbox_rule.shown_name(thread)),
+            html.text("Message this session"),
           ]),
           keyed.div([attribute.class("inbox-send")], [
             #(
@@ -1017,26 +1018,74 @@ fn evidence_of(session: String, offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// What the agent last said. A working session whose brief was read shows the
-/// brief's latest message, which may belong to the turn still running, with the
-/// time it was written. Any other thread shows the main strand's last finished
-/// message under a label that says it is not current work and not the page's
-/// words. Both are text nodes: the message is model text. An approval's thread
+/// What the agent last said. A session whose brief was read shows the brief's
+/// latest message, which may belong to the turn still running, with the time it
+/// was written. A thread with no brief read shows the main strand's last
+/// finished message under a label that says it is not current work and not the
+/// page's words. Both are drawn as Markdown (`markdown_view.quoted`), and the
+/// message is model text. An approval's thread
 /// leaves it out, as the approval is what the thread is about, and a review's
 /// thread draws it itself, between its counts and its verdict.
 fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
-  case kind, brief, thread.report.last_message {
+  // The title is the thread's head, which is these words cut. A message the cut
+  // left whole is the title already, so its quote would repeat it.
+  let head = inbox_rule.thread_head(thread)
+
+  // A working session quotes its brief even when it has no words yet, because
+  // the turn is still running. An idle session quotes it only when its message
+  // is at least as new as the overview's last finished one, so the brief of an
+  // earlier turn is not shown after a later turn ended. A failed or settled
+  // session never shows a held brief: the page stopped reading it.
+  let by_brief = case kind, brief {
+    inbox_rule.Working, Some(read) -> Some(read)
+    inbox_rule.Idle, Some(read) ->
+      case
+        brief_said(read) != ""
+        && brief_rule.current(read, thread.report.last_message_at)
+      {
+        True -> Some(read)
+        False -> None
+      }
+    inbox_rule.ApprovalPending, _
+    | inbox_rule.Failed, _
+    | inbox_rule.Settled, _
+    | inbox_rule.Working, None
+    | inbox_rule.Idle, None
+    -> None
+  }
+
+  // An approval leaves the words out. A brief's message keeps the paragraph and
+  // list breaks that the overview's short cut of the last message does not, so
+  // it is preferred. Any other thread quotes its last finished message.
+  case kind, by_brief, thread.report.last_message {
     inbox_rule.ApprovalPending, _, _ -> element.none()
-    inbox_rule.Working, Some(read), _ -> brief_view.latest(read)
-    _, _, Some(text) ->
-      case string.trim(text) {
-        "" -> element.none()
-        _ ->
+    _, Some(read), _ -> brief_quote(read, head)
+    _, None, Some(text) ->
+      case string.trim(text) == "" || inbox_rule.head_holds(text, head) {
+        // An empty message, or one the title holds whole, is not quoted.
+        True -> element.none()
+        False ->
           html.div([attribute.class("inbox-said")], [
             brief_view.finished(text, thread.report.last_message_at),
           ])
       }
-    _, _, None -> element.none()
+    _, None, None -> element.none()
+  }
+}
+
+/// A brief's latest message, unless the title already holds it whole.
+fn brief_quote(read: Brief, head: String) -> Element(message) {
+  case inbox_rule.head_holds(brief_said(read), head) {
+    True -> element.none()
+    False -> brief_view.latest(read)
+  }
+}
+
+/// The words of a brief's latest message, trimmed, or empty when it has none.
+fn brief_said(read: Brief) -> String {
+  case read.assistant {
+    Some(assistant) -> string.trim(session_brief.untrusted_text(assistant.text))
+    None -> ""
   }
 }
 

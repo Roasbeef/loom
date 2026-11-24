@@ -240,3 +240,19 @@ pub fn the_core_tools_head_the_workspace_list_test() {
   assert list.take(tool_placement.workspace_names, 5)
     == tool_placement.core_names
 }
+
+/// The opt-in `lsp_*` tools are not part of what every host builds, so the
+/// exact-table test above does not list them, but a call to one must still run
+/// on the workspace, where the door is, and not fall to the owner.
+pub fn the_opt_in_lsp_tools_are_placed_on_the_workspace_test() {
+  assert tool_placement.opt_in_workspace_names
+    == [
+      "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols",
+      "lsp_diagnostics",
+    ]
+  list.each(tool_placement.opt_in_workspace_names, fn(name) {
+    assert tool_placement.placement(name) == Ok(tool_placement.WorkspaceSide)
+    assert !list.contains(tool_placement.workspace_names, name)
+    assert !list.contains(tool_placement.owner_names(), name)
+  })
+}

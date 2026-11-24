@@ -380,6 +380,25 @@ pub type ToolNetwork {
   ToolNetworkFull
 }
 
+/// Whether the language-server queries are also offered as top-level
+/// tools.
+///
+/// The queries always reach a model through `cap/lsp` in code mode. A
+/// consumer whose agents call tools directly, with no code mode, has no
+/// path to them, so the registry can carry five of them as well
+/// (`tools/lsp_query`). They are off by default because the tool array is
+/// the cached prefix of every request, and a host that never opted in
+/// should not pay for definitions it did not ask for.
+pub type LspTools {
+  /// The default: no `lsp_*` tool is registered.
+  LspToolsOff
+
+  /// `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols` and
+  /// `lsp_diagnostics` are registered, on a host that has a language
+  /// server to ask.
+  LspToolsOn
+}
+
 /// The `[tools]` table: what this session's jailed tool shells may
 /// reach, and what they carry in their environment.
 ///
@@ -410,6 +429,11 @@ pub type ToolsConfig {
     /// `/opt/homebrew/bin` for `gh` on a Homebrew Mac — without taking
     /// that over.
     path: List(String),
+    /// Whether the language-server queries are offered as top-level
+    /// tools. A model-facing registry choice and not a jail setting; it
+    /// sits here because this is the table that decides which tools a
+    /// session's operator wants.
+    lsp_tools: LspTools,
   )
 }
 
@@ -491,8 +515,8 @@ pub const advisor_role = model.Custom("advisor")
 ///
 pub const router_role = model.Custom("router")
 
-// The six routable roles, in the canonical order listings use. The
-// advisor comes last because it is the only one no session needs, and
+// The seven routable roles, in the canonical order listings use. The
+// advisor and the router come last because no session needs them, and
 // this order is the one an operator reads down.
 const routable_roles = [
   model.Main,
@@ -2209,7 +2233,13 @@ fn positive_int(
 /// ```
 ///
 pub fn default_tools() -> ToolsConfig {
-  ToolsConfig(network: ToolNetworkFull, env: [], set: [], path: [])
+  ToolsConfig(
+    network: ToolNetworkFull,
+    env: [],
+    set: [],
+    path: [],
+    lsp_tools: LspToolsOff,
+  )
 }
 
 /// One `[workspace] mounts` entry: a host region an operator states the
@@ -2626,7 +2656,7 @@ pub fn tools_from_document(
 fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["network", "env", "set", "path"],
+    ["network", "env", "set", "path", "lsp_tools"],
     "[tools]",
   ))
 
@@ -2637,6 +2667,15 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
     Ok(Error(Nil)) -> Ok(ToolNetworkFull)
     Error(message) -> Error(message)
   })
+
+  // Absent means the default, off: a registry change is never guessed.
+  use lsp_tools <- result.try(
+    case optional_string(fields, "tools", "lsp_tools") {
+      Ok(Ok(word)) -> parse_lsp_tools(word)
+      Ok(Error(Nil)) -> Ok(LspToolsOff)
+      Error(message) -> Error(message)
+    },
+  )
 
   use env <- result.try(tool_env_names(fields))
   use set <- result.try(tool_set_pairs(fields))
@@ -2659,7 +2698,21 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
       }
     }),
   )
-  Ok(ToolsConfig(network:, env:, set:, path:))
+  Ok(ToolsConfig(network:, env:, set:, path:, lsp_tools:))
+}
+
+// Exactly two words, for the reason `network` has two: a typo must not
+// turn a registry change on or off by guessing.
+/// Decodes the `lsp_tools` word of the `[tools]` table.
+fn parse_lsp_tools(word: String) -> Result(LspTools, String) {
+  case word {
+    "off" -> Ok(LspToolsOff)
+    "on" -> Ok(LspToolsOn)
+    other ->
+      Error(
+        "tools.lsp_tools must be \"off\" or \"on\", got \"" <> other <> "\"",
+      )
+  }
 }
 
 // Exactly two words, because the third one the wire vocabulary has —

@@ -164,3 +164,75 @@ reach the page as `web_view/sessions.Report.last_message_at` and
 
 About fifty bytes in a row that is bounded at 2,300. No new store read: the
 text's entry is read already, and the operation id is in the strand-state cell.
+
+## Addendum: open asks on the activity row (2026-11-23)
+
+**Status**: ACCEPTED 2026-11-23, the owner asked for it. Additive: a client
+that does not read the member ignores it.
+
+### The problem
+
+A session that has asked the owner a question (protocol-change/120) is waiting
+on a person, but its activity row does not say so. `state` is `needs_you` only
+for a pending approval or a failed main run, and the row carries no count of
+asks. The web view's sidebar draws its second line for each running session
+from this row, so a session waiting on an answer read `quiet` or `running` in
+every other page's sidebar. Home's sidebar was right only because it also reads
+the attention feed, which a session page does not.
+
+### The decision
+
+The row gains one member, `asks`: the number of asks that are open and routed
+to the owner. An ask routed to a strand needs no person and is not counted, and
+neither is a settled ask. The member is always present on a row a resident
+answers. `state` is unchanged: an open ask does not make a session `needs_you`,
+so the terminal's filters and the dots keep their meaning. A receiver reads a
+missing member, or one that is not a whole non-negative number, as 0, so a row
+from an older resident is still a row.
+
+The resident computes it in `Overview` from the same records and the same rule
+as `open_asks` of the catalogue's attention summary (protocol-change/122):
+`attention.open_owner_asks` is the one filter both use, so the two counts cannot
+disagree. The daemon's decoder reads it into `web_view/sessions.Report.asks`,
+and the session page's activity read narrows a report to `sessions.Watch`, the
+state and the count, so the page still learns nothing a session said.
+
+### What it costs
+
+One prefix listing of the ask records, inside the Agency actor that already
+answers `Overview`. It is the listing `attention.summary` makes, bounded by the
+open and settled ask counts (`attention.max_open_asks` open, settled ones
+pruned past 200), and it reads no transcript. About 12 bytes in a row that is
+bounded at 2,300. A resident that cannot read its ask records answers an
+`unknown` row, as it does for any failed read.
+
+## Addendum: the last message keeps its newlines (2026-11-23)
+
+**Status**: ACCEPTED 2026-11-23.
+
+### The problem
+
+A row's `last_message` was the main strand's last text collapsed to one line and
+cut to 280 bytes. The web page now draws that text as Markdown and takes its
+first line as a thread's title, and neither works on a message with its
+paragraph and list breaks removed: a title ran from the first sentence into the
+list that followed.
+
+### The decision
+
+`last_message` keeps the newlines of the text. The text blocks of a message are
+joined by a blank line, and the text is cut to at most 280 bytes between blocks:
+whole blocks are kept while they fit, and a cut ends in a paragraph holding
+`…`. A first block longer than the bound is cut between its lines, and a single
+line longer than the bound is flattened and cut at a word. The member's name,
+type and bound are unchanged, and `last_message_at` and the row's 2,300-byte
+bound are as before. The cut is `web_view/block_clip`, the one the brief's
+assistant text uses (protocol-change/125, its addendum).
+
+### What it costs
+
+A reader that drew the member on one line must flatten it where it draws. The
+terminal already does, through `text_hygiene.single_line` in the session picker
+and its detail view, and the web page takes the first line for a title. A
+reader outside this repository that printed the string raw will now see newlines
+in it.

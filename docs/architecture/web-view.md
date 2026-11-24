@@ -274,12 +274,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:640`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:646`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:8749`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:8944`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1117,7 +1117,12 @@ one for each group that holds a thread) narrow the list to a group through
 the kind's chip, the session and its workspace and state, the last message under
 the label "The agent's last message, untrusted text", and the strands'
 glances. On a screen under 768px the list is the page and the pane covers it
-with a back control (`InboxClosed`). A pending approval is named and
+with a back control (`InboxClosed`). A stuck strand's thread offers Retry and,
+beside it, Dismiss (protocol-change/131): Dismiss tells the daemon that the owner
+has seen that failure, naming the failed run the feed row held, and the strand
+leaves the list until it fails again. The same button is the second action of the
+strand's card in a session page's live rail, for an operator's page and not an
+observer's. A pending approval is named and
 sent to the session's own page; nothing of the approval, and no deciding
 control, is drawn on Home.
 

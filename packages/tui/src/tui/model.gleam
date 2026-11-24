@@ -120,6 +120,7 @@ import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/approval_panel
+import tui/ask_board
 import tui/attachment
 import tui/bootstrap
 import tui/connection
@@ -576,6 +577,9 @@ pub type View {
     control_request: Option(ControlRequest),
     /// The session picker's activity poll, separate from the control job.
     activity_poll: ActivityPoll,
+    /// The open asks of the attached session and who has the keyboard for
+    /// them. The composer keeps the keyboard until the owner names an ask.
+    asks: ask_board.Board,
     /// The one reconnect an unexpected daemon death is allowed, and whether it
     /// has already been spent. Kept in the model rather than beside the loop so
     /// the decision not to reconnect twice is made from the state the operator
@@ -1166,6 +1170,7 @@ pub fn release(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
     | job.ActivityArrived(..)
+    | job.AsksArrived(..)
     | job.ConfigurationArrived(..)
     | job.ImageArrived(..) -> model
   }

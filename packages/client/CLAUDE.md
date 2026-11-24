@@ -1612,7 +1612,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   `manager.recent_folders` and `forget_folder` read and edit it. `recent_for` and
   `forget_for` run `authorized_owner` first and list only entries inside home;
   `home_folders_capability` gives `Start.folders` on the creation capability's
-  condition, and `upgrade_home` builds its two functions with `read_task`.
+  condition, and `upgrade_home` builds its three functions (`recent`, `forget`, `browse`) with `read_task`.
+  The folder picker's listing (protocol-change/132): `client/daemon/folder_listing.list_in(home, trail)`
+  resolves a trail of names below the canonical home (`bootstrap.canonical_directory`,
+  then home or `creations.inside`), reads the directory with
+  `bootstrap.list_directory_bounded` at `folder_browse.entry_limit`, leaves out hidden
+  names, keeps only children that are directories inside the home, marks a `.git`,
+  caps at `shown_limit` and stops at `depth_limit`; every refusal is a
+  `folder_browse.Refusal`. `ui_socket.browse_for` runs it after `authorized_owner`
+  and is the `browse` of the `home.Folders` the owner's page is handed.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential
@@ -3466,6 +3474,15 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   holder. `contributions.attention_tools` registers both tools after
   `propose`; `project_jail.worker_tools.refused_names` refuses `ask` to a
   project worker, which keeps `notice`.
+- `client/attention_hold.{open_asks, holds, hooks}` — the daemon's half of an
+  open ask holding its strand (protocol-change/119, the 2026-11-23 addendum).
+  `hooks` wraps the `context` slot so every request of a strand with an open
+  ask routed to the owner ends with `core/attention_hold.reminder`, built from
+  the records at request time and stored nowhere. `holds` is the advisor's
+  question: `wake_primary` does not wake a primary that holds, and the run-end
+  hook places no nudge as a follow-up on the run that made the ask. The job
+  heartbeat (`notice.beat`) skips a strand that holds. Held automatic inputs
+  are the runtime's (`api.Held`); a schedule counts a held tick as fired.
 - `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
   max_listed, Kind, State, Decision, Source, Proposal, Listing, Wiring, Admin,
   seam, admin, channel, submit, listing, decide, rules, read_rules,
@@ -4544,7 +4561,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   last argument is the served profiles' hints as `#(server name, hint)`,
   attached to offers that admit and serve `cap/lsp`. The `code_mode`
   description and `cap://lsp` read carry them with the native API. The default
-  registry does not register top-level `lsp_*` tools. Without a served LSP
+  registry does not register top-level `lsp_*` tools unless `[tools] lsp_tools
+  = "on"` (`catalog.LspTools`) and a door both exist; `contributions.lsp_query_tools`
+  then appends the five `tools/lsp_query` tools and `tool_placement`
+  places them on the workspace. Without a served LSP
   capability it advertises no naming hints.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
@@ -7142,6 +7162,16 @@ so toolchain caches cannot consume the observation budget. Nothing writes
 Tracked changes under those directories still appear. Both outputs retain NUL-framed path identity and the existing
 read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
+The untracked query also passes `--directory --no-empty-directory`, so a wholly
+untracked directory is one record ending in `/`, observed as `metadata_only`
+with no patch, and a tool home of thousands of files costs one short record.
+Only loose untracked files get a patch. When the attached directory is itself
+wholly untracked, Git answers with that directory alone, and the observer
+repeats the query without `--directory`. A listing past `status_byte_limit` is
+cut at its last whole record and the board reports `limited`; the tracked
+changes are never lost to it. A tracked status past the bound is cut the same
+way.
+
 Session assembly keeps `.codemode` out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`
 writes `workspace_policy.ignore_everything` as `.gitignore` inside each, where none
@@ -7306,7 +7336,9 @@ strand-state register and the last-result register, so a row costs a fixed numbe
 of store calls: counts and short items for open owner-routed asks, open finds and
 stuck strands (a non-main, non-advisor strand with no current operation whose last
 result is a failed run), shed to 2,300 bytes in the order finds, stuck, asks,
-oldest first, never reducing a count. `peer_mail.AttentionFeed`, `AttentionRead`
+oldest first, never reducing a count. A crowded row takes newest prefixes in
+reverse eviction order, counting exact encoded item sizes and array commas
+against the empty row's remaining budget. `peer_mail.AttentionFeed`, `AttentionRead`
 and `AttentionSettle` are the Agency commands; `AttentionRead` answers the stored
 record with its revision (the cell's seq) and `AttentionSettle` rewrites an open
 record under that revision through `client/attention.settle`, which writes that
@@ -7333,6 +7365,19 @@ main-strand defaults, and the gateway's `unknown_strand` is
 (protocol-change/122) with `server.saved_rows`, the one read it shares with
 `home_saved_attention`; an unreadable catalogue is `unavailable`, never an empty list.
 
+`attention.dismiss_stuck` (protocol-change/131) is the third act of `attention_door`:
+`dismiss_stuck` takes the owner or an Operator member (`held_for_acting`, the principals
+that may retry), needs a resident session and sends `peer_mail.StuckDismiss(strand,
+operation, by)`, which `attention_feed.dismiss_stuck` answers: the strand must be stuck
+at that operation (`UnknownStrand` is `not_found`, `StaleFailure` and `DismissalLost` are
+`conflict`) and `attention.record_dismissal` writes the `core/attention_dismissal` cell
+`attention/stuck/<strand>` under the seq it read, succeeding without a write when the cell
+already covers that failure. `attention_feed.feed` reads `attention.dismissals` and
+`stuck_strands` leaves out a strand a dismissal covers, so `stuck.count` falls; a new failed
+run has a new operation and lists again. `ui_socket.dismiss_stuck_for` (owner's home) and
+`page_dismiss_for` (a session page) are the pages' acts, with `dismiss_outcome` for the
+words. The catalogue summary has no stuck column, so a saved session's summary is unchanged.
+
 Stuck items (addendum to 120) carry `reason` (the run's error code if it is a short
 lower-case word, else `failed`), `retry_after_ms` and `failed_at` from the failed
 response entry the run's leaf names (an assistant entry with `Errored`; any other
@@ -7346,7 +7391,7 @@ read and a remembered full network makes the item `on`; a word that cannot be
 exact (no policy, unreadable grants, loopback) is left out and `off` is never a
 guess. The call and command inside a `code_mode` program are not read from its
 source (a decoy would mislead) and the record holds none. `Overview` adds
-`last_message_at` and `turn_started_at` (050 addendum).
+`last_message_at` and `turn_started_at` (050 addendum), and `asks`, the count `attention.open_owner_asks` makes of the open asks routed to the owner (050 addendum on open asks), from one more prefix listing. `server.report_of` reads it totally into `Report.asks` (missing or malformed is 0), and `server.watches_of` narrows reports to `sessions.Watch` for the session page's sidebar.
 
 `session.brief` (protocol-change/125): `client/session_brief` is the resident side
 (`peer_mail.SessionBrief(since)`): one scan of main's last 80 message entries
@@ -9251,8 +9296,10 @@ the protocol-change/078 addendum on moving a session have the protocol.
 - `daemon/manager` carries the catalogue half. `begin_move` commits `moving` and
   cancels the slot in one registry turn, so nothing can open the store after the
   intent. `prepare_slot` reads the custody row and refuses `moving` and `moved`
-  (`SessionMoving`, `SessionMoved`); archive, restore and delete refuse them too
-  (`AdminMoving`, `AdminMoved`). `movable` refuses a session with no executor, an
+  (`SessionMoving`, `SessionMoved`), before it reads visibility; restore, delete,
+  rename and isolate refuse them too (`AdminMoving`, `AdminMoved`). Archive
+  refuses `moving` only: the stub of a `moved` session may be archived, and its
+  tombstone keeps naming the owner (protocol-change/078, addendum). `movable` refuses a session with no executor, an
   archived one and a reserved one (`AdminNotMovable`). `finish_move`, `abort_move`,
   `moving_sessions` and `custody` are the mover's reads and compare-and-sets, and
   `import_session` registers, records the import and renames the copy into place
@@ -9409,7 +9456,8 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
   one `manager.custodies` for the page and encodes with the same
   `custody_members`), `moving` on `open` (`in_flight`), and `not_owner` from the
-  tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
+  tombstone for open, restore and delete, and for archive of a session that is
+  not moved away (`tombstoned`). `daemon/main`
   builds the movers in `start_movers`, gives the port its importer, and reads
   `LOOM_MOVE_CRASH_AFTER`.
 
@@ -11701,7 +11749,7 @@ ordinary top-level worker session per ticket assignment
   only when the engine's `Rejection.handling` is `WorkerTold`; `failure_note` states whether the same
   check passed on the clean base (`BaseProof`). `start_check` leaves its row untouched while
   `template_state.admits` is false. `projects.recheck` is `project_host.recheck`. `Ports.build_template` is `project_start`'s closure over `project_template.build`,
-  and `project_start.seed_of` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
+  and `project_start.seed_for` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
   `project_repo.clone_from`, `check_tree_from` and `project_start.run_check_from` take. Both
   `project_repo.copy_template` runs (`git-cow copy`, else `cp -RPp`) go through
   `worktrees.run_program` in the sandbox, writable only in the destination's parent, and exit 2 from
@@ -11709,6 +11757,27 @@ ordinary top-level worker session per ticket assignment
   `workspace_policy.private_masks` masks `<project>/template` for sessions and checks.
   The test pair is `project_template_test` (real sandbox, a loopback server for the network,
   `git-cow` when installed) and `project_template_host_test` (fake build port).
+- Settings held per project (protocol-change/106, "settings held per project"): `[project]` is the
+  daemon's default and `check`, `setup`, `publish`, `max_workers` and `protected_paths` are also
+  held in each project's ledger. `client/project_overrides` is pure: `Key`, `Override` (only
+  `parse` builds one, through `project_settings.command_text`, `path_patterns`, `publish_word` and
+  `worker_count`, the functions the file is checked with), `Overrides`, `Values`, `effective` and
+  `source_of`. `project_host` keeps `file_values`, `held`, `changed` and `revision`;
+  `keep_record(SettingChanged)` goes through `hold_setting` and `in_force`, which rewrite
+  `config.policy`, `config.max_workers` and the engine's `max_workers`, so replay and a write take
+  one path. `ChangeSettings` checks the revision, then `publish_refusal` (off to `pull_request`
+  needs `publish_to` equal to `ports.remote_url`), then writes one record per key that moves,
+  then `retemplate`: a moved `template_digest` makes the template `Preparing` and asks for a build,
+  unless one runs (`Host.building`), whose `TemplateSettled(outcome, digest)` is dropped when its digest is
+  not the current one. The three wire commands are `project_settings_wire` bodies served by
+  `server.project_settings_read`, `project_settings_write` and `project_propose` through
+  `project_command_in_words`. `client/project_proposal` is the fixed table: `read` takes regular files
+  only (no link, 256 KiB), `propose` is pure, and no proposal is text from a file. `project_template.Request.copier`
+  makes the build copy the sealed tree once with `project_repo.probe_copy` before the swap; exit 2 is
+  `Failed(Setup)`. A release ships `bin/git-cow` (`scripts/build-git-cow.sh`, pinned commit and hash).
+  Tests: `project_settings_host_test` (real actor and ledger, fake build), `project_overrides_test`,
+  `project_proposal_test` (fixtures, a symlinked and a huge `Makefile`), `project_template_test`
+  (the refused template) and `daemon_server_test` (a member is `forbidden`).
 - The GitHub source is four modules and a section of `project_host`.
   `client/project_github` decodes REST answers totally and translates each item
   into the gate's inputs (sender class from the owner's literal lists, an exact
@@ -11791,3 +11860,39 @@ The capture-multiplicity regression lives in `client/codemode_test`.
 
 - **Shared per-session provider and hooks holders.** `client/wiring.hold_provider` and `client/wiring.hold_hooks` park the session-invariant provider closure and runtime hook closures in two per-session actors alongside `client/tool_holder`, publishing them under `custody.ToolConfig` in `client/serve`. Steady-state strands no longer retain or copy ~158 KiB of shared `Effects` closures per process.
 - **Per-session `AgencyLimits` and raised defaults.** `client/agency.Config` uses `core/agency_limits.DepthCap` (`BoundedDepth` | `UnlimitedDepth`) with shipped defaults `default_fan_out = 100`, `default_session_strands = 256`, `default_depth_cap = 1`, and `max_ancestor_walk = 256`. `client/daemon/protocol`, `client/daemon/domain`, `client/daemon/manager`, `client/daemon/server`, `client/daemon/ui_socket`, and `client/serve.Settings` thread optional `AgencyLimits` through session creation and recovery (persisted in catalogue v21 `catalogue_session_agency`).
+
+## Insight triage slice 0 (offline test)
+
+`client/insight/*` and `dev/insight_slice0.gleam` are the developer script behind
+slice 0 of `docs/design-notes/insight-triage.md` (section 8.3): does a cheap
+model's order beat newest first at putting the rows the owner would open first
+among the top three. It adds no protocol change and no daemon code, and its
+only product is a verdict and a recorded run.
+
+- `insight/lane` rebuilds a finished session's lane from the primary strand's
+  branch (`transcript.branch_blocks` into `turns.pieces`, with no history
+  window bound) and `candidates` keeps the classifier's Insights rows, peer
+  messages excluded, each with the lane index of its piece.
+- `insight/request` builds the section 3.2 request: eight rows, two-piece
+  windows, 600-byte blocks, an 8,192-byte request, the run's last assistant
+  message once, no reasoning. Rows are numbered from one; `Request.rows` maps a
+  number back to its candidate.
+- `insight/answer` parses `<number> <weight> <reason>` lines totally: a bad line,
+  weight or control character refuses the whole answer, and a number the request
+  did not issue is dropped.
+- `insight/score` orders rows by weight with the classifier's order breaking
+  ties, scores whether an "open first" row is in the top three, and asks
+  `evalstat.paired_verdict` over one task per session. `render` prints the
+  minimum detectable effect first.
+- `insight/guard` refuses to overwrite a marked sheet and checks, per session,
+  that the record, `rows.json` and the sheet's numbers all describe the
+  selection's rows in order, so a mark never lands on another row.
+- `insight/sheet` writes the label sheet and `rows.json`, and reads the owner's
+  checkboxes back; `insight/record` is the replay file for one request and its
+  answer.
+- The script runs only on copies of the owner's stores
+  (`sqlite3 <store> ".backup '<copy>'"`), opens them under a far-future clock so
+  a copied writer lease has expired, and never prints a key. Commands: `select`,
+  `sheet`, `run <dir> <loom.toml> <role>` and `verdict`, each as
+  `gleam run -m insight_slice0 -- <command> <dir>`; `run` replays a session whose
+  record already holds the same prompt, so a second run costs nothing.

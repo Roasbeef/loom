@@ -102,6 +102,7 @@ import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/approval_panel
+import tui/ask_panel
 import tui/collaboration_view
 import tui/context_panel
 import tui/diff_panel
@@ -235,6 +236,7 @@ pub fn render_frame(
     |> render_inline_queue(queue_area, model)
     |> render_todo_panel(layout.todo_area(body_area, model), model)
     |> input_frame.render(input_area, frame_status(model, strip))
+    |> render_ask_card(layout.ask_area(screen, model), model)
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.shared.attachments)
     |> text_area.render(editor_area, editor, input_view)
@@ -2169,6 +2171,24 @@ fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
           style.new(style.Default, style.Default, style.dim()),
         )
       })
+  }
+}
+
+/// Draws the open asks in the rows above the composer.
+///
+/// The card is part of the layout and not an overlay, so it is drawn with the
+/// panels beneath any overlay, and a model with no open ask has an empty area
+/// and draws nothing.
+fn render_ask_card(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  // An empty area means no ask is open or the screen is too short for one.
+  case area.size.height > 0 {
+    True ->
+      ask_panel.render(buf, area, model.view.asks, model.shared.clock_offset)
+    False -> buf
   }
 }
 
