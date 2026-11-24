@@ -496,7 +496,9 @@ fn filed(
     | job.PeerOperationCompleted(..)
     | job.AccessListed(..)
     | job.MembershipsListed(..)
-    | job.AccessChanged(..) -> state
+    | job.AccessChanged(..)
+    | job.AsksLoaded(..)
+    | job.AskAnswered(..) -> state
   }
 }
 

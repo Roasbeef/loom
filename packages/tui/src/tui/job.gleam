@@ -279,6 +279,27 @@ pub type ControlOutcome {
   /// reason a rule cannot go to `auto` is a sentence and the generic code says
   /// nothing about it; the screen shows it as sent.
   ProjectRuled(change: RuleChange, reply: Result(json.JsonValue, String))
+
+  /// What the daemon said about a session's open asks: how many it counted for
+  /// the owner, and the first of them read in full, as `attention.read`
+  /// answered them. The documents are unread; `tui/ask_board` decodes them.
+  AsksLoaded(session: String, count: Int, records: List(json.JsonValue))
+
+  /// What the daemon said to the owner's answer to an ask: the way the strand
+  /// took it (`admitted` or `queued`), or the daemon's refusal. A refusal is an
+  /// outcome here and not a failed job, because the card shows it in words and
+  /// keeps the owner's draft.
+  AskAnswered(
+    session: String,
+    ask: String,
+    delivery: Result(String, AskRefusal),
+  )
+}
+
+/// Why the daemon refused an answer to an ask: its error code, which is a
+/// fixed word, and its message, which names the first failing key.
+pub type AskRefusal {
+  AskRefusal(code: String, message: String)
 }
 
 /// A change a person asked for on one rule of a project.
@@ -407,6 +428,13 @@ pub type ControlJob {
 
   /// Sends a person's change on a rule: its mode, or a verdict run.
   ChangeRule(change: RuleChange)
+
+  /// Reads a session's open asks: the attention feed's row and the first asks
+  /// in full.
+  ReadAsks(session: String)
+
+  /// Sends the owner's answer to one ask, naming the revision it was read at.
+  AnswerAsk(session: String, ask: String, revision: Int, answer: json.JsonValue)
 }
 
 /// Which job to start. The runtime turns each variant into a weft task.

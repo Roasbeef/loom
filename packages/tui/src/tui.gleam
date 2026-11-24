@@ -121,6 +121,7 @@ import tui/admission
 import tui/agent_strip
 import tui/appearance
 import tui/ask_board
+import tui/ask_control
 import tui/attachment
 import tui/bootstrap
 import tui/buffered
@@ -4788,6 +4789,9 @@ fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
   // edges, which compare the session state alone.
   let updated =
     tui_model.run_shared(updated, session_step.settle(model.shared, _))
+
+  // The last run ending is when an ask exists, so it cuts the ask poll's rest.
+  let updated = ask_control.watch(model, updated)
   let published = tick.publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the

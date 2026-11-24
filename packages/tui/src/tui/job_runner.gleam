@@ -58,6 +58,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/connection_event
+import tui/ask_jobs
 import tui/bootstrap
 import tui/buffered
 import tui/connection
@@ -698,7 +699,11 @@ fn control_deadline(request: job.ControlJob) -> Int {
     | job.ReadProjectTicket(..)
     | job.ReadProjectLabels(..)
     | job.ChangeProject(..)
-    | job.ChangeRule(..) -> 12_000
+    | job.ChangeRule(..)
+    | job.AnswerAsk(..) -> 12_000
+
+    // A read makes up to three requests in turn, each bounded at five seconds.
+    job.ReadAsks(..) -> 20_000
   }
 }
 
@@ -732,6 +737,9 @@ fn control_work(
         project_jobs.read_labels(host, project, rule)
       job.ChangeProject(change:) -> project_jobs.change(host, change)
       job.ChangeRule(change:) -> project_jobs.change_rule(host, change)
+      job.ReadAsks(session:) -> ask_jobs.read_asks(host, session)
+      job.AnswerAsk(session:, ask:, revision:, answer:) ->
+        ask_jobs.answer(host, session, ask, revision, answer)
     }
   }
 }

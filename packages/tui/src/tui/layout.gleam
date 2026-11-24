@@ -68,6 +68,7 @@ import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_strip
 import tui/agents
+import tui/ask_panel
 import tui/diff_panel
 import tui/input_frame
 import tui/model.{
@@ -185,17 +186,60 @@ pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
     _ -> below
   }
 
-  // Partition column vertically into body, composer input, and footer rows.
+  // Partition column vertically into body, the ask card, composer input, and
+  // footer rows. The card is carved out of the body so the transcript is
+  // shorter while an ask is open and never drawn over.
   case
     geometry.split_v(column, [
       Fill,
+      Length(ask_height(model)),
       Length(input_height(model)),
       Length(footer_height(model) + strip_height(model)),
     ])
   {
-    [body, input, footer] -> #(header, body, input, footer)
+    [body, _, input, footer] -> #(header, body, input, footer)
     _ -> #(screen, screen, screen, screen)
   }
+}
+
+/// The rows the open asks take above the composer, or zero when none is open.
+///
+/// The card takes at most half the screen less three rows, so a terminal too
+/// short to hold it keeps its transcript and the card is not drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.ask_height(model) == 0  (no ask is open)
+/// ```
+@internal
+pub fn ask_height(model: Model) -> Int {
+  ask_panel.height(
+    model.view.asks,
+    column_width(model),
+    model.shared.clock_offset,
+    int.max(0, model.view.height / 2 - 3),
+  )
+}
+
+/// The rectangle of the ask card: the rows just above the composer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.ask_area(screen, model).size.height == layout.ask_height(model)
+/// ```
+@internal
+pub fn ask_area(screen: Rect, model: Model) -> Rect {
+  let #(_, _, input, _) = layout(screen, model)
+  let height = ask_height(model)
+
+  geometry.rect_new(
+    input.position.x,
+    input.position.y - height,
+    input.size.width,
+    height,
+  )
 }
 
 /// The tab the rail shows (`rail.tab`).
