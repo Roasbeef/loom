@@ -8903,7 +8903,26 @@ fn queue_action(
 /// // sidebar.view(component.session_groups(model), component.session_id(model))
 /// ```
 pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
-  model.view.groups
+  case final_ending(model) {
+    // A page whose own session stopped is sent no more reads, so the listing it
+    // holds still says that session runs. The stop is what ended the page, so
+    // the row moves to the sessions that are not running, where it is worded
+    // as saved, and the running group and the count no longer include it.
+    Some(ending.SessionStopped) ->
+      list.map(model.view.groups, fn(group) {
+        sessions.Group(
+          ..group,
+          entries: list.map(group.entries, fn(entry) {
+            case entry.id == model.shared.session, entry.residency {
+              True, sessions.Live ->
+                sessions.Entry(..entry, residency: sessions.Saved)
+              _, _ -> entry
+            }
+          }),
+        )
+      })
+    Some(_) | None -> model.view.groups
+  }
 }
 
 /// The name of the daemon serving the page: the machine every session on the
@@ -8995,7 +9014,7 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
   // each listed session.
   let held = pending(model)
 
-  listing.entries(model.view.groups)
+  listing.entries(session_groups(model))
   |> list.filter_map(fn(entry) {
     // Only a session a process runs has a line in "Watch live".
     case entry.residency {
@@ -9050,13 +9069,16 @@ pub const out_of_date_words = "out of date"
 
 /// How many sessions the rail lists as running, for the line above its folders.
 ///
+/// It counts the rows of `session_groups`, so the count, the "Watch live" group
+/// and its heading always agree about a session whose page has stopped.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // component.running_count(model)
 /// ```
 pub fn running_count(model: Model(socket)) -> Int {
-  list.count(listing.entries(model.view.groups), fn(entry) {
+  list.count(listing.entries(session_groups(model)), fn(entry) {
     case entry.residency {
       sessions.Live -> True
       sessions.Saved
