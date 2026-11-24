@@ -6,6 +6,17 @@ on November 21. The session hot-path section was re-baselined on November 13
 against source `3e28c16f4`. Other sections retain their upstream baselines;
 this scoped update does not revalidate their hosted CI or live status.
 
+## Bounded inbox and snapshot read replay
+
+The [fixed replay](review/bounded-read-replay-2026-11-23.md) follows three
+paths from the November 23 profile. Crowded inbox rows fit newest prefixes
+using exact encoded item sizes. Gateway escalations reuse each request's lookup
+keys. Snapshot captures batch admitted payloads inside the existing SQLite
+transaction. The replay preserves complete rows, missing IDs, snapshot cuts
+and corruption faults. It records the measured latency and heap words,
+including the gap between a 114-fold query reduction and a 1.86-fold speedup
+for a complete 1,024-cell cut.
+
 ## The web view and the desktop app: what is next (2026-11-23)
 
 The owner's order, also posted on #1167: finish the web view's fidelity to the
