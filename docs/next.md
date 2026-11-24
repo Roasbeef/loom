@@ -138,8 +138,6 @@ stay drawn after a ticket thread is clicked.
    an offline ordering test on 30 past sessions and needs about an hour of the
    owner's time. It gates any triage code, and the note ends with eight
    questions for the owner. Nothing is built.
-6. **Docs.** `docs/architecture/models.md` says there are six roles. There are
-   seven, counting `router`.
 
 **The fidelity pass is still the owner's first ask.** Their words: 100%
 fidelity to the mockups, and do not feel attached to the earlier versions. The

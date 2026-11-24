@@ -347,6 +347,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import machine/operation.{type LastResult}
+import machine/queue
 import machine/strand as machine_strand
 import runtime/api
 import runtime/async_execution
@@ -6101,10 +6102,13 @@ fn admit_mail(
   }
 }
 
-/// reads it on its outbox row. Either way the message id is spent.
-/// child's message, so the refusal is written alone as the receipt, and the child
-/// no run open cannot be steered, and a finished parent is never woken for a
 /// Steers the parent strand and writes the receipt in one commit. A parent with
+/// no run open cannot be steered, and a finished parent is never woken for a
+/// child's message, so the refusal is written alone as the receipt, and the child
+/// reads it on its outbox row. A parent that waits on the owner's answer to an
+/// ask holds the message for its next run instead, and a parent already holding
+/// the most items its next run may carry refuses it with its own reason. Either
+/// way the message id is spent.
 fn steer_mail(
   config: Config,
   runtime: api.Runtime,
@@ -6149,12 +6153,8 @@ fn steer_mail(
           ))
       }
     }
-    Error(api.QueueRejected(..)) -> {
-      let declined =
-        remote_mail.Declined(
-          reason: "the parent has no run open, and a finished parent is not "
-          <> "woken for a child's message",
-        )
+    Error(api.QueueRejected(reason:)) -> {
+      let declined = remote_mail.Declined(reason: steer_refusal(reason))
 
       // State what the branch decides before dispatching.
       case
@@ -6184,6 +6184,30 @@ fn steer_mail(
       }
     }
     Error(error) -> Error(mail_failure(error))
+  }
+}
+
+/// The words a child reads on its outbox row when its parent refused a steer.
+/// The two refusals have different remedies: a parent with no run open will not
+/// read the message at all, while a parent whose next-run queue is full will
+/// read later messages once its run drains the queue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// steer_refusal(queue.NextRunFull(limit: 32))
+/// // -> "the parent already holds 32 messages for its next run"
+/// ```
+fn steer_refusal(reason: queue.QueueReject) -> String {
+  case reason {
+    queue.NoActiveRun ->
+      "the parent has no run open, and a finished parent is not "
+      <> "woken for a child's message"
+
+    queue.NextRunFull(limit:) ->
+      "the parent already holds "
+      <> int.to_string(limit)
+      <> " messages for its next run"
   }
 }
 

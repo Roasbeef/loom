@@ -643,6 +643,13 @@ never a message held by a read nobody could confirm.
   inputs, up to the queue's 32 items, and the reminder returns once compaction
   drops the answer from the request. The owner's second answer settles it, as
   119 already says the later answer stands.
+- An input that arrives after the answer has reached the strand and before its
+  record settles is held, because the ask still reads as open. It waits in
+  `pending_next_run`, and settling the record does not wake the strand. A held
+  item is placed only when a run starts, ahead of that run's own prompt, so an
+  input steered into a run still open after the settle is read before it. The
+  window is the settle call to the session and its store write, and the held
+  item is not lost, so this is documented rather than given a wake of its own.
 - The hold applies to every run of a strand while an ask of it is open, and not
   only to the tail of the run that made the ask. If the owner says "continue"
   and that run works for an hour, an advisor block, a rule injection, peer mail,
@@ -672,7 +679,7 @@ never a message held by a read nobody could confirm.
   an open run with an open ask is held and not steered while one with no ask is
   steered, `steer_marking` holds for an open run and refuses an idle strand,
   `send_as_owner_marking` starts a run despite the ask, a mark spends with the
-  hold and a second fire is refused, the queue refuses the 17th item, and a held item survives a restart
+  hold and a second fire is refused, the queue refuses the 33rd item, and a held item survives a restart
   on a SQLite session.
 - `client/test/client/attention_hold_test`: a woken strand with an open ask is
   reminded and one with none is not, the reminder is gone on the request after
