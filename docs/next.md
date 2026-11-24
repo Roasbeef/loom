@@ -1,7 +1,8 @@
 # Current handoff
 
-The web view and desktop section is written on November 23 against `main` at
-`d0a8d99d0`. The project mode section was last updated
+The web view and desktop sections were written on November 23 against `main`
+at `d0a8d99d0`, and on November 24 against `0e4f6b3e8`, where `make check` and
+`make doc-check` exit 0. The project mode section was last updated
 on November 21. The session hot-path section was re-baselined on November 13
 against source `3e28c16f4`. Other sections retain their upstream baselines;
 this scoped update does not revalidate their hosted CI or live status.
@@ -24,6 +25,103 @@ transaction. The replay preserves complete rows, missing IDs, snapshot cuts
 and corruption faults. It records the measured latency and heap words,
 including the gap between a 114-fold query reduction and a 1.86-fold speedup
 for a complete 1,024-cell cut.
+
+## The web view and the desktop app: the 2026-11-24 batch
+
+This batch took items 1 to 3 and 6 of the November 23 list below, and step 1 of
+the project-mode plan on #1167. Every loom PR here merged on local gates, each
+checked by its own exit code, after a Fable review whose findings were fixed or
+dispositioned on the PR. The gated signoff host was still unreachable.
+
+**What landed in loom.**
+
+- #1368: a steer refused because the parent's next-run queue is full
+  (`NextRunFull`) now says so, instead of "no run open". The 119 addendum
+  counts the 33rd held item and records a gap: an input held after the answer
+  reached the strand and before its record settles waits for the strand's next
+  run start, since settling does not wake the strand. `models.md` counts seven
+  roles, with `router`.
+- #1369: the terminal's ask read rests 15 s when the last read found no open
+  ask (4 s otherwise), repaints when a stale card goes away, and is cancelled at
+  quit. A `code_mode` ask, or a sub-strand's ask while another strand runs, ends
+  no run, so it waits out the 15 s.
+- #1370: 133 `///` blocks in `client/agency.gleam` and `client/advisor.gleam`
+  that an earlier stanza sweep (a458c3931) left in reverse line order read top
+  to bottom again.
+- #1371: the project worker's question is drawn as Markdown, whole. The remote
+  peek stays plain text: protocol-change/090 rules that a remote page is drawn
+  as data, and the peek includes tool output. The Projects popover from the
+  drive did not reproduce; no popover opens on a ticket click.
+- #1372: on a stopped session page, the page's own session leaves the running
+  group, so the count, the group heading and the rows agree; it reads "saved".
+  The stopped notice takes its own row under the title, and the bar's controls
+  stay on the title row.
+- #1374: the admin page's folders go back to the inbox by history
+  (`<loom-back>`). A session page opened from a bare `--session` link keeps its
+  folders as text by design: an operating link grants one session, and giving
+  it the owner's home was rejected (051 addendum, "the way back to the inbox").
+  The facts the `.loom-inbox` frame hid show again; on a phone the role chip
+  shrinks before the session name does.
+- #1373: project settings (step 1 of #1167), rebased from 34 commits to 11. Per
+  project `check`, `setup`, `publish` and the rest are held in the project's
+  ledger and set with `loom project settings|set|unset|init` or the daemon
+  commands `projects.settings`, `projects.set_settings` and `projects.propose`,
+  all owner-only, with no restart. `propose` suggests a check and setup from
+  named files in the repository and runs nothing. A check that finishes under a
+  command the owner has since changed is not taken; the row reruns. Turning
+  publish on by any write must name the URL. The 106 addendum has the shapes and
+  refusals. git-cow ships in the release.
+
+**What is open in loom-desktop.** Slices 3 and 5 of `docs/native-pass.md` are
+built, reviewed and fixed, and held for one foreground UI run, since the screen
+was locked for every run and 29 display-dependent scenarios were blocked:
+
+- #8, slice 3: an Inbox menu (next and previous thread, open session, open in a
+  new window, retry, close find, message session) with Allow and Deny moved
+  into it, still enabled only while an armed approval card is in the focused
+  window; context menus carry only actions that decide nothing, so no retry or
+  close. Inbox threads are deduplicated across daemons.
+- #9, slice 5: notifications for approvals, asks, stuck strands and failed runs
+  only, with agent text labelled untrusted and escaped. A row posts only once
+  its session was on the previous board and, for asks and stuck strands, once
+  the feed had answered for it, so a daemon that connects late does not
+  announce its backlog. Clicking opens the thread and decides nothing.
+
+Merge both after `make uitest-foreground` passes with the screen unlocked; the
+approval-menu scenario was not run on #8's final head. Slice 4 (native controls
+in the reading pane) starts after #8 lands, since both touch the pane.
+`archive_and_delete_ask_first` fails about one run in three on `main` and on
+both branches, at the Stop Session step; it is a timing flake in that scenario.
+
+**Next, in order.**
+
+1. Merge loom-desktop #8 and #9 after a foreground UI run, then slice 4.
+2. Project mode, step 2 of #1167: the web page slice (create a project by
+   picking a workspace, a request composer, the ticket page with the diff, the
+   check output and every action). Fix first: the bundled `erl` on the jail
+   `PATH`, `loom project retry setup` returning `not_found`.
+3. The fidelity pass against `design-notes/attention-inbox/final/mockup.html`,
+   which is still the owner's first ask (below).
+4. Insight triage slice 0 needs about an hour of the owner's time.
+
+**Found in this batch and not done.**
+
+- A session page's sidebar never shows "to review" for other sessions. Home
+  computes it from its own worktree scan (`review_scan_rule.to_review`), which
+  the session page does not run; giving every session page that scan is a new
+  read capability and git reads per page. Decide whether the word is worth it.
+- #1373 leaves three small items: a dropped stale check answer waits out the
+  full deferral before its rerun, and the drop spends a retry attempt
+  (`project_host.gleam`, `check_settled`); `loom project unset publish` cannot
+  name the URL its refusal asks for, so the sentence should name the `set` form.
+- loom-desktop: a session's composer still decides an approval with `/approve`
+  by id prefix with no arming delay, and a card counts as armed while scrolled
+  out of view.
+- Plain text where Markdown may be meant, named by a review and not checked one
+  by one: a ticket's messages and failure line in `projects.gleam`, ask prompts
+  in `attention_thread.gleam`, held messages in `live.gleam`, memory notes.
+- A pushed doorbell for asks would replace the terminal's poll;
+  protocol-change/120 defers it.
 
 ## The web view and the desktop app: what is next (2026-11-23)
 
@@ -112,7 +210,8 @@ has not been repeated since these PRs, so the fidelity pass below is still
 open. The one thing seen and not confirmed: the Projects folder popover may
 stay drawn after a ticket thread is clicked.
 
-**Next, in order.**
+**Next, in order.** Items 1 to 3 are done or held as the November 24 batch
+above records; items 4 and 5 carry over to its list.
 
 1. **Desktop native slices 3 to 5** (`docs/native-pass.md` in loom-desktop).
    Slice 3 is the quote's dashed border. Check the detail and digest views in
