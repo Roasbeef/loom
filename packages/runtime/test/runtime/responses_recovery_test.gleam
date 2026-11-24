@@ -84,6 +84,10 @@ pub fn unclassified_failure_cap_and_context_survive_durable_codec_test() {
   assert !string.contains(description, "canary-provider-secret")
 }
 
+const effects_epoch = 2_000_000
+
+const advised_delay = 250
+
 type RetryDeadlineCapture {
   CaptureRetryDeadline
   SkipRetryDeadline
@@ -101,10 +105,20 @@ fn run(
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "The session opens before effects start."
+
+  // Freeze planner time for the deadline case. A stepping clock would let
+  // unrelated planner reads advance the base used to compute not_before.
+  let effects_clock = case capture_retry_deadline {
+    CaptureRetryDeadline ->
+      clock.from_function(fn() {
+        effects_epoch + recorder.read(rec, "release_retry") * advised_delay
+      })
+    SkipRetryDeadline -> clock.stepping(from: effects_epoch, by: 25)
+  }
   let eff =
     fake.effects(
       rec,
-      clock.stepping(from: 2_000_000, by: 25),
+      effects_clock,
       [],
       fn(spec) {
         let attempt = fake.attempt(spec)
@@ -128,7 +142,14 @@ fn run(
   let assert Ok(op) = api.prompt(rt, [fake.user("recover")])
     as "One owner prompt admits the complete run."
   let retry_deadline = case capture_retry_deadline {
-    CaptureRetryDeadline -> observe_retry_deadline(sess, op)
+    CaptureRetryDeadline -> {
+      let deadline = observe_retry_deadline(sess, op)
+      assert recorder.read(rec, "provider") == 1
+        as "No retry dispatches while planner time is before the deadline."
+      let _ = recorder.bump(rec, "release_retry")
+      api.nudge(rt)
+      deadline
+    }
     SkipRetryDeadline -> None
   }
   let assert Ok(outcome) = api.await_result(rt, op, within_ms: 5000)
@@ -211,7 +232,7 @@ pub fn advised_overloaded_stream_failure_retries_and_recovers_test() {
   let #(outcome, attempts, projection, retry_deadline) =
     run(
       "server_is_overloaded",
-      Some(250),
+      Some(advised_delay),
       operation.Unbounded,
       Some(2),
       CaptureRetryDeadline,
@@ -221,7 +242,7 @@ pub fn advised_overloaded_stream_failure_retries_and_recovers_test() {
   assert projection == ["user:recover", "assistant:stop:Recovered"]
   let assert Some(not_before) = retry_deadline
     as "The runtime persisted the server-advised retry deadline."
-  assert not_before >= 1_000_250
+  assert not_before == effects_epoch + advised_delay
 }
 
 pub fn advised_overloaded_stream_failure_stops_after_six_attempts_test() {
@@ -240,16 +261,16 @@ pub fn advised_overloaded_stream_failure_stops_after_six_attempts_test() {
 }
 
 pub fn stricter_configured_retry_budget_is_preserved_test() {
-  let #(outcome, attempts, _, _) =
-    run(
-      "server_is_overloaded",
-      Some(1),
-      operation.Bounded(1),
-      Some(2),
-      SkipRetryDeadline,
-    )
-  let assert operation.RunLastResult(outcome: operation.RunFailed(..), ..) =
-    outcome
-    as "A one-attempt operator budget does not gain retries."
-  assert attempts == 1
+  list.each(
+    [#("unknown_backend", None), #("server_is_overloaded", Some(1))],
+    fn(row) {
+      let #(code, hint) = row
+      let #(outcome, attempts, _, _) =
+        run(code, hint, operation.Bounded(1), Some(2), SkipRetryDeadline)
+      let assert operation.RunLastResult(outcome: operation.RunFailed(..), ..) =
+        outcome
+        as "Neither the three- nor the six-attempt ceiling raises the configured budget."
+      assert attempts == 1
+    },
+  )
 }
