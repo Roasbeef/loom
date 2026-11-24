@@ -19,6 +19,16 @@
 //// Nothing here echoes a path or the operating system's error: every refusal is
 //// one of `folder_browse.Refusal`, whose words are fixed.
 ////
+//// The picker also searches (`find_in`). A search is the same read of the owner's
+//// files, so it keeps the same rule from the other side: it walks real
+//// directories and follows no symbolic link, so every directory it reports lies
+//// inside the canonical home by construction and none is resolved one process at
+//// a time. It is bounded in depth, in directories read and in hits
+//// (`folder_browse.find_depth`, `visit_limit`, `find_limit`), skips what a
+//// creation would refuse (hidden folders, `~/Library`), and does not descend into
+//// build output, where a checkout keeps thousands of directories nobody starts a
+//// session in.
+////
 //// ## Flow
 ////
 //// `list_in` → `resolved` → `children_of` → `gather`
@@ -237,5 +247,215 @@ fn marker(real: String) -> folder_browse.Marker {
     | Error(_), Ok(False)
     | Error(_), Error(_)
     -> folder_browse.Plain
+  }
+}
+
+// The names a search reads but does not descend into. A hit may still be one of
+// them, since the person may be looking for it by name, but its contents are
+// build output that no one starts a session inside.
+const not_descended = ["node_modules", "_build", "build", "target"]
+
+/// The directories below a canonical home directory whose name holds the
+/// fragment `text` says, shallowest first and in name order within a level.
+///
+/// The text is judged by `folder_browse.needle` again here, whatever the page did,
+/// and a text it refuses is `NotAFolder`, a case no page of ours produces. The
+/// walk is breadth first so that a match near the home is found before a match
+/// deep in a checkout, and it stops at `folder_browse.find_limit` hits or
+/// `visit_limit` directories read, saying so. A directory that cannot be read, or
+/// holds more than `folder_browse.entry_limit` entries, is passed over without
+/// being reported. Hidden names, `~/Library` and any name `component_ok` refuses
+/// are neither reported nor read, and a symbolic link is neither, since only a
+/// real directory is followed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // folder_listing.find_in("/Users/o", "loom")
+/// ```
+pub fn find_in(home: String, text: String) -> folder_browse.FindAnswer {
+  use fragment <- result.try(
+    folder_browse.needle(text) |> result.replace_error(folder_browse.NotAFolder),
+  )
+
+  let #(found, reach) = sweep(home, fragment, [[]], 0, 0, [])
+
+  Ok(folder_browse.Found(
+    hits: list.map(found, fn(trail) {
+      folder_browse.Hit(
+        trail:,
+        marker: marker(string.join([home, ..trail], "/")),
+      )
+    }),
+    reach:,
+  ))
+}
+
+/// Reads one level of directories, then the level below the directories of it
+/// that may be descended into. `visited` counts directories read across levels and
+/// `found` holds the hits so far, newest first.
+fn sweep(
+  home: String,
+  fragment: String,
+  level: List(List(String)),
+  depth: Int,
+  visited: Int,
+  found: List(List(String)),
+) -> #(List(List(String)), folder_browse.Reach) {
+  // A level with no directory left ends the search having looked everywhere; a
+  // level below `find_depth` is not read.
+  case level, depth >= folder_browse.find_depth {
+    [], _ | _, True -> #(list.reverse(found), folder_browse.Covered)
+    [_, ..], False -> {
+      let read = read_level(home, fragment, level, depth, visited, found, [])
+
+      // The walk goes on to the next level, or ends where a bound was reached.
+      case read {
+        Capped(found:) -> #(list.reverse(found), folder_browse.Stopped)
+        Ran(next:, visited:, found:) ->
+          sweep(home, fragment, next, depth + 1, visited, found)
+      }
+    }
+  }
+}
+
+// What reading a level gave: the directories of the next level with the counts so
+// far, or the fact that a bound was reached.
+type Level {
+  Ran(next: List(List(String)), visited: Int, found: List(List(String)))
+  Capped(found: List(List(String)))
+}
+
+/// Reads each directory of a level in turn, adding its matching children to
+/// `found` and its descendable children to `next`. It stops, keeping what it
+/// found, when `visit_limit` directories were read or `find_limit` hits are in
+/// hand.
+fn read_level(
+  home: String,
+  fragment: String,
+  level: List(List(String)),
+  depth: Int,
+  visited: Int,
+  found: List(List(String)),
+  next: List(List(String)),
+) -> Level {
+  // A level is read directory by directory until it is done or a bound stops it.
+  case level {
+    [] -> Ran(next: list.reverse(next), visited:, found:)
+    [_, ..] if visited >= folder_browse.visit_limit -> Capped(found:)
+    [trail, ..rest] -> {
+      let children = children_below(home, trail, depth)
+
+      // A level's children are matched first and descended into afterwards, so
+      // the hit cap is reached by the shallowest matches.
+      let #(found, capped) = add_hits(fragment, trail, children, found)
+
+      // The hit cap ends the walk here, and otherwise the level goes on.
+      case capped {
+        True -> Capped(found:)
+        False ->
+          read_level(
+            home,
+            fragment,
+            rest,
+            depth,
+            visited + 1,
+            found,
+            list.append(
+              list.reverse(
+                list.filter_map(children, fn(name) { descended(trail, name) }),
+              ),
+              next,
+            ),
+          )
+      }
+    }
+  }
+}
+
+/// The names of the real directories inside one directory that a search may
+/// report, sorted without regard to case. A link is not a real directory, a name
+/// a creation would refuse is left out, and a directory that cannot be read or
+/// holds more than the entry bound has none.
+fn children_below(
+  home: String,
+  trail: List(String),
+  depth: Int,
+) -> List(String) {
+  let folder = string.join([home, ..trail], "/")
+
+  // A directory that cannot be read has no children to report.
+  case read_children(folder) {
+    Error(_) -> []
+    Ok(names) ->
+      list.filter(names, fn(name) {
+        !string.starts_with(name, ".")
+        && folder_browse.component_ok(name)
+        && !is_library(depth, name)
+        && is_real_directory(folder <> "/" <> name)
+      })
+      |> list.sort(fn(a, b) {
+        string.compare(string.lowercase(a), string.lowercase(b))
+      })
+  }
+}
+
+/// Whether a name is `Library` directly below the home, which a creation refuses
+/// as hidden although no dot begins it, on a volume that ignores case.
+fn is_library(depth: Int, name: String) -> Bool {
+  depth == 0 && string.lowercase(name) == "library"
+}
+
+/// Whether a path is a directory itself and not a link to one, which is the one
+/// kind of entry a search follows.
+fn is_real_directory(path: String) -> Bool {
+  case simplifile.link_info(path) {
+    Ok(info) -> simplifile.file_info_type(info) == simplifile.Directory
+    Error(_) -> False
+  }
+}
+
+/// Adds the children whose name holds the fragment to the hits, stopping at
+/// `find_limit`. The boolean is whether the cap was reached with children left.
+fn add_hits(
+  fragment: String,
+  trail: List(String),
+  children: List(String),
+  found: List(List(String)),
+) -> #(List(List(String)), Bool) {
+  gather_hits(fragment, trail, children, found, list.length(found))
+}
+
+/// Walks the children with the count of hits held, so the cap is a comparison and
+/// not a count of the list at each name.
+fn gather_hits(
+  fragment: String,
+  trail: List(String),
+  children: List(String),
+  found: List(List(String)),
+  count: Int,
+) -> #(List(List(String)), Bool) {
+  // The children are walked in order until the hit cap is reached.
+  case children {
+    [] -> #(found, False)
+    [_, ..] if count >= folder_browse.find_limit -> #(found, True)
+    [name, ..rest] -> {
+      let below = list.append(trail, [name])
+
+      // A child whose name holds the fragment is kept as a hit.
+      case folder_browse.matches(fragment, below) {
+        True -> gather_hits(fragment, trail, rest, [below, ..found], count + 1)
+        False -> gather_hits(fragment, trail, rest, found, count)
+      }
+    }
+  }
+}
+
+/// The trail of a child that a search reads next, or `Error(Nil)` for one it
+/// does not descend into.
+fn descended(trail: List(String), name: String) -> Result(List(String), Nil) {
+  case list.contains(not_descended, string.lowercase(name)) {
+    True -> Error(Nil)
+    False -> Ok(list.append(trail, [name]))
   }
 }

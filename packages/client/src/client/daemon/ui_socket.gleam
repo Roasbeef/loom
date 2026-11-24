@@ -1171,6 +1171,16 @@ pub fn upgrade_home(
             deliver,
           )
         },
+        // The folder search (protocol-change/132, the addendum on searching)
+        // walks the owner's directories, so it is a task of its own under the
+        // same deadline as a listing.
+        find: fn(text, deliver) {
+          find_within(
+            fn() { find_for(standing, open, new_folder.home, text) },
+            browse_ms,
+            deliver,
+          )
+        },
       ),
     )
 
@@ -5502,6 +5512,36 @@ pub fn browse_within(
   within: Int,
   deliver: fn(folder_browse.Answer) -> Nil,
 ) -> Nil {
+  within_deadline(attempt, within, Error(folder_browse.Unreadable), deliver)
+}
+
+/// The folder search's counterpart of `browse_within`: runs the walk in a task of
+/// its own under a deadline and delivers its answer, or `Unreadable` once the
+/// deadline has passed, so the page never waits for a search that will not come.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.find_within(fn() { Error(folder_browse.Unreadable) }, 5000, deliver)
+/// ```
+@internal
+pub fn find_within(
+  attempt: fn() -> folder_browse.FindAnswer,
+  within: Int,
+  deliver: fn(folder_browse.FindAnswer) -> Nil,
+) -> Nil {
+  within_deadline(attempt, within, Error(folder_browse.Unreadable), deliver)
+}
+
+/// Runs one attempt in a witnessed weft task under a deadline and delivers its
+/// answer, or `expired` when the deadline passed first. Both folder reads share
+/// it, so the deadline is one rule.
+fn within_deadline(
+  attempt: fn() -> answer,
+  within: Int,
+  expired: answer,
+  deliver: fn(answer) -> Nil,
+) -> Nil {
   let _ =
     weft.new([
       fn() {
@@ -5510,11 +5550,11 @@ pub fn browse_within(
           |> weft.deadline(within)
           |> weft.start
 
-        // A listing that passed its deadline is answered all the same, so the
+        // An attempt that passed its deadline is answered all the same, so the
         // picker never waits for one that will not come.
         case outcomes {
           [weft.Completed(value: answer, ..)] -> deliver(answer)
-          _ -> deliver(Error(folder_browse.Unreadable))
+          _ -> deliver(expired)
         }
 
         Ok(Nil)
@@ -5549,6 +5589,36 @@ pub fn browse_for(
     Ok(_) ->
       case home() {
         Ok(directory) -> folder_listing.list_in(directory, trail)
+        Error(_) -> Error(folder_browse.NoHome)
+      }
+    Error(_) -> Error(folder_browse.NotAFolder)
+  }
+}
+
+/// The directories below the owner's home whose name holds a fragment, for the
+/// composer's folder search (protocol-change/132, the addendum on searching). The
+/// same owner check as a creation and a listing runs first, so a page that may
+/// not create is told nothing about the filesystem and costs none, and the home is
+/// read only after it. A page that fails the check gets the refusal a missing
+/// folder gets.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.find_for(standing, open, fn() { Ok("/Users/o") }, "loom")
+/// ```
+@internal
+pub fn find_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: fn() -> Result(String, creations.Reason),
+  text: String,
+) -> folder_browse.FindAnswer {
+  // This branch resolves authorized_owner standing open before the operation continues.
+  case authorized_owner(standing, open) {
+    Ok(_) ->
+      case home() {
+        Ok(directory) -> folder_listing.find_in(directory, text)
         Error(_) -> Error(folder_browse.NoHome)
       }
     Error(_) -> Error(folder_browse.NotAFolder)

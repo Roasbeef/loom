@@ -2,7 +2,7 @@
 //// walk the directories below the owner's home, what it answers, and the fixed
 //// words for each refusal (protocol-change/132).
 ////
-//// The composer's "Choose a folder…" draws a picker in the page, because a
+//// The composer's "Open folder…" draws a picker in the page, because a
 //// browser's file dialog cannot name a path on the daemon's machine. The picker
 //// needs the daemon to say which directories exist, and that lists the owner's
 //// files to a browser, so the request is narrow. The page never sends a path. It
@@ -16,6 +16,13 @@
 //// half that asks the filesystem is the daemon's, because only the host can say
 //// what a name resolves to.
 ////
+//// The picker also finds. The folder search (protocol-change/132, the addendum
+//// on searching) takes a fragment of a folder's name and answers the directories
+//// below the home whose name holds it, as trails, the same shape a listing's
+//// children have. The fragment is the one piece of browser text the search
+//// reads, so `needle` judges and normalizes it here, before and again after it
+//// crosses to the daemon, and a hit is a trail the page keeps and names by index.
+////
 //// ## Flow
 ////
 //// `component_ok` and `trail_ok` → the daemon lists → `Listing` or `Refusal`
@@ -27,6 +34,15 @@
 ////    its depth against the depth bound, resolves the trail against the home, and
 ////    answers a `Listing` whose trail is the canonical one, or a `Refusal`.
 //// 3. `trail_text` writes a trail as the `~/` path the creation judges.
+////
+//// `needle` → the daemon searches → `Found` or `Refusal`
+////
+//// 1. `needle` turns the typed text into the lowercase fragment, or refuses a
+////    fragment too short to be worth a walk.
+//// 2. The daemon walks the home breadth first, bounded in depth, in directories
+////    read and in hits, keeping a directory only when `matches` says its name
+////    holds the fragment.
+//// 3. `hit_trail` is the one place a hit becomes a trail the creation judges.
 
 import gleam/list
 import gleam/string
@@ -50,6 +66,25 @@ pub const shown_limit = 200
 
 /// The most bytes one name may hold, the filesystem's own bound.
 pub const name_limit = 255
+
+/// The fewest characters a search fragment may hold. One letter matches most of
+/// the home and says little, so the daemon is not asked to walk for it.
+pub const needle_min = 2
+
+/// The most characters a search fragment may hold, the length the composer keeps
+/// of the search text.
+pub const needle_limit = 64
+
+/// The most hits one search returns.
+pub const find_limit = 20
+
+/// The most directories below the home a search descends to. It is below
+/// `depth_limit`, so every hit is a trail a creation takes.
+pub const find_depth = 6
+
+/// The most directories one search reads, which bounds its cost whatever the
+/// shape of the home. A search that reaches it says it stopped.
+pub const visit_limit = 2000
 
 /// The words on a name's row, and where it leads.
 pub type Child {
@@ -122,6 +157,42 @@ pub type Refusal {
 /// What a read of one directory gave: the listing, or why it was refused.
 pub type Answer =
   Result(Listing, Refusal)
+
+/// One directory a search found.
+pub type Hit {
+  Hit(
+    /// The directory's trail below the home, outermost first, never empty. A
+    /// search walks real directories and follows no link, so it is also the
+    /// directory's canonical trail.
+    trail: List(String),
+    /// Whether the directory holds a `.git`, which the row marks.
+    marker: Marker,
+  )
+}
+
+/// Whether a search looked at every directory it was allowed to.
+pub type Reach {
+  /// The walk ended because every directory within `find_depth` had been read.
+  Covered
+
+  /// The walk stopped at `find_limit` hits or `visit_limit` directories, so there
+  /// may be more.
+  Stopped
+}
+
+/// What a search found: the hits in the order of the walk, shallowest first.
+pub type Found {
+  Found(
+    /// The directories whose name holds the fragment.
+    hits: List(Hit),
+    /// Whether the walk looked everywhere it could.
+    reach: Reach,
+  )
+}
+
+/// What a search gave: the hits, or why the daemon would not search.
+pub type FindAnswer =
+  Result(Found, Refusal)
 
 /// Whether a name may be one component of a trail: not empty, not `.` or `..`, no
 /// slash, no control character or line break, no space at either end (a path is
@@ -231,5 +302,71 @@ pub fn refusal_words(refusal: Refusal) -> String {
     TooMany ->
       "That folder holds too many entries to list. Go up, or type the path of the folder."
     Unreadable -> "That folder cannot be read. Go up, or type a path."
+  }
+}
+
+/// The fragment a search looks for, from the text the person typed: trimmed,
+/// lowercase, a single line of at least `needle_min` and at most `needle_limit`
+/// characters. Anything else is `Error(Nil)`, so the page asks for nothing and
+/// the daemon answers nothing for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert folder_browse.needle("  Loom ") == Ok("loom")
+/// assert folder_browse.needle("l") == Error(Nil)
+/// ```
+pub fn needle(text: String) -> Result(String, Nil) {
+  let fragment = string.trim(text) |> string.lowercase
+  let length = string.length(fragment)
+
+  // A fragment is kept only if it is long enough to be worth a walk, short enough to
+  // be a name, and one line.
+  case
+    length >= needle_min
+    && length <= needle_limit
+    && text_hygiene.single_line(fragment) == fragment
+  {
+    True -> Ok(fragment)
+    False -> Error(Nil)
+  }
+}
+
+/// Whether a directory's trail holds a fragment `needle` made. A fragment with no
+/// slash is looked for in the directory's own name, so a search for `loom` does
+/// not return everything below a folder called `loom`; one with a slash is looked
+/// for in the whole trail, so `code/app` finds the `app` below `code`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert folder_browse.matches("oom", ["code", "Loom"])
+/// assert !folder_browse.matches("code", ["code", "app"])
+/// assert folder_browse.matches("code/app", ["code", "app"])
+/// ```
+pub fn matches(fragment: String, trail: List(String)) -> Bool {
+  case string.contains(fragment, "/"), list.last(trail) {
+    True, _ ->
+      string.contains(string.lowercase(string.join(trail, "/")), fragment)
+    False, Ok(name) -> string.contains(string.lowercase(name), fragment)
+    False, Error(Nil) -> False
+  }
+}
+
+/// The trail of the hit at an index of the hits the page holds, or `Error(Nil)`
+/// for an index that names none. This is the one place a hit becomes a trail, so
+/// a press whose index the page did not draw reaches nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let hits = [folder_browse.Hit(["a", "b"], folder_browse.Plain)]
+/// assert folder_browse.hit_trail(hits, 0) == Ok(["a", "b"])
+/// assert folder_browse.hit_trail(hits, 1) == Error(Nil)
+/// ```
+pub fn hit_trail(hits: List(Hit), index: Int) -> Result(List(String), Nil) {
+  case index >= 0, list.drop(hits, index) {
+    True, [Hit(trail:, ..), ..] -> Ok(trail)
+    True, [] | False, _ -> Error(Nil)
   }
 }

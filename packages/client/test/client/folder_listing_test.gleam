@@ -273,3 +273,90 @@ pub fn a_canonical_trail_with_an_unsendable_name_is_refused_test() {
   assert folder_listing.list_in(home, ["shortcut"])
     == Error(folder_browse.NotAFolder)
 }
+
+fn trails(found: folder_browse.Found) -> List(List(String)) {
+  list.map(found.hits, fn(hit) { hit.trail })
+}
+
+// A search returns the directories whose name holds the fragment without regard
+// to case, shallowest first, marks a Git checkout, and reads no hidden folder,
+// `Library`, file or build output below which a match could hide.
+pub fn a_search_finds_names_shallowest_first_test() {
+  let home = owners_home("find-order")
+  make(home <> "/work/Loom")
+  make(home <> "/code/deep/inside/loomish/.git")
+  make(home <> "/loom-picker")
+  make(home <> "/.hidden/loom")
+  make(home <> "/Library/loom")
+  make(home <> "/code/node_modules/loom")
+  make(home <> "/code/app")
+  let assert Ok(Nil) = simplifile.write(home <> "/loom.txt", "x") as "a file"
+
+  let assert Ok(found) = folder_listing.find_in(home, "  LOOM ")
+  assert trails(found)
+    == [
+      ["loom-picker"],
+      ["work", "Loom"],
+      ["code", "deep", "inside", "loomish"],
+    ]
+  assert found.reach == folder_browse.Covered
+  let assert [_, _, folder_browse.Hit(marker:, ..)] = found.hits
+  assert marker == Repository
+}
+
+// A fragment with a slash is looked for in the whole trail, so a folder is found
+// by its parent too, and one that is too short or holds a control character is
+// refused before the filesystem is read.
+pub fn a_search_reads_a_slash_as_a_path_and_refuses_a_bad_fragment_test() {
+  let home = owners_home("find-slash")
+  make(home <> "/code/app")
+  make(home <> "/other/app")
+
+  let assert Ok(found) = folder_listing.find_in(home, "code/app")
+  assert trails(found) == [["code", "app"]]
+
+  assert folder_listing.find_in(home, "a") == Error(folder_browse.NotAFolder)
+  assert folder_listing.find_in(home, "a\nb") == Error(folder_browse.NotAFolder)
+}
+
+// A link is not followed, so what lies behind one is not reported and the search
+// never leaves the home however a link points.
+pub fn a_search_follows_no_link_test() {
+  let home = owners_home("find-link")
+  let outside = owners_home("find-link-outside")
+  make(outside <> "/loom-secret")
+  make(home <> "/real")
+  let assert Ok(Nil) = simplifile.create_symlink(outside, home <> "/loom-link")
+    as "a link out of the home"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(home <> "/real", home <> "/loom-in")
+    as "a link inside the home"
+
+  let assert Ok(found) = folder_listing.find_in(home, "loom")
+  assert trails(found) == []
+}
+
+// The search stops at its hit cap and says so, and at its depth bound without
+// reading below it.
+pub fn a_search_stops_at_its_bounds_and_says_so_test() {
+  let home = owners_home("find-bounds")
+  int.range(
+    from: 1,
+    to: folder_browse.find_limit + 6,
+    with: [],
+    run: fn(acc, each) { [each, ..acc] },
+  )
+  |> list.each(fn(each) { make(home <> "/loom" <> int.to_string(each)) })
+
+  let assert Ok(found) = folder_listing.find_in(home, "loom")
+  assert list.length(found.hits) == folder_browse.find_limit
+  assert found.reach == folder_browse.Stopped
+
+  let deep = owners_home("find-depth")
+  make(deep <> "/a/b/c/d/e/f/g/target-dir")
+  let assert Ok(none) = folder_listing.find_in(deep, "target-dir")
+  assert trails(none) == []
+  make(deep <> "/a/b/c/d/e/g-dir")
+  let assert Ok(reached) = folder_listing.find_in(deep, "g-dir")
+  assert trails(reached) == [["a", "b", "c", "d", "e", "g-dir"]]
+}

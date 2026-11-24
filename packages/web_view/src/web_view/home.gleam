@@ -767,6 +767,15 @@ pub type Folders {
     /// that leaves it, and checks the page and the owner again, whatever this page
     /// said.
     browse: fn(List(String), fn(folder_browse.Answer) -> Nil) -> Nil,
+    /// Starts the search of the owner's home for directories whose name holds a
+    /// fragment, for the composer's folder search (protocol-change/132, the
+    /// addendum on searching). The argument is the fragment `folder_browse.needle`
+    /// made of the person's text, and the answer is at most
+    /// `folder_browse.find_limit` hits as trails, or a refusal, dispatched as
+    /// `FolderFound`. The daemon judges the fragment again, walks bounded in
+    /// depth, directories and time without following a link, and checks the page
+    /// and the owner, whatever this page said.
+    find: fn(String, fn(folder_browse.FindAnswer) -> Nil) -> Nil,
   )
 }
 
@@ -1557,6 +1566,12 @@ pub type Msg {
   /// and no handler carries it; the composer applies it only if it is still
   /// waiting for that trail.
   FolderBrowsed(trail: List(String), answer: folder_browse.Answer)
+
+  /// A search of the home for the composer's folder search arrived, with the
+  /// fragment it answers. It is the effect's own message, dispatched from the
+  /// daemon's task, and no handler carries it; the composer applies it only if the
+  /// search is still for that fragment.
+  FolderFound(needle: String, answer: folder_browse.FindAnswer)
 
   /// A read of the other orchestrators' first pages arrived, numbered by the read
   /// it answers. It is the effect's own message, dispatched from the daemon's
@@ -3181,6 +3196,18 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         None -> #(model, effect.none())
       }
 
+    // A search answer for the composer's folder search. The composer drops an
+    // answer for a fragment the person has since changed, so a slow search never
+    // overwrites a newer one.
+    FolderFound(needle:, answer:) ->
+      case model.start.folders {
+        Some(_) -> #(
+          Model(..model, compose: composer.found(model.compose, needle, answer)),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
     // The projects' boards. An answer a newer read overtook is dropped, and so is
     // one for a page that lists no projects; a read that could not ask keeps the
     // boards the page has. A board with the revision the page already holds
@@ -4250,6 +4277,7 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
         composer.Stay -> #(model, effect.none())
         composer.ReadPlacements -> reading_cards(model)
         composer.Browse(trail:) -> browsing(model, trail)
+        composer.Find(needle:) -> finding(model, needle)
         composer.ReadAgents -> reading_offers(model, names_of(model))
         composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
         composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
@@ -4292,6 +4320,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
         here:,
         agents:,
         typing: composer.MayType,
+        projects: list.map(model.boards, fn(each) { each.workspace }),
       )
     composer.Orchestrator(name:) as agent ->
       case orchestrators.standing(model.machines, name) {
@@ -4306,6 +4335,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             here:,
             agents:,
             typing: composer.MayNotType,
+            projects: [],
           )
         orchestrators.Asking | orchestrators.Refusing(_) ->
           composer.Offers(
@@ -4318,6 +4348,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             here:,
             agents:,
             typing: composer.MayNotType,
+            projects: [],
           )
       }
   }
@@ -4625,6 +4656,25 @@ fn browsing(model: Model, trail: List(String)) -> #(Model, Effect(Msg)) {
       Model(
         ..model,
         compose: composer.State(..model.compose, browser: composer.Closed),
+      ),
+      effect.none(),
+    )
+  }
+}
+
+/// Asks the daemon to search its home for the folder search. A page with no
+/// `Folders` capability cannot ask, so the search is left unanswered and the list
+/// shows the rows the page holds.
+fn finding(model: Model, needle: String) -> #(Model, Effect(Msg)) {
+  case model.start.folders {
+    Some(Folders(find:, ..)) -> #(model, {
+      use dispatch <- effect.from
+      find(needle, fn(answer) { dispatch(FolderFound(needle, answer)) })
+    })
+    None -> #(
+      Model(
+        ..model,
+        compose: composer.State(..model.compose, seek: composer.Unsought),
       ),
       effect.none(),
     )
@@ -7397,6 +7447,8 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
       model: fn(model) { Composed(composer.ChoseModel(model)) },
       search: fn(text) { Composed(composer.Searched(text)) },
+      found: fn(index) { Composed(composer.ChoseFound(index)) },
+      enter: Composed(composer.Entered),
       browse: Composed(composer.OpenedBrowser),
       descend: fn(index) { Composed(composer.Descended(index)) },
       ascend: fn(depth) { Composed(composer.Ascended(depth)) },

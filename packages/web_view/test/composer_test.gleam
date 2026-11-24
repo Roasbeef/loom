@@ -35,6 +35,7 @@ fn offers() -> Offers {
       ),
     ],
     typing: composer.MayType,
+    projects: [],
   )
 }
 
@@ -586,6 +587,7 @@ fn box_offers() -> Offers {
     models: [],
     agent: composer.Orchestrator("box"),
     typing: composer.MayNotType,
+    projects: [],
   )
 }
 

@@ -1467,6 +1467,7 @@ pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
       recent: fn(_) { Nil },
       forget: fn(_, _) { Nil },
       browse: fn(_, _) { Nil },
+      find: fn(_, _) { Nil },
     )
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
