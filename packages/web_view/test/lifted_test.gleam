@@ -1,6 +1,7 @@
 //// The live rail, "Lifted from this session": what it draws from a page's
 //// pieces and approvals, that no control in it decides anything, that an
-//// insight folds once opened and a pinned row never does, that every marker
+//// insight folds once opened, unfolds on a second press, and a pinned row never
+//// folds, that every marker
 //// is a daemon key, and what the phone's bar counts.
 ////
 //// The fixture page holds one pending approval, a peer message and a
@@ -215,7 +216,7 @@ pub fn an_observers_approval_entry_points_nowhere_test() {
   assert list.length(rail_handlers(component.view(lifting()))) == 2
 }
 
-pub fn an_insight_folds_after_one_open_and_stays_folded_test() {
+pub fn an_insight_folds_on_one_press_and_unfolds_on_the_next_test() {
   let before = rail_of(operator(lifting()))
   assert count(before, "lift-open") == 2
   assert count(before, "lift-folded") == 0
@@ -224,12 +225,17 @@ pub fn an_insight_folds_after_one_open_and_stays_folded_test() {
   let rail = rail_of(operator(once))
   assert count(rail, "lift-open") == 1
   assert count(rail, "lift-folded") == 1
-  assert list.length(rail_handlers(operator_page.view(once))) == 1
 
-  // Opening it again changes nothing, and neither do later renders.
-  let again = open(once, "9.0")
-  assert again == once
-  assert count(rail_of(operator(again)), "lift-folded") == 1
+  // A folded insight keeps its handler, so the reader can press it again.
+  assert list.length(rail_handlers(operator_page.view(once))) == 2
+
+  // The second press draws it whole, as it was before the first.
+  let twice = open(once, "9.0")
+  assert twice == lifting()
+  assert count(rail_of(operator(twice)), "lift-folded") == 0
+
+  // Later renders of a folded insight change nothing.
+  assert rail_of(operator(once)) == rail
 }
 
 pub fn a_pinned_row_never_folds_and_an_unknown_key_opens_nothing_test() {
@@ -280,7 +286,7 @@ pub fn every_rail_handler_is_at_the_admitted_shape_test() {
   let without_approval =
     component.new(page_fixture.start())
     |> component.apply([lane_fixture.captured(10, None)])
-  list.each([lifting(), without_approval], fn(model) {
+  list.each([lifting(), open(lifting(), "9.0"), without_approval], fn(model) {
     let keys = rail_handlers(component.view(model))
     assert list.length(keys) == 2
     assert list.all(keys, fn(key) {
@@ -389,8 +395,9 @@ pub fn the_bar_words_leave_out_a_zero_part_test() {
 }
 
 // For any choice of opened insights, the handlers the rail draws are exactly
-// the unopened insights, and a pinned row is drawn pinned whatever is opened.
-pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
+// the insights, folded or whole, and a pinned row is drawn pinned and without
+// a handler whatever is opened.
+pub fn handlers_are_the_insights_and_pins_never_fold_test() {
   let insight = fn(key) {
     lifted.Item(
       attention.Lifted(
@@ -446,7 +453,7 @@ pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
       let html = element.to_string(view)
       let unopened = list.filter(keys, fn(key) { !list.contains(opened, key) })
 
-      assert list.length(every_handler(view)) == list.length(unopened)
+      assert list.length(every_handler(view)) == list.length(keys)
       assert count(html, "lift-pinned") == 1
       assert count(html, "lift-folded") == 4 - list.length(unopened)
     },

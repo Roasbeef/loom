@@ -210,22 +210,17 @@ type Given {
   OtherText(String)
 }
 
-/// Reads one question's controls. Text in the Other field beside an option
-/// that is not Other is refused by name, because the form submits an empty
-/// field for every question and a person who typed there meant something.
+/// Reads one question's controls. The form submits an Other field for every
+/// question, and the stylesheet hides it unless Other is the chosen option, so
+/// text left in a hidden field is not something the person meant to send. It is
+/// ignored for a question whose chosen answer is not Other, and the answer
+/// carries no `other` entry for it; the daemon still refuses such an entry
+/// (`core/attention_answer.check`), the page just never builds one.
 fn given(
   question: Question,
   fields: List(#(String, String)),
 ) -> Result(Given, Problem) {
-  use read <- result.try(controls(question, fields))
-  let typed = values_of(fields, other_name(question))
-
-  // Only an answered question has a stray: an Other has its text by design.
-  case read, list.any(typed, fn(text) { string.trim(text) != "" }) {
-    Answered(_), True ->
-      Error(Problem(question.key, "Other text for an answer that is not Other"))
-    Answered(_), False | Unanswered, _ | OtherText(_), _ -> Ok(read)
-  }
+  controls(question, fields)
 }
 
 /// Reads one question's controls, without judging the Other text beside an

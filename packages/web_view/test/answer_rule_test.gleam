@@ -107,12 +107,13 @@ pub fn other_answers_a_question_with_its_text_test() {
   assert answer_rule.stage("s1", ask, 1, [#("q1", "other"), #("q1-other", " ")])
     == Error(answer_rule.Problem("q1", "Other needs some text"))
 
-  // Text beside an option is a stray, and refused by name.
-  assert answer_rule.stage("s1", ask, 1, [#("q1", "yes"), #("q1-other", "x")])
-    == Error(answer_rule.Problem(
-      "q1",
-      "Other text for an answer that is not Other",
-    ))
+  // Text left in the hidden Other field beside another answer is ignored: the
+  // answer is Yes, and the wire holds no `other` entry for it.
+  let assert Ok(chosen) =
+    answer_rule.stage("s1", ask, 1, [#("q1", "yes"), #("q1-other", "maybe")])
+  let assert Ok(plain) = answer_rule.stage("s1", ask, 1, [#("q1", "yes")])
+  assert chosen.lines == plain.lines
+  assert chosen.wire == plain.wire
 }
 
 pub fn an_unanswered_question_is_named_test() {

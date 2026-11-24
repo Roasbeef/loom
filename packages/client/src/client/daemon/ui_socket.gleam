@@ -385,9 +385,9 @@ type Phase {
 /// already holds, so it too reads nothing and sends nothing (the addendum to
 /// protocol-change/070 on messages), and is admitted at its two exact paths.
 /// A sixth is `component.rail_click`, the live rail's insight press, at exactly
-/// the shape that predicate names, where each handler is an unopened insight's
-/// button and its message asks the page to
-/// draw that insight folded from then on: a key the server drew into the
+/// the shape that predicate names, where each handler is an insight's
+/// button, whole or folded, and its message asks the page to
+/// draw that insight folded, or whole again if it is folded: a key the server drew into the
 /// handler, so the frame cannot name one, and a change of what the page
 /// draws that reads and sends nothing (the addendum to protocol-change/051 on
 /// the live rail). The buttons beneath a stuck strand's or a find's card on that

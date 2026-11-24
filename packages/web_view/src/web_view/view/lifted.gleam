@@ -33,12 +33,14 @@
 //// there is no dock and no deciding, so the row says that the operator
 //// decides, and carries no jump.
 ////
-//// An insight is drawn whole until the reader opens it once, and folded to
-//// one line for the rest of the page's life afterwards. The opened keys are
-//// the server model's (`component.RailOpened`); nothing is stored in the
-//// browser and nothing records what the reader has seen. The press that opens
-//// an insight is the first handler this module draws, and it asks the server
-//// to remember a key the server drew into the handler.
+//// An insight is drawn whole until the reader presses it, and folded to one
+//// line afterwards. A second press draws it whole again, so a folded insight
+//// can be read once more. The opened keys are the server model's
+//// (`component.RailOpened`), which a press adds the key to or removes it from;
+//// nothing is stored in the browser and nothing records what the reader has
+//// seen. Every insight's press is a handler at the same path, whether the
+//// insight is whole or folded, and it asks the server to toggle a key the
+//// server drew into the handler.
 ////
 //// ## Actions
 ////
@@ -71,6 +73,8 @@
 //// insights as the page's opened set says, and a jump closes it
 //// (`web_client/follow`).
 
+import core/entry
+import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -80,6 +84,8 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import session_view/attention.{type Lifted}
+import session_view/transcript_line
+import session_view/transcript_lines
 import session_view/turns
 import web_view/view/stamp
 
@@ -157,8 +163,9 @@ pub type Rail(message) {
     /// The catalogue's name for a listed session, given its identity, or
     /// `None` for one the page does not list.
     names: fn(String) -> Option(String),
-    /// The message a press on an unopened insight sends, given its key. It
-    /// is `None` for the sheet, whose rows are not handlers.
+    /// The message a press on an insight sends, given its key: it folds a
+    /// whole insight and unfolds a folded one. It is `None` for the sheet,
+    /// whose rows are not handlers.
     open: Option(fn(String) -> message),
     /// What the page draws under a row, given its key: an open ask's form on a
     /// page that may answer, and nothing for every other row. The sheet draws
@@ -235,17 +242,23 @@ fn target(
   }
 }
 
-/// The key of the lane row an ask belongs to: the newest piece of the agent's
-/// own output (its words or the work of a turn) that happened at or before the
-/// ask was recorded, or nothing when the ask has no time or no piece qualifies.
+/// The key of the lane row an ask belongs to: the agent's own words that came
+/// with the ask when the lane has them, and otherwise the newest piece of the
+/// agent's output (its words or the work of a turn) that happened at or before
+/// the ask was recorded. Nothing when the ask has no time or no piece
+/// qualifies.
 ///
 /// The lane holds no identity of an ask. A settled turn is a divider with no
 /// steps in it (`turns.Folded`), the call's result that names the ask is in a
 /// step, and the record's anchor is a driver coordinate the lane does not
 /// carry. The one thing the ask and a row share is when they happened: an ask
 /// is recorded as its call runs, after the response that made the call, and the
-/// owner's next input comes later still. A press of the rail's jump on an ask
-/// that matches nothing does nothing, and the card in the dock is unaffected.
+/// owner's next input comes later still. That newest output piece is the
+/// turn's divider ("Worked <1s · 1 step"), which says nothing the reader came
+/// for, so the row is moved back to the agent's message that immediately
+/// precedes the divider, as the final design tints the agent's words and not the
+/// divider. A press of the rail's jump on an ask that matches nothing does
+/// nothing, and the card in the dock is unaffected.
 fn ask_row(
   pieces: List(turns.Piece),
   at: fn(String) -> Option(Int),
@@ -254,7 +267,44 @@ fn ask_row(
   // An ask with no time cannot be placed.
   case asked {
     None -> ""
-    Some(recorded) -> newest_stamped(list.reverse(pieces), at, recorded)
+    Some(recorded) -> {
+      let turn = newest_stamped(list.reverse(pieces), at, recorded)
+
+      option.unwrap(words_before(pieces, turn, at, recorded), turn)
+    }
+  }
+}
+
+/// The key of the agent's message that is the lane piece right before the turn
+/// with this key, when that turn's divider is the piece the ask was matched to
+/// and the message happened at or before the ask was recorded. Nothing for a
+/// key that is not a turn, a turn with no message directly before it, or a
+/// message the page cannot place in time.
+fn words_before(
+  pieces: List(turns.Piece),
+  turn: String,
+  at: fn(String) -> Option(Int),
+  recorded: Int,
+) -> Option(String) {
+  let before =
+    pieces
+    |> list.window_by_2
+    |> list.find_map(fn(pair) {
+      // Only the pair whose second piece is the asking turn can name a message.
+      case is_turn(pair.1, turn) {
+        True -> agent_words(pair.0)
+        False -> Error(Nil)
+      }
+    })
+
+  // A message that cannot be dated before the ask is not what asked.
+  case before {
+    Ok(key) ->
+      case at(key) {
+        Some(when) if when <= recorded -> Some(key)
+        Some(_) | None -> None
+      }
+    Error(Nil) -> None
   }
 }
 
@@ -281,6 +331,80 @@ fn newest_stamped(
         True, Some(_) -> piece_key(piece)
       }
   }
+}
+
+/// Whether a piece is the work of the turn with this key.
+fn is_turn(piece: turns.Piece, key: String) -> Bool {
+  // Only a turn's work carries a divider, and its key names the turn.
+  case piece {
+    turns.Work(key: own, ..) -> own == key
+    turns.Plain(..)
+    | turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Trigger(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> False
+  }
+}
+
+/// The key of a piece that is the asking response's own words: a block drawn
+/// from an assistant message whose rows speak as the assistant and hold no
+/// failure line. A failed response's cause, a custom message, a compaction or
+/// branch summary and the harness's frames are also `Plain` pieces and are not
+/// the words that came with the ask, so a piece that cannot be told apart is
+/// not chosen and the ask keeps the turn's divider.
+fn agent_words(piece: turns.Piece) -> Result(String, Nil) {
+  // Only a plain block can be the agent's words, and its source says whose.
+  case piece {
+    turns.Plain(block:, ..) ->
+      case is_assistant_source(block.source), speaks_cleanly(block.rows) {
+        True, True -> Ok(block.key)
+        True, False | False, _ -> Error(Nil)
+      }
+    turns.Work(..)
+    | turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Trigger(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> Error(Nil)
+  }
+}
+
+/// Whether a block was drawn from one assistant message.
+fn is_assistant_source(source: transcript_lines.Source) -> Bool {
+  // Every kind of source is named, and only an entry can be a response.
+  case source {
+    transcript_lines.FromEntry(value:) ->
+      case value {
+        entry.MessageEntry(message: message.AssistantMessage(..), ..) -> True
+        entry.MessageEntry(..)
+        | entry.CompactionEntry(..)
+        | entry.BranchSummaryEntry(..)
+        | entry.CustomEntry(..) -> False
+      }
+    transcript_lines.FromTools(..)
+    | transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> False
+  }
+}
+
+/// Whether a block's rows include the assistant's speech and no failure line.
+fn speaks_cleanly(rows: List(#(String, transcript_line.Line))) -> Bool {
+  let speakers = list.map(rows, fn(row) { { row.1 }.speaker })
+
+  list.contains(speakers, transcript_line.Assistant)
+  && !list.contains(speakers, transcript_line.Failure)
 }
 
 /// Whether a piece is the agent's own output: its words, or a turn's work.
@@ -604,8 +728,8 @@ fn group(
   }
 }
 
-/// One row: a card whose button jumps, and for an unopened insight that has a
-/// handler, also asks the server to remember that it was opened. The card is
+/// One row: a card whose button jumps, and for an insight on a rail that has a
+/// handler, also asks the server to fold it or to draw it whole again. The card is
 /// the list item, so an ask's form, which cannot sit inside a button, is drawn
 /// inside the same border under the button.
 fn row(item: Item, rail: Rail(message)) -> Element(message) {
@@ -623,7 +747,7 @@ fn row(item: Item, rail: Rail(message)) -> Element(message) {
         list.flatten([
           [attribute.type_("button"), attribute.class("lift-press")],
           jump(item.target),
-          press(lifted, folded, rail.open),
+          press(lifted, rail.open),
         ]),
         [
           html.span([attribute.class("lift-kind")], [
@@ -707,22 +831,19 @@ fn jump(target: String) -> List(attribute.Attribute(message)) {
   }
 }
 
-/// The handler that records an open: only an unopened insight on a rail that
-/// has one. A pinned row and a folded insight draw none.
+/// The handler that toggles an insight: every insight on a rail that has one.
+/// A press on a whole insight asks the server to draw it folded, and a press on
+/// a folded one asks it to draw the insight whole again, so the reader can read
+/// a folded insight a second time. A pinned row draws none, and a sheet's rows
+/// have no handler to draw.
 fn press(
   row: Lifted,
-  folded: Bool,
   open: Option(fn(String) -> message),
 ) -> List(attribute.Attribute(message)) {
   // The press names the key the view drew, not anything the browser sends.
-  case row.hold, folded, open {
-    attention.FoldsOnceOpened, False, Some(open) -> [
-      event.on_click(open(row.key)),
-    ]
-    attention.FoldsOnceOpened, True, _
-    | attention.FoldsOnceOpened, False, None
-    | attention.PinnedUntilAnswered, _, _
-    -> []
+  case row.hold, open {
+    attention.FoldsOnceOpened, Some(open) -> [event.on_click(open(row.key))]
+    attention.FoldsOnceOpened, None | attention.PinnedUntilAnswered, _ -> []
   }
 }
 

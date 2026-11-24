@@ -1364,6 +1364,50 @@ pub fn asking_after_a_turn(
   id: String,
   prompt: String,
 ) -> session_channel.Update {
+  asking_in(id, prompt, None, None)
+}
+
+/// The same capture where the asking response also carries the words
+/// `words`, as a model's text ahead of its `ask` call: the lane then holds the
+/// agent's message ahead of the asking turn's divider.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.asking_with_words("ask-0123456789", "Which branch?", "One call from you.")
+/// ```
+pub fn asking_with_words(
+  id: String,
+  prompt: String,
+  words: String,
+) -> session_channel.Update {
+  asking_in(id, prompt, Some(words), None)
+}
+
+/// The same capture where a custom message (the kind a summary or a harness
+/// note is) comes right after the asking prompt and before the response, so a
+/// piece that is not the agent's words sits directly before the asking turn's
+/// divider.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.asking_after_a_note("ask-0123456789", "Which branch?", "A note.")
+/// ```
+pub fn asking_after_a_note(
+  id: String,
+  prompt: String,
+  note: String,
+) -> session_channel.Update {
+  asking_in(id, prompt, None, Some(note))
+}
+
+fn asking_in(
+  id: String,
+  prompt: String,
+  words: Option(String),
+  note: Option(String),
+) -> session_channel.Update {
   let outcome =
     message.ToolResultMessage(
       "a1",
@@ -1385,28 +1429,56 @@ pub fn asking_after_a_turn(
       item(1, 1000, said("hello", None)),
       item(2, 2000, assistant([message.AssistantText("Hi.", None)])),
       item(3, 10_000, said("ask me", None)),
-      item(
-        4,
-        11_000,
-        assistant([
-          call(
-            "a1",
-            "ask",
-            json.Object([
-              #(
-                "questions",
-                json.Array([
-                  json.Object([
-                    #("prompt", json.String(prompt)),
-                    #("kind", json.String("confirm")),
-                  ]),
-                ]),
+      ..list.append(
+        case note {
+          Some(text) -> [
+            item(4, 10_500, message.CustomMessage("note", json.String(text))),
+          ]
+          None -> []
+        },
+        [
+          item(
+            case note {
+              Some(_) -> 5
+              None -> 4
+            },
+            11_000,
+            assistant(
+              list.append(
+                case words {
+                  Some(text) -> [message.AssistantText(text, None)]
+                  None -> []
+                },
+                [
+                  call(
+                    "a1",
+                    "ask",
+                    json.Object([
+                      #(
+                        "questions",
+                        json.Array([
+                          json.Object([
+                            #("prompt", json.String(prompt)),
+                            #("kind", json.String("confirm")),
+                          ]),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                ],
               ),
-            ]),
+            ),
           ),
-        ]),
-      ),
-      item(5, 12_000, outcome),
+          item(
+            case note {
+              Some(_) -> 6
+              None -> 5
+            },
+            12_000,
+            outcome,
+          ),
+        ],
+      )
     ],
     None,
     [],

@@ -716,7 +716,7 @@
   table.inbox-kv td{padding:4px 0;vertical-align:top;font-size:13px;overflow-wrap:anywhere;}
   table.inbox-kv td:first-child{width:128px;color:var(--color-fg-quiet);}
   table.inbox-kv code{font:12px/1.45 var(--font-mono);}
-  .inbox-quote{display:block;box-sizing:border-box;padding:9px 12px;border:1px dashed var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font-size:13px;}
+  .inbox-quote{display:block;box-sizing:border-box;padding:9px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-sunk);color:var(--color-fg);font-size:13px;}
   .inbox-quote-source{display:block;margin-bottom:3px;color:var(--color-fg-quiet);font-size:11.5px;font-weight:400;}
   .inbox-quote-words{display:block;white-space:pre-wrap;overflow-wrap:anywhere;}
   .inbox-said{margin-top:8px;}
@@ -2505,20 +2505,34 @@
      still the control, so the block is the target and the keyboard focus ring
      is the block's. A question's legend repeats the card's words when it is
      the only one, so it is kept for assistive technology and not drawn. */
-  .lift .inbox-questions,.ask-card .inbox-questions{gap:6px;margin:0;}
-  .lift fieldset.inbox-question,.ask-card fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
-  .lift fieldset.inbox-question:only-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
-  .lift fieldset.inbox-question > legend,.ask-card fieldset.inbox-question > legend{padding:0;font:550 13px/1.4 var(--font-sans);}
-  .lift label.inbox-option,.ask-card .inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
-  .lift label.inbox-option::before,.ask-card .inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
-  .lift label.inbox-option > input,.ask-card .inbox-option > input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
-  .lift label.inbox-option > span,.ask-card .inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
-  .lift label.inbox-option .inbox-mark,.ask-card .inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
-  .lift label.inbox-option .inbox-note,.ask-card .inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
-  .lift label.inbox-option:hover,.ask-card .inbox-option:hover{border-color:var(--color-fg-faint);}
-  .lift label.inbox-option:has(> input:checked),.ask-card .inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
-  .lift label.inbox-option:has(> input:focus-visible),.ask-card .inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
-  .lift .inbox-questions .composer-name,.ask-card .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
+  .lift .inbox-questions,.ask-card .inbox-questions,.inbox-reading .inbox-questions{gap:6px;margin:0;}
+  .lift fieldset.inbox-question,.ask-card fieldset.inbox-question,.inbox-reading fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
+  .inbox-reading fieldset.inbox-question:first-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
+  .lift-ask:has(.inbox-questions) .lift-head{display:none;}
+  .lift .inbox-questions{margin-top:8px;}
+  .lift fieldset.inbox-question > legend,.ask-card fieldset.inbox-question > legend,.inbox-reading fieldset.inbox-question > legend{padding:0;margin:0 0 2px 0;font:550 13.5px/1.4 var(--font-sans);}
+  .lift label.inbox-option,.ask-card .inbox-option,.inbox-reading .inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
+  .lift label.inbox-option::before,.ask-card .inbox-option::before,.inbox-reading .inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
+  .lift label.inbox-option > input[type="radio"],.lift label.inbox-option > input[type="checkbox"],.ask-card .inbox-option > input[type="radio"],.ask-card .inbox-option > input[type="checkbox"],.inbox-reading .inbox-option > input[type="radio"],.inbox-reading .inbox-option > input[type="checkbox"]{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
+  .lift label.inbox-option > span,.ask-card .inbox-option > span,.inbox-reading .inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
+  .lift label.inbox-option .inbox-mark,.ask-card .inbox-option .inbox-mark,.inbox-reading .inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
+  .lift label.inbox-option .inbox-note,.ask-card .inbox-option .inbox-note,.inbox-reading .inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .lift label.inbox-option:hover,.ask-card .inbox-option:hover,.inbox-reading .inbox-option:hover{border-color:var(--color-fg-faint);}
+  .lift label.inbox-option:has(> input:checked),.ask-card .inbox-option:has(> input:checked),.inbox-reading .inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
+  .lift label.inbox-option:has(> input:focus-visible),.ask-card .inbox-option:has(> input:focus-visible),.inbox-reading .inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
+  /* The reading pane draws its options at the final design's size: a raised
+     block of 10px 14px with the note under the label, as in the rail but with
+     more room, and a chosen option's number is a filled dot. The Other option
+     holds its own text field, which is drawn only while the option is chosen,
+     above the option's hidden control so the field takes the pointer. */
+  .inbox-reading .inbox-questions{gap:14px;margin:8px 0 0 0;}
+  .inbox-reading fieldset.inbox-question{gap:8px;background:transparent;}
+  .inbox-reading label.inbox-option,.inbox-reading .inbox-option{padding:10px 14px;}
+  .inbox-reading .inbox-option .inbox-note{font-size:13px;}
+  .lift .inbox-option:has(> input:checked)::before,.ask-card .inbox-option:has(> input:checked)::before,.inbox-reading .inbox-option:has(> input:checked)::before{content:"\25CF  " counter(opt);color:var(--color-current);}
+  .inbox-option > .inbox-other{display:none;grid-column:2 / -1;grid-row:3;position:relative;z-index:1;margin-top:8px;}
+  .inbox-option:has(> input:checked) > .inbox-other{display:block;}
+  .lift .inbox-questions .composer-name,.ask-card .inbox-questions .composer-name,.inbox-reading .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
   .lift .inbox-questions .place-send,.ask-card .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
 
   /* The asks waiting on the owner, in the dock above the composer on the

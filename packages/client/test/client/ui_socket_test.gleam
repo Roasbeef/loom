@@ -435,7 +435,7 @@ pub fn an_observer_socket_drops_a_click_on_a_marker_test() {
   assert ui_socket.observer_accepts(click_at(component.strip_path <> "\t3\t0"))
 }
 
-// The live rail's one handler is an unopened insight's button, at the exact
+// The live rail's one handler is an insight's button, whole or folded,, at the exact
 // path `component.rail_click` names (protocol-change/051, the addendum on the
 // live rail). An observer's socket admits a click there and nothing else new:
 // not the rail's own path, not any other path beneath it (the pinned group's,

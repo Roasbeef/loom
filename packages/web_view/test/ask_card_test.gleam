@@ -4,7 +4,8 @@
 //// ask, oldest first, with the questions drawn once and each option's note
 //// under its label. An operator's card holds the form and a Send, an
 //// observer's holds the questions as text, and an ask that is no longer open
-//// draws nothing. The turn that called `ask` is tinted in the lane and tagged
+//// draws nothing. The agent's words that came with the ask, or the turn that
+//// called `ask` when it had none, are tinted in the lane and tagged
 //// `lifted · Ask`.
 
 import core/attention
@@ -274,6 +275,67 @@ pub fn the_turn_that_asked_is_tinted_and_tagged_in_the_lane_test() {
   // prompt come first, and the one tag follows them both.
   assert index_of(html, "Hi.") < index_of(html, "ask me")
   assert index_of(html, "ask me") < index_of(html, "lifted · Ask")
+}
+
+// When the asking response had words, the tint and the tag go on the agent's
+// message and not on the turn's divider after it, as the final design tints the
+// words that came with the ask.
+pub fn the_agents_words_that_came_with_the_ask_are_tinted_test() {
+  let model =
+    component.new(start([], True))
+    |> component.apply([
+      lane_fixture.asking_with_words(
+        first_id,
+        "Which branch?",
+        "One call from you before I go on.",
+      ),
+    ])
+    |> lane_fixture.opened
+  let html =
+    step(
+      model,
+      operator_page.Observed(
+        component.RailRead(Ok(row([feed_ask(first_id, 12_500, "main")]))),
+      ),
+    )
+    |> operator
+
+  assert count(html, "needs-you") == 1
+  assert count(html, "lifted · Ask") == 1
+
+  // The tinted row opens before the words, and its tag follows them and comes
+  // before the divider of the turn.
+  assert index_of(html, "needs-you")
+    < index_of(html, "One call from you before I go on.")
+  assert index_of(html, "One call from you before I go on.")
+    < index_of(html, "lifted · Ask")
+  assert index_of(html, "lifted · Ask") < index_of(html, "Worked")
+}
+
+// A row that is not the agent's words, here a custom message directly before
+// the asking turn, is never tinted in its place: the divider keeps the tint.
+pub fn a_message_that_is_not_the_agents_words_is_not_tinted_test() {
+  let model =
+    component.new(start([], True))
+    |> component.apply([
+      lane_fixture.asking_after_a_note(
+        first_id,
+        "Which branch?",
+        "a compaction note",
+      ),
+    ])
+    |> lane_fixture.opened
+  let html =
+    step(
+      model,
+      operator_page.Observed(
+        component.RailRead(Ok(row([feed_ask(first_id, 12_500, "main")]))),
+      ),
+    )
+    |> operator
+
+  assert count(html, "lifted · Ask") == 1
+  assert index_of(html, "Worked") < index_of(html, "lifted · Ask")
 }
 
 // An ask stamped before every row of the lane has no row to tag.

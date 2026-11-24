@@ -36,7 +36,7 @@ fn call(key: String, call: String, standing: turns.Standing) -> turns.Item {
 fn running(items: List(turns.Item)) -> turns.Piece {
   turns.Work(
     key: "work:1.0",
-    worked: turns.Worked(None, 2, 0, 0, turns.Finished),
+    worked: turns.Worked(None, 2, 0, 0, None, turns.Finished),
     items:,
     folding: turns.Open,
     id: None,

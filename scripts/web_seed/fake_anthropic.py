@@ -128,6 +128,8 @@ def main_turn(messages):
     warm = usage(1400, 40000, 600, 600)
     if results:
         names = {called(messages, r.get("tool_use_id")) for r in results}
+        if "fs_read" in names:
+            return [("text", "The check failed: the fold-order test file is missing.")], "end_turn", warm
         if "agent_spawn" in names:
             spawned = next(r for r in results if called(messages, r.get("tool_use_id")) == "agent_spawn")
             handle = re.search(r"Handle: (\S+)", text_of(spawned.get("content", "")))
@@ -161,6 +163,25 @@ def main_turn(messages):
             "tool_use",
             warm,
         )
+    if "fail the check" in said.lower():
+        # Two reads of a file that does not exist: the turn's divider counts
+        # two failed steps, and the rail's failed-turn card names the last.
+        return (
+            [
+                ("tool_use", "fs_read", {"path": "src/fold_order_test.gleam"}),
+                ("tool_use", "fs_read", {"path": "src/missing_fold_order_test.gleam"}),
+            ],
+            "tool_use",
+            warm,
+        )
+    if "go stuck" in said.lower():
+        # A sub-agent whose provider refuses the request outright, so its strand stops on a
+        # failed run and the inbox draws a stuck thread for it.
+        return (
+            [("tool_use", "agent_spawn", {"purpose": "price the meter", "brief": "rate limit: price the meter"})],
+            "tool_use",
+            warm,
+        )
     if "mermaid many" in said.lower():
         return [("text", MERMAID_MANY_ANSWER)], "end_turn", warm
     if "mermaid" in said.lower():
@@ -169,7 +190,7 @@ def main_turn(messages):
         return [("text", "Checked: the sweep leaves the generated SQL alone.")], "end_turn", warm
     if "after the break" in said:
         return [("text", "Back after the break. The prefix had to be read again.")], "end_turn", usage(1500, 0, 41000, 30000)
-    if "review" in said:
+    if "review" in said and "child runs" not in said:
         return (
             [
                 ("thinking", "Plan the review: spawn a reviewer for the patch, write the notes, then wait."),
@@ -227,6 +248,14 @@ class Handler(BaseHTTPRequestHandler):
         messages = body.get("messages", [])
         if model == "fake-main" and messages:
             sys.stderr.write("fake-main last message: %s\n" % json.dumps(text_of(messages[-1].get("content", ""))))
+        if model == "fake-sub" and "rate limit" in json.dumps(messages):
+            payload = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "rate limit rules refuse this request"}}).encode()
+            self.send_response(400)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if model == "fake-advisor":
             blocks, stop, used = advisor_turn(messages)
         elif model == "fake-sub":

@@ -160,7 +160,7 @@ pub fn empty_label_books_preserve_original_and_already_summarized_pieces_test() 
     piece(),
     turns.Work(
       "work:7.0",
-      turns.Worked(None, 1, 0, 0, turns.Finished),
+      turns.Worked(None, 1, 0, 0, None, turns.Finished),
       [turns.Narrated(block, dict.new(), None)],
       turns.Unfolded(0),
       Some(7),
@@ -249,7 +249,7 @@ pub fn the_blocks_of_a_turns_work_are_labelled_too_test() {
   let work =
     turns.Work(
       "work:7.0",
-      turns.Worked(None, 1, 0, 0, turns.Finished),
+      turns.Worked(None, 1, 0, 0, None, turns.Finished),
       [
         turns.Narrated(
           Block("7.0", FromEntry(response()), rows()),

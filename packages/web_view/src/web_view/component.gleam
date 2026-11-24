@@ -443,8 +443,8 @@ pub const evolution_path = "0\t3\t6"
 /// Strands pane's fifth and last child, after the title, the strip, the strand
 /// detail and the advisor's commentary (`view/panel`), so that placing it
 /// there moved no path the socket admits. Most handlers beneath it are one
-/// insight's press, which asks the page to draw that insight folded from now on
-/// (`RailOpened`). That reads nothing and sends no command, so an observer's
+/// insight's press, which asks the page to draw that insight folded, or whole
+/// again when it is already folded (`RailOpened`). That reads nothing and sends no command, so an observer's
 /// socket admits a `click` at exactly `rail_click`'s shape and nowhere else
 /// beneath the rail (`client/daemon/ui_socket.observer_accepts`,
 /// protocol-change/051, the addendum on the live rail). The others are an ask's
@@ -1185,7 +1185,8 @@ type View(socket) {
     said: List(String),
     /// The keys of the rail's insights the reader has opened, the most
     /// recently opened first and at most `open_insights`. An insight is drawn
-    /// whole until its key is here and folded to one line after, for the life
+    /// whole until its key is here and folded to one line while it is, and a
+    /// press on a folded insight removes the key, for the life
     /// of the strand on screen: a strand the reader leaves forgets them, as it
     /// forgets `said`, because the keys name rows of that strand's lane. The
     /// keys are `attention.Lifted.key` values, which are daemon identities;
@@ -1478,7 +1479,8 @@ pub type Msg(socket) {
   /// messages).
   MessageToggled(key: String)
 
-  /// An insight on the live rail was pressed: draw it folded from now on. The
+  /// An insight on the live rail was pressed: draw it folded, or whole again
+  /// when it is already folded. The
   /// insight is named by the key the view drew into the handler, never by
   /// anything the browser sent, and a key that names no insight the rail holds
   /// changes nothing. It changes only what this page draws and sends no
@@ -7567,7 +7569,7 @@ fn placement_time(model: Model(socket)) -> fn(String) -> Option(Int) {
 
 /// The rail's drawing inputs: what was lifted, which insights the reader has
 /// opened, the strand on screen, and how to name a session. `open` is the
-/// rail's handler for an unopened insight, or `None` for the sheet, whose rows
+/// rail's handler for an insight, or `None` for the sheet, whose rows
 /// send nothing.
 fn lifted_rail(
   model: Model(socket),
@@ -8267,23 +8269,30 @@ pub fn rail_submit(path: String) -> Bool {
   }
 }
 
-/// Remembers that an insight was opened. A key that names no insight the rail
-/// holds, a key already opened, and a press on a page that is not following a
-/// session change nothing, as with a fold.
+/// Toggles an insight between whole and folded: a first press adds the key to
+/// the opened set, which draws the insight folded, and a second press removes
+/// it, which draws the insight whole again. A key that names no insight the rail
+/// holds and a press on a page that is not following a session change nothing,
+/// as with a fold.
 fn rail_opened(model: Model(socket), key: String) -> Model(socket) {
   let known =
     lifted(model)
     |> attention.insights
     |> list.any(fn(row) { row.key == key })
 
-  // Only a followed session, a current insight and a first press change the
-  // set; the other combinations leave the page as it was.
-  case model.view.status, known, list.contains(model.view.opened, key) {
-    Connected, True, False -> {
-      let opened = list.take([key, ..model.view.opened], open_insights)
+  // Only a followed session and a current insight change the set, and which way
+  // it changes is whether the key is already in it.
+  case model.view.status, known {
+    Connected, True -> {
+      // A key in the set is taken out, and one not in it is put first.
+      let opened = case list.contains(model.view.opened, key) {
+        True -> list.filter(model.view.opened, fn(each) { each != key })
+        False -> list.take([key, ..model.view.opened], open_insights)
+      }
+
       Model(..model, view: View(..model.view, opened:))
     }
-    Connected, _, _ | Connecting, _, _ | Ended(_), _, _ -> model
+    Connected, False | Connecting, _ | Ended(_), _ -> model
   }
 }
 

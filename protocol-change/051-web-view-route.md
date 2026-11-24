@@ -5496,3 +5496,73 @@ first, an answered ask drawn as nothing, and the asking turn tinted and tagged. 
 in a browser against the scripted model (`scripts/web_seed`, the prompt "ask me
 first") was run on the operator's and the observer's page at 1440 and 375 pixels
 wide with the rail closed; the captures are kept outside the repository.
+
+## Addendum: the reading pane and the rail against the final design (2026-11-23)
+
+The owner compared the release with `docs/design-notes/attention-inbox/final/mockup.html`
+and found the ask thread, the stuck thread and the live rail short of it. This
+addendum records what changed on the pages that carry the forms and the rail, and
+what did not.
+
+### What changes
+
+- **One ask form, drawn the same in three places.** The inbox pane, the rail's
+  card and the dock's ask card share `attention_thread.answer_form`. An option is
+  a raised block in all three: its number, its label and, where the ask marks one,
+  the "recommended" pill on the first line, and its note under the label. The pane
+  drew the note beside the label, which wrapped under it for some options and not
+  others. "Other" is one option, and its text field is inside that option, shown
+  while the option is chosen, where it had been an option and a separate field.
+  The pane's title is the first question in full when the ask has been read, and
+  the form does not draw that question again as a heading; the rail's row hides its
+  cut head when the card holds the form, so the question is drawn once there too.
+- **No session text in a header.** The pane's note section said `Message <the
+  session's name>`, and a session named by its first prompt put that prompt in
+  capitals. Both panes that drew it now say `Message this session`.
+- **A hairline quote.** The box that holds an agent's own words was dashed. It is
+  now a solid hairline on the sunk ground.
+- **A row names its strand.** A record of a strand other than `main` is named on
+  its inbox row by the strand, shortened, so two rows of one session no longer read
+  alike. The identifier the agency appends to a sub-agent's name is left off.
+- **An insight is a toggle.** A press on a whole insight draws it folded, and a
+  press on a folded one draws it whole again (`RailOpened` adds the key or removes
+  it). The handler is drawn on every insight and at the same path as before, so
+  `component.rail_click` and the observer's admission are unchanged. A pinned row
+  still has none.
+- **A failed turn says what failed.** The divider (`turns.Worked`) carries the last
+  failed call's words and the first line of its result, and the rail's head reads
+  that line, with the count after it when more than one call failed. A turn whose
+  only failure was a program's inner call keeps the count.
+- **The ask tints the agent's words.** The lane row for an open ask is the agent's
+  message that comes directly before the asking turn's divider when the lane holds
+  one, and the divider otherwise.
+
+### What does not change
+
+No path, frame, message or capability. The Other field moved inside its option and
+the stylesheet shows it, so the form's submit handler and its field names are the
+ones `component.rail_submit` and `answer_rule` already read. No approval control is
+drawn anywhere new: an approval is still decided only from its own session's dock.
+
+### What was considered
+
+- **Keeping Other as a field beside its option, shown by a script.** A page script
+  would focus the field on choosing it, but the stylesheet reveals it without one,
+  and the pane keeps to the rules that ship no behaviour a stylesheet can draw.
+  Choosing Other shows the field and the person presses into it.
+- **Reading the failure from the open fold.** A closed fold holds no steps, which
+  is when the rail matters most, so the line is kept on the divider instead.
+- **Moving the `lifted · Ask` tag into the agent's name line.** The tag is the
+  lane row's third child for every kind, which keeps the admitted message paths
+  where they are. It stays under the words.
+
+### Verification
+
+`web_view/lifted_test` pins the toggle, including the property that every insight
+carries a handler and a pinned row never does. `web_view/ask_card_test` pins the
+tint on the agent's words. `web_view/attention_threads_test` pins the single
+title, Other inside its option, the fixed header words and the strand on the row.
+`session_view/attention_test` and `turns_test` pin the failed call's line. A drive
+against the scripted model (`scripts/web_seed`, the prompts "fail the check", "ask
+me first" and "go stuck") was run at 1440 and 375 pixels, light and dark; the
+captures are kept outside the repository.

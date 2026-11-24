@@ -185,6 +185,13 @@ pub type Worked {
     files: Int,
     /// How many of the tool calls returned an error.
     failed: Int,
+    /// What the turn's last failed tool call was and what its result said, on
+    /// one line (`Run make check · exit 2`), so a reader of the folded turn
+    /// can tell what went wrong without opening it. `None` when no call
+    /// failed, or when the only failure was a program's inner call, whose
+    /// words the divider does not hold. Tool text, so a host draws it as a
+    /// text node.
+    last_failure: Option(String),
     /// Whether a response of the turn was aborted.
     ending: Ending,
   )
@@ -2258,6 +2265,19 @@ fn worked(turn: Turn) -> Worked {
       }
     })
 
+  // Read what the last failed call was, which names the failure for the rail.
+  let last_failure =
+    turn.rest
+    |> list.reverse
+    |> list.find_map(fn(item) {
+      case item {
+        Doing(item: Step(standing: Failed, words:, detail:, ..), ..) ->
+          Ok(failure_line(words, detail))
+        Doing(..) | Answer(..) | Input(..) | Outside(..) -> Error(Nil)
+      }
+    })
+    |> option.from_result
+
   // Check whether any action in the turn ended in an interrupted state.
   let ending = case list.any(turn.rest, stopped) {
     True -> Interrupted
@@ -2265,7 +2285,32 @@ fn worked(turn: Turn) -> Worked {
   }
 
   // Return the compiled turn activity statistics.
-  Worked(duration_ms:, steps:, files:, failed:, ending:)
+  Worked(duration_ms:, steps:, files:, failed:, last_failure:, ending:)
+}
+
+/// The most characters of a failed call's line that a divider keeps. The rail
+/// cuts it again for its own row, so this only bounds what the lane retains.
+const failure_limit = 200
+
+/// A failed call as one line: its words, then the first line of its result
+/// that says something, joined by a dot. A call whose result is empty is its
+/// words alone.
+fn failure_line(words: step_words.Words, detail: List(Line)) -> String {
+  let said =
+    list.find_map(detail, fn(line) {
+      case string.trim(line.text) {
+        "" -> Error(Nil)
+        text -> Ok(text)
+      }
+    })
+
+  // A result with nothing to say leaves the call's words alone.
+  let line = case said {
+    Ok(text) -> step_words.text(words) <> " · " <> text
+    Error(Nil) -> step_words.text(words)
+  }
+
+  string.slice(line, 0, failure_limit)
 }
 
 /// Whether a response of the turn was aborted: its rows lead with the words an
@@ -2295,9 +2340,9 @@ fn stopped(item: Classified) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, turns.Finished))
+/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, None, turns.Finished))
 ///   == "Worked 48s · 4 steps · 2 files · 1 failed"
-/// assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted))
+/// assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, None, turns.Interrupted))
 ///   == "Worked 12s · interrupted"
 /// ```
 pub fn divider(worked: Worked) -> String {

@@ -124,7 +124,7 @@ pub fn row(
   parts.row(
     parts.Facts(
       reading: parts.reading(opened, attention_rule.opened_key(key)),
-      name: name_of(attention_rule.session_of(item)),
+      name: row_name(item, name_of),
       age: aged(item, now),
       kind: kind_word(item),
       head: head(item),
@@ -135,6 +135,74 @@ pub fn row(
     ),
     pick(key),
   )
+}
+
+/// The name a row draws on its first line: the session's, for a record of the
+/// session's main strand, and the strand's own for a record of any other, so two
+/// rows of one session that are about different strands do not read alike. The
+/// strand is cut to `strand_limit` graphemes without the identifier the agency
+/// appends to a sub-agent's name, which tells siblings of one purpose apart in
+/// the data and not on a row.
+fn row_name(item: Item, name_of: fn(String) -> String) -> String {
+  // Each kind of record names the strand it is about.
+  let strand = case item {
+    attention_rule.AskItem(ask:, ..) -> ask.strand
+    attention_rule.FindItem(find:, ..) -> find.strand
+    attention_rule.StuckItem(stuck:, ..) -> stuck.strand
+  }
+
+  // The main strand is the session itself and keeps the session's name.
+  case strand {
+    "main" -> name_of(attention_rule.session_of(item))
+    other -> strand_name(other)
+  }
+}
+
+/// The most graphemes of a strand's name that a row keeps.
+const strand_limit = 36
+
+/// A strand's name as a row's name. The sixteen hexadecimal digits the agency
+/// appends to a sub-agent's name are cut to `-…` and their last four, which keep
+/// two siblings of one purpose apart (`audit-…cdef`), and a name still longer
+/// than `strand_limit` has its purpose cut and ends in `…` before that tail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_thread.strand_name("sub:main/audit-0123456789abcdef")
+///   == "sub:main/audit-…cdef"
+/// ```
+pub fn strand_name(strand: String) -> String {
+  let graphemes = string.to_graphemes(strand)
+  let count = list.length(graphemes)
+  let tail = list.drop(graphemes, count - 17)
+
+  // A name shorter than the suffix cannot carry it, so only a long name whose
+  // tail is a dash and sixteen hexadecimal digits has a tail to keep.
+  let #(purpose, kept) = case count > 17, tail {
+    True, ["-", ..digits] ->
+      case list.all(digits, is_hex) {
+        True -> #(
+          string.concat(list.take(graphemes, count - 17)),
+          "-…" <> string.concat(list.drop(digits, 12)),
+        )
+        False -> #(strand, "")
+      }
+    True, [] | False, _ | True, [_, ..] -> #(strand, "")
+  }
+
+  let room = strand_limit - string.length(kept)
+
+  // A purpose over the room is cut and marked as cut.
+  case string.length(purpose) > room {
+    True -> string.slice(purpose, 0, room - 1) <> "…" <> kept
+    False -> purpose <> kept
+  }
+}
+
+/// Whether a grapheme is a lowercase hexadecimal digit.
+fn is_hex(grapheme: String) -> Bool {
+  string.contains("0123456789abcdef", grapheme) && grapheme != ""
 }
 
 /// The age a row draws, marked when an ask or a stuck strand has waited on the
@@ -297,7 +365,7 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
             eyebrow(item, offer.session_name),
             moment(item),
           ),
-          parts.title(title_of(item)),
+          parts.title(title_of(item, offer)),
           case item, attention_rule.age_line(item, offer.now) {
             // A stuck strand states its failure in its own body.
             attention_rule.StuckItem(..), _ -> element.none()
@@ -348,14 +416,24 @@ fn head(item: Item) -> Phrase {
   }
 }
 
-/// The pane's title: the row's head, except for a stuck strand, whose title is
-/// the sentence its reason code words.
-fn title_of(item: Item) -> String {
-  case item {
-    attention_rule.StuckItem(stuck:, ..) ->
+/// The pane's title. An ask whose record was read is titled by its first
+/// question in full, which the form then does not draw a second time, since the
+/// row's head is that question cut. An ask not yet read keeps the head. A stuck
+/// strand's title is the sentence its reason code words, and a find's is its
+/// head.
+fn title_of(item: Item, offer: Offer(message)) -> String {
+  case item, offer.state.loaded {
+    attention_rule.StuckItem(stuck:, ..), _ ->
       thread_words.stuck_title(thread_words.kind_of(stuck.reason))
-    attention_rule.AskItem(ask:, ..) -> ask.head
-    attention_rule.FindItem(find:, ..) -> find.head
+    attention_rule.AskItem(ask: head, ..),
+      item_pane.Loaded(item_pane.AskRecord(ask:, ..))
+    ->
+      case ask.questions {
+        [first, ..] -> first.prompt
+        [] -> head.head
+      }
+    attention_rule.AskItem(ask:, ..), _ -> ask.head
+    attention_rule.FindItem(find:, ..), _ -> find.head
   }
 }
 
@@ -407,7 +485,7 @@ fn coordinator(offer: Offer(message)) -> Element(message) {
 fn ask_body(offer: Offer(message)) -> Element(message) {
   case offer.state.loaded {
     item_pane.Loaded(item_pane.AskRecord(ask:, revision: _)) ->
-      parts.section("What it asks for", [
+      parts.section(questions_label(ask), [
         case ask.why {
           Some(why) -> parts.quote("The agent asks, untrusted text", why)
           None -> element.none()
@@ -425,18 +503,33 @@ fn ask_body(offer: Offer(message)) -> Element(message) {
   }
 }
 
+/// The label over an ask's questions: `Options` for the usual single question,
+/// whose title already says it, and `Questions` for several.
+fn questions_label(ask: attention.Ask) -> String {
+  // Only an ask with more than one question needs the plural word.
+  case ask.questions {
+    [_, _, ..] -> "Questions"
+    [_] | [] -> "Options"
+  }
+}
+
 /// The ask's questions as a form. A page that may not act gets the questions
 /// as a list of text with the words that say who can answer, and no control.
 fn ask_form(ask: attention.Ask, offer: Offer(message)) -> Element(message) {
   case offer.acting {
     None ->
       html.div([attribute.class("inbox-questions")], [
-        html.ul(
-          [],
-          list.map(ask.questions, fn(question) {
-            html.li([], [html.text(question.prompt)])
-          }),
-        ),
+        // The first question is the pane's title, so the list holds the rest.
+        case list.drop(ask.questions, 1) {
+          [] -> element.none()
+          rest ->
+            html.ul(
+              [],
+              list.map(rest, fn(question) {
+                html.li([], [html.text(question.prompt)])
+              }),
+            )
+        },
         html.p([attribute.class("inbox-hold")], [
           html.text("Only the owner's operating page can answer."),
         ]),
@@ -561,8 +654,7 @@ fn question(question: Question) -> Element(message) {
       attention.Confirm -> [
         radio(question, answer_rule.yes, "Yes", None),
         radio(question, answer_rule.no, "No", None),
-        radio(question, answer_rule.other, "Other", None),
-        other_field(question),
+        other_option("radio", question),
       ]
       attention.Choice ->
         list.flatten([
@@ -574,10 +666,7 @@ fn question(question: Question) -> Element(message) {
               Some(option),
             )
           }),
-          [
-            radio(question, answer_rule.other, "Other", None),
-            other_field(question),
-          ],
+          [other_option("radio", question)],
         ])
       attention.Multiple(min:, max:) ->
         list.flatten([
@@ -602,7 +691,7 @@ fn boxes(question: Question) -> List(Element(message)) {
     list.index_map(question.options, fn(option, index) {
       box(question, answer_rule.position(index), option.label, Some(option))
     }),
-    [box(question, answer_rule.other, "Other", None), other_field(question)],
+    [other_option("checkbox", question)],
   ])
 }
 
@@ -656,14 +745,32 @@ fn control(
   ])
 }
 
+/// The Other control of a question: one option, drawn as the others are, whose
+/// text field is inside it. Choosing the option is what reveals the field (the
+/// stylesheet shows it while the option's control is checked), so Other is one
+/// control and not an option beside a field. `kind` is the control's type, a
+/// radio for a question that takes one answer and a checkbox for one that takes
+/// several.
+fn other_option(kind: String, question: Question) -> Element(message) {
+  html.label([attribute.class("inbox-option")], [
+    html.input([
+      attribute.type_(kind),
+      attribute.name(answer_rule.field_name(question)),
+      attribute.value(answer_rule.other),
+    ]),
+    html.span([], [html.text("Other")]),
+    other_field(question),
+  ])
+}
+
 /// The Other text of a question.
 fn other_field(question: Question) -> Element(message) {
   html.input([
     attribute.type_("text"),
     attribute.name(answer_rule.other_name(question)),
-    attribute.class("composer-name"),
+    attribute.class("composer-name inbox-other"),
     attribute.aria_label("Other"),
-    attribute.placeholder("Other"),
+    attribute.placeholder("Write your own answer"),
     attribute.attribute("maxlength", "1000"),
   ])
 }
@@ -721,12 +828,17 @@ fn find_body(
   }
 
   parts.section("Noticed along the way", [
-    parts.quote(
-      "The agent noticed ("
-        <> attention.find_kind_name(find.kind)
-        <> "), untrusted text",
-      text,
-    ),
+    // The title is the head, so the quote is drawn only for text that adds to it.
+    case text == find.head {
+      True -> element.none()
+      False ->
+        parts.quote(
+          "The agent noticed ("
+            <> attention.find_kind_name(find.kind)
+            <> "), untrusted text",
+          text,
+        )
+    },
     case find.path {
       Some(path) ->
         html.p([attribute.class("inbox-place")], [
@@ -768,30 +880,36 @@ fn close_button(
   )
 }
 
-/// A stuck strand's body: what the daemon knows of the failure, in the words its
-/// reason code gets, a card of what the page knows, and Retry. The sentence
-/// holds the failure time as the browser's clock and says what the provider
-/// said about a retry, and never guesses at a time the record lacks.
+/// A stuck strand's body: a card of what the page knows, as the final design's
+/// rows (the strand's status in the words its reason code gets, and its
+/// parent), then the Retry. The status holds the failure time as the browser's
+/// clock and says what the provider said about a retry, and never guesses at a
+/// time the record lacks.
 fn stuck_body(
   stuck: attention_feed.Stuck,
   offer: Offer(message),
 ) -> Element(message) {
   let failure = thread_words.kind_of(stuck.reason)
 
-  element.fragment([
-    parts.section("What the page knows", [
-      html.p(
-        [attribute.class("inbox-meta")],
+  let status = [
+    #(
+      "Strand status",
+      element.fragment(
         phrase.view(thread_words.stuck_phrase(
           failure,
           stuck.failed_at,
           stuck.retry_after_ms,
         )),
       ),
-      case stuck.parent {
-        Some(parent) -> parts.facts([#("Parent", html.text(parent))])
-        None -> element.none()
-      },
+    ),
+  ]
+
+  element.fragment([
+    parts.section("What the page knows", [
+      parts.facts(case stuck.parent {
+        Some(parent) -> list.append(status, [#("Parent", html.text(parent))])
+        None -> status
+      }),
     ]),
     stuck_decide(offer),
   ])
@@ -799,7 +917,7 @@ fn stuck_body(
 
 /// The stuck strand's Retry, or the words that say who can press it.
 fn stuck_decide(offer: Offer(message)) -> Element(message) {
-  parts.section("Decide", [
+  parts.section("Send it a nudge", [
     case offer.acting {
       Some(acting) ->
         html.div([attribute.class("inbox-acts")], [
@@ -809,7 +927,7 @@ fn stuck_decide(offer: Offer(message)) -> Element(message) {
               attribute.class("inbox-btn"),
               event.on_click(acting.retry),
             ],
-            [html.text("Retry")],
+            [html.text("Retry the last step")],
           ),
         ])
       None ->
@@ -826,7 +944,7 @@ fn message_field(offer: Offer(message)) -> Element(message) {
   case offer.acting {
     None -> element.none()
     Some(acting) ->
-      parts.section("Message " <> offer.session_name, [
+      parts.section("Message this session", [
         html.form(
           [
             attribute.class("inbox-form"),
