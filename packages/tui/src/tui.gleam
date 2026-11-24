@@ -2417,9 +2417,12 @@ fn project_outcome(
   }
 }
 
-/// Does one thing to one ticket and says what it did. The ticket is read first,
-/// because an answer needs the open question's number and a publish has to say
-/// what check it went past. A refusal is the daemon's own sentence.
+/// Does one thing to one ticket and says what it did. A publish reads the
+/// ticket first, to say what check it went past, and an answer reads it for the
+/// open question's number. The other verbs name the ticket and need nothing of
+/// it, so they send no read: `retry setup` names the project's template, which
+/// is not a ticket, and a read of it answers `not_found`. A refusal is the
+/// daemon's own sentence.
 fn project_ticket_outcome(
   host: daemon_selection.Host,
   project: String,
@@ -2430,12 +2433,15 @@ fn project_ticket_outcome(
     #("project", json.String(project)),
     #("ticket", json.String(ticket)),
   ]
-  use read <- result.try(project_request(host, "projects.ticket", named))
-  let detail = project_board.decode_detail(read)
+  let read = fn() {
+    project_request(host, "projects.ticket", named)
+    |> result.map(project_board.decode_detail)
+  }
 
   // Each verb is one daemon command and one line of text for the terminal.
   case verb {
     Publish -> {
+      use detail <- result.try(read())
       use published <- result.map(project_request(
         host,
         "projects.publish",
@@ -2445,7 +2451,7 @@ fn project_ticket_outcome(
     }
     Retry -> {
       use _ <- result.map(project_request(host, "projects.retry", named))
-      "asked for a new worker on " <> text_hygiene.single_line(ticket)
+      retry_text(ticket)
     }
     Recheck -> {
       use _ <- result.map(project_request(host, "projects.recheck", named))
@@ -2460,6 +2466,7 @@ fn project_ticket_outcome(
       "stopped " <> text_hygiene.single_line(ticket)
     }
     Answer(text) -> {
+      use detail <- result.try(read())
       use seq <- result.try(open_question(ticket, detail))
       use _ <- result.map(
         project_request(host, "projects.answer", [
@@ -2470,6 +2477,27 @@ fn project_ticket_outcome(
       )
       "answered " <> text_hygiene.single_line(ticket)
     }
+  }
+}
+
+/// The name `loom project retry` takes for the project's setup, which
+/// `projects.retry` answers by building the template again. It matches
+/// `project_host.setup_ticket`, which no ticket id can equal.
+const setup_name = "setup"
+
+/// What a retry printed: a new worker for a ticket, a new build for the
+/// project's setup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.retry_text("t-a") == "asked for a new worker on t-a"
+/// assert tui.retry_text("setup") == "asked for the project's setup to run again"
+/// ```
+pub fn retry_text(ticket: String) -> String {
+  case ticket == setup_name {
+    True -> "asked for the project's setup to run again"
+    False -> "asked for a new worker on " <> text_hygiene.single_line(ticket)
   }
 }
 

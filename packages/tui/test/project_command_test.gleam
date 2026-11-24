@@ -300,3 +300,10 @@ pub fn the_daemons_ticket_replies_all_decode_test() {
     },
   )
 }
+
+// `loom project retry setup` names the project's template and not a ticket, so
+// the terminal says what it asked for instead of claiming a worker.
+pub fn a_retry_of_setup_says_the_setup_runs_again_test() {
+  assert tui.retry_text("setup") == "asked for the project's setup to run again"
+  assert tui.retry_text("t-a") == "asked for a new worker on t-a"
+}
