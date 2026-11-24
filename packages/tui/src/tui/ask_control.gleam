@@ -237,9 +237,10 @@ pub fn loaded(
   let board = ask_board.for_session(model.view.asks, model.shared.session)
 
   // The board belongs to the attached session; an answer to the previous one
-  // has nothing to land on.
+  // has nothing to land on. The reply is dropped, and a card the board still
+  // drew for the session the terminal left goes away with a repaint.
   case session == model.shared.session {
-    False -> held(model, board)
+    False -> reset_for_session(model)
     True -> {
       let next =
         ask_board.loaded(board, count, records, model.shared.stamp.now_ms)
@@ -289,9 +290,9 @@ pub fn answered(
   let board = ask_board.for_session(model.view.asks, model.shared.session)
 
   // The reply names the session it was sent for; another session's board has
-  // no such ask.
+  // no such ask, and a card left over from that session is cleared.
   case session == model.shared.session, delivery {
-    False, _ -> held(model, board)
+    False, _ -> reset_for_session(model)
     True, Ok(way) -> {
       let words = delivery_words(way)
       shown(
