@@ -38,7 +38,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
+import gleam/result
 import gleam/string
+import session_view/markdown
 import web_view/sessions.{type Report}
 
 /// The longest head, in graphemes, including the ellipsis a cut head ends in.
@@ -428,16 +430,40 @@ fn said(report: Report) -> Option(String) {
   }
 }
 
-/// The first line of the message that has words in it, trimmed.
+/// The first line of the message that has words in it, trimmed, with its
+/// Markdown markers removed, so a title reads `Done.` and not `**Done.**`.
 fn first_line(report: Report) -> Option(String) {
   case said(report) {
     Some(text) ->
       string.split(text, "\n")
       |> list.map(string.trim)
       |> list.find(fn(line) { line != "" })
+      |> result.map(plain_words)
       |> option.from_result
     None -> None
   }
+}
+
+/// A line's words without Markdown markers: the text of its paragraph or
+/// heading. A line that opens another construct, such as a list item or a code
+/// fence, is kept as written.
+fn plain_words(line: String) -> String {
+  markdown.parse(line)
+  |> list.find_map(fn(block) {
+    case block {
+      markdown.Paragraph(inlines:) | markdown.Heading(inlines:, ..) ->
+        Ok(markdown.plain(inlines))
+      markdown.CodeBlock(..)
+      | markdown.Quote(..)
+      | markdown.Alert(..)
+      | markdown.BulletList(..)
+      | markdown.OrderedList(..)
+      | markdown.Table(..)
+      | markdown.Footnote(..)
+      | markdown.Rule -> Error(Nil)
+    }
+  })
+  |> result.unwrap(line)
 }
 
 /// The newest glance's summary, when the glances are newest first (as the daemon

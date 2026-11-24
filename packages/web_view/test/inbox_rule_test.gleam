@@ -337,3 +337,17 @@ pub fn a_quiet_session_with_a_feed_row_is_not_folded_test() {
   // With every quiet session attended, the folded group is not listed at all.
   assert inbox_rule.grouped_with([asking], [], ["a"]) == []
 }
+
+// A title is the message's first line as words: the markers an agent wrote
+// around bold, code and a link are not drawn in it.
+pub fn a_head_has_no_markdown_markers_test() {
+  assert inbox_rule.head(report(
+      sessions.Idle,
+      Some("**Neither is committed.** See [`a/b`](a/b) and `make check`."),
+    ))
+    == "Neither is committed. See a/b and make check."
+
+  // A line that opens a list item is kept as written.
+  assert inbox_rule.head(report(sessions.Idle, Some("- first item")))
+    == "- first item"
+}
