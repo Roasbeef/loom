@@ -57,9 +57,12 @@ import client/gateway as hub
 import client/internal/ffi_os
 import client/jobs
 import client/memory_config
+import client/peer_mail
+import client/remote/orchestrator_port
 import client/retryconf
 import client/schedule
 import client/serve
+import client/session_movers
 import client/session_socket_test
 import client/workspace_policy
 import core/agency_limits
@@ -920,6 +923,19 @@ type Booted {
 // explicitly inert in this scripted terminal fixture; separate domain tests
 // cover shared services, and no provider work is fabricated by the TUI itself.
 fn boot(settings: serve.Settings) -> Result(Booted, String) {
+  boot_with(settings, fn(_) { None }, fn(_) { Error(Nil) })
+}
+
+// A daemon whose residents answer the peer service's commands and whose
+// control socket can deliver a prompt to a strand, as the production daemon's
+// do. The attention feed (`sessions.attention`) is a peer command and
+// `attention.answer` delivers through the gateway, so a scenario that reads and
+// answers asks needs both.
+fn boot_with(
+  settings: serve.Settings,
+  peers: fn(serve.Instance) -> option.Option(peer_mail.Endpoint),
+  gateway_of: fn(serve.Instance) -> Result(hub.Gateway, Nil),
+) -> Result(Booted, String) {
   let state_root =
     absolute(filepath.directory_name(settings.session_path)) <> "/daemon"
   let assert Ok(config) = daemon_main.parse(["--state-dir", state_root])
@@ -968,14 +984,25 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
     )
     as "the one daemon owns the catalogue before any runtime opens"
   let assert Ok(serving) =
-    daemon_main.listen(config, daemon, fn(request, attachment) {
-      session_socket.upgrade(
-        daemon,
-        request,
-        attachment,
-        attachment.instance.gateway,
-      )
-    })
+    daemon_main.listen_moving(
+      config,
+      daemon,
+      fn(request, attachment) {
+        session_socket.upgrade(
+          daemon,
+          request,
+          attachment,
+          attachment.instance.gateway,
+        )
+      },
+      peers,
+      None,
+      session_movers.idle(),
+      orchestrator_port.unreported(),
+      None,
+      fn(_) { None },
+      gateway_of,
+    )
     as "the production v2 listener owns both control and conversation routes"
   let assert Ok(created) =
     manager.create(
@@ -2158,4 +2185,199 @@ fn escape_turns(
     }),
   )
   Ok(Nil)
+}
+
+// --- An agent's ask is drawn, answered from the keyboard, and read ------------
+//
+// The real terminal against the real daemon, for the ask card
+// (protocol-change/119, 120, 128 and 130). The scripted model calls `ask` when
+// the prompt says so, which records an open ask and ends its run. The terminal
+// must draw the ask as a question above the composer, take the owner's keys only
+// after Alt+A, send the answer with `attention.answer`, and the model's next
+// request must carry the answer in the readable form of protocol-change/130. The
+// second request is answered only when its body holds that wording and the
+// chosen label, so the marker reaching the pane proves the whole path.
+
+const ask_prompt = "ask me first about the inbox"
+
+const ask_marker = "ask-answer-received"
+
+pub fn an_ask_is_answered_from_the_keyboard_test_() -> EunitTest {
+  Timeout(90 / gleeunit_timeout_scale, ask_drive)
+}
+
+fn ask_drive() -> Nil {
+  let test_root =
+    "build/tui-ask-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(test_root <> "/work")
+    as "the ask fixture owns its workspace"
+  let requests = process.new_subject()
+  let base = settings_at(test_root)
+  let settings =
+    serve.Settings(
+      ..base,
+      gateway: catalog.gateway(
+        scripted_catalog(),
+        transport: ask_transport(requests),
+        secrets: secret.from_list([#("ACME_KEY", "tui-e2e-key")]),
+        clock: clock.fixed(at: 0),
+      ),
+    )
+  let assert Ok(booted) =
+    boot_with(
+      settings,
+      fn(instance: serve.Instance) { Some(instance.peer) },
+      fn(instance: serve.Instance) { Ok(instance.gateway) },
+    )
+    as "the ask daemon boots"
+  let address =
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v2/control"
+  let outcome = case
+    tui_driver.start_advancing(address, booted.served.token, booted.session_id)
+  {
+    Error(reason) -> Error(string.inspect(reason))
+    Ok(driver) -> {
+      let outcome = ask_turns(driver.data)
+      tui_driver.stop(driver.data)
+      outcome
+    }
+  }
+  let persisted = snapshot_text(booted)
+  shutdown(booted)
+  case outcome {
+    Error(reason) -> io.println_error(reason)
+    Ok(Nil) -> Nil
+  }
+  assert outcome == Ok(Nil) as string.inspect(outcome)
+
+  // The answer is a user message in the transcript, worded for the person.
+  assert string.contains(persisted, "Answer to your ask ask-")
+  assert string.contains(persisted, "Fold under open")
+  assert simplifile.delete(test_root) == Ok(Nil)
+}
+
+fn ask_turns(driver) -> Result(Nil, String) {
+  use _ <- result.try(ux_await(driver, "initial attachment", writable))
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste(ask_prompt),
+      backend.KeyPress("enter"),
+    ])
+
+  // The ask appears as a card above the composer, and the transcript's call
+  // row reads as the question and not as the JSON that carried it.
+  use drawn <- result.try(
+    ux_await(driver, "the ask card", fn(sample) {
+      string.contains(sample.frame, "Ask · waiting since")
+      && string.contains(sample.frame, "Alt+A answers")
+    }),
+  )
+  use Nil <- result.try(
+    case
+      string.contains(drawn.frame, "ask · 2 questions: Fold or separate?")
+      && !string.contains(drawn.frame, "{\"questions\"")
+    {
+      True -> Ok(Nil)
+      False ->
+        Error(
+          "the ask call row is not worded as its question:\n" <> drawn.frame,
+        )
+    },
+  )
+
+  // Typing before the owner names the card is the composer's.
+  let typed = tui_driver.play(driver, [backend.KeyPress("x")])
+  use Nil <- result.try(case textarea.value(typed.model.view.input) {
+    "x" -> Ok(Nil)
+    other -> Error("a key meant for the composer went elsewhere: " <> other)
+  })
+  let _ = tui_driver.play(driver, [backend.KeyPress("backspace")])
+
+  // Alt+A takes the keyboard; the option and the confirm are picked and sent.
+  let _ = tui_driver.play(driver, [backend.KeyPress("alt+a")])
+  use _ <- result.try(
+    ux_await(driver, "the focused card", fn(sample) {
+      string.contains(sample.frame, "Ctrl+S sends")
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.KeyPress(" "),
+      backend.KeyPress("tab"),
+      backend.KeyPress("enter"),
+      backend.KeyPress("ctrl+s"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "the answered ask", fn(sample) {
+      string.contains(sample.frame, ask_marker)
+      && !string.contains(sample.frame, "Ask · waiting since")
+    })
+    |> result.map_error(fn(reason) {
+      let held = tui_driver.play(driver, [])
+      reason
+      <> "\nasks: "
+      <> string.inspect(held.model.view.asks.phase)
+      <> " "
+      <> string.inspect(
+        list.map(held.model.view.asks.forms, fn(form) { form.refusal }),
+      )
+    }),
+  )
+  Ok(Nil)
+}
+
+// The first request makes the model call `ask`; the request after the answer
+// is answered with the marker only when it carries the readable answer.
+fn ask_transport(requests: process.Subject(String)) -> http.Transport {
+  provider_test.transport(fn(request, events) {
+    process.send(requests, request.body)
+    let response = case
+      string.contains(request.body, "Answer to your ask ask-")
+    {
+      True ->
+        case string.contains(request.body, "Fold under open") {
+          True -> sse_transcript(ask_marker)
+          False -> sse_transcript("ask-answer-unreadable")
+        }
+      False ->
+        ux_tool_sse(
+          "ask-call",
+          "ask",
+          json.Object([
+            #(
+              "questions",
+              json.Array([
+                json.Object([
+                  #("prompt", json.String("Fold or separate?")),
+                  #("kind", json.String("choice")),
+                  #(
+                    "options",
+                    json.Array([
+                      json.Object([
+                        #("label", json.String("Fold under open")),
+                        #("recommended", json.Bool(True)),
+                      ]),
+                      json.Object([#("label", json.String("Separate list"))]),
+                    ]),
+                  ),
+                ]),
+                json.Object([
+                  #("prompt", json.String("Keep the independent parts?")),
+                  #("kind", json.String("confirm")),
+                ]),
+              ]),
+            ),
+          ]),
+        )
+    }
+    process.send(
+      events,
+      http.ResponseStatus(200, [#("content-type", "text/event-stream")]),
+    )
+    process.send(events, http.ResponseChunk(bit_array.from_string(response)))
+    process.send(events, http.ResponseEnd)
+  })
 }
