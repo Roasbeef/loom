@@ -8,6 +8,7 @@
 
 import client/gateway_test
 import client/peer_mail
+import core/attention as records
 import core/clock
 import core/glance
 import core/ids
@@ -82,6 +83,57 @@ pub fn a_finished_run_reports_its_outcome_and_final_text_test() {
     as "the message carries the time of its entry"
   assert written > 0
   assert field(row, "turn_started_at") == json.Null
+}
+
+fn open_ask(id: String, routing: records.Routing) -> records.Ask {
+  let #(op, _) = ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 9))
+  records.Ask(
+    header: records.Header(
+      id:,
+      created_at: 1,
+      routing:,
+      anchor: records.Anchor(operation: op, step_id: "s", source_index: 0),
+      strand: "main",
+      parents: [],
+    ),
+    why: None,
+    questions: [
+      records.Question(
+        key: "q1",
+        prompt: "Retry?",
+        kind: records.Confirm,
+        options: [],
+      ),
+    ],
+    state: records.AskOpen,
+  )
+}
+
+// A session waiting on the owner's answer reports the ask beside its state
+// (protocol-change/050, the addendum on open asks). An ask routed to a strand
+// needs no person and is not counted.
+pub fn an_open_ask_to_the_owner_is_counted_and_one_to_a_strand_is_not_test() {
+  let runtime = gateway_test.reserved_fixture(session_id(505)).runtime
+  assert field(overview(runtime), "asks") == json.Int(0)
+
+  list.each(
+    [
+      open_ask("ask-0000000001", records.ToOwner),
+      open_ask("ask-0000000002", records.ToStrand("sub:helper")),
+    ],
+    fn(ask) {
+      let assert Ok(Nil) =
+        api.put_reserved_fact(
+          runtime,
+          records.ask_key(ask.header.id),
+          records.encode_ask(ask),
+        )
+        as "the ask is written"
+      Nil
+    },
+  )
+
+  assert field(overview(runtime), "asks") == json.Int(1)
 }
 
 pub fn a_pending_approval_needs_the_operator_test() {

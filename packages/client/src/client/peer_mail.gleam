@@ -1486,7 +1486,8 @@ fn activity(runtime: api.Runtime, strand: String) -> Result(JsonValue, String) {
 }
 
 // One session's activity, as the owner's session picker shows it. Every
-// read here is a single register, one entry, or one prefix listing, so the
+// read here is a single register, one entry, or one prefix listing (the asks
+// are one more, the one `attention.summary` makes), so the
 // Agency actor answering it is held for a fixed number of store calls
 // rather than a walk over the conversation.
 /// Builds a bounded human-readable overview of peer activity.
@@ -1504,6 +1505,7 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     |> result.map_error(string.inspect),
   )
   use glances <- result.try(current_glances(runtime, states))
+  use asks <- result.map(attention.asks(runtime))
   let last = option.map(last, fn(cell) { cell.value })
   let #(doing, approvals, working) = standing_from(states, escalations, last)
   let state = doing_word(doing)
@@ -1520,12 +1522,13 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     #("strands", json.Int(list.length(states))),
     #("working", json.Int(working)),
     #("approvals", json.Int(approvals)),
+    #("asks", json.Int(list.length(attention.open_owner_asks(asks)))),
     #("last_outcome", last_outcome(last)),
     #("model", model),
     #("turn_started_at", turn_started_at(states)),
   ]
   let #(message, message_at) = final_message(runtime, last)
-  Ok(fit_overview(base, message, message_at, glances))
+  fit_overview(base, message, message_at, glances)
 }
 
 /// One record in the stored shape beside its revision. A record that is not
