@@ -277,8 +277,8 @@ pub type Source {
       Result(List(Header), Error),
     /// Resolves an exact reference without copying its payload.
     header: fn(RegisterNs, String) -> Result(Header, Error),
-    /// Fetches and totally decodes a cell whose header was admitted.
-    cell: fn(Header) -> Result(Cell, Error),
+    /// Fetches and totally decodes admitted cells in the given header order.
+    cells: fn(List(Header)) -> Result(List(Cell), Error),
   )
 }
 
@@ -376,7 +376,7 @@ pub fn collect(
       },
     ),
   )
-  use cells <- result.try(list.try_map(dict.values(headers), source.cell))
+  use cells <- result.try(source.cells(dict.values(headers)))
 
   // Validate predicates even though SQLite already filtered valid values.
   // Malformed candidates remain visible so they cannot become silent omissions.
@@ -391,7 +391,7 @@ pub fn collect(
   let additional =
     dict.values(all_headers)
     |> list.filter(fn(header) { !dict.has_key(headers, header_key(header)) })
-  use extra <- result.map(list.try_map(additional, source.cell))
+  use extra <- result.map(source.cells(additional))
   #(list.append(cells, extra), bytes)
 }
 
