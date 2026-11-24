@@ -199,7 +199,10 @@ between busy and idle therefore never drops the message.
 idle with a question outstanding, and none of the inputs that come through
 `send_to_strand` is the answer. When the target has an open ask routed to
 the owner, the message is queued as a durable next-run item instead of
-opening a run, and the doorbell is not rung. The strand's next run places
+opening a run or joining the open one, since a steer would continue the run
+that made the ask past its question. The doorbell is not rung. A person's
+message to a relayed session goes through `send_as_owner_marking`, which never
+holds, and `steer_marking` holds only for an open run. The strand's next run places
 held items, in order, ahead of its own prompt. That run is started by the
 owner's message or by the answer, neither of which comes through
 `send_to_strand`. The queue holds at most 16 items, and a send past that is

@@ -548,14 +548,22 @@ the answer's own text, which opens with the line `core/attention_answer.answer_l
 words. When the answer settles one of several open asks, the reminder names only
 the others.
 
-**The hold.** An input that no person typed does not start a run on an idle
-strand that has an open ask routed to the owner. `runtime/api.send_to_strand`
-and `send_to_strand_marking`, through which the advisor's block and goal
+**The hold.** An input that no person typed neither starts a run on a strand
+that has an open ask routed to the owner nor joins a run it has open. A steer
+that joined the run which made the ask would continue it past the question,
+because the planner's checkpoint reads the steer queue before it stops.
+`runtime/api.send_to_strand` and `send_to_strand_marking`, through which the advisor's block and goal
 continuation, peer messages, model-created schedule ticks, job completion notices
 and an agent's `agent_send` reach a strand, queue the message as a next-run item
 and return `Held(entry)`. The doorbell is not rung. A parent's
-`send_to_child` to an idle child is held the same way, except under async
-execution custody, whose runs are the execution's own. The strand's next run,
+`send_to_child` is held the same way, except under async execution custody,
+whose runs are the execution's own. A held `send_to_child` starts no run, so
+its `within_ms` and the parent-run continuation do not apply, and `agent_send`
+says so. `steer_marking`, the door of the callers that may only join a run
+(peer mail on a busy-only link, a steers-only schedule, a rule, a completion
+notice to a subagent and the Agency's reports), holds when the strand has an
+open run and an open ask. On an idle strand it still refuses, so those callers
+never start a run. The strand's next run,
 which is the owner's message or the answer, places held items in order ahead of
 its own prompt. A mark spends in the same commit as the hold.
 
@@ -567,7 +575,10 @@ job heartbeat (`client/notice.beat`) is skipped for a strand that holds an ask.
 
 The owner's own input always goes through. The composer, a thread send and the
 answer reach the strand as `prompt`, `steer` and `follow_up` commands through
-the gateway, and the hold does not touch them. A held item rides ahead of the
+the gateway, and the hold does not touch them. A prompt typed on a spawner's
+page reaches the strand through `api.send_as_owner_marking`, which is
+`send_to_strand_marking` with the hold off and the receipt still in the same
+commit. A held item rides ahead of the
 owner's next message whatever it says, "continue" included. The reminder is on
 that run's requests, so the model reads the held item and the reminder
 together.
@@ -595,8 +606,10 @@ queue 1440 items a day for as long as the owner took to answer, and the next
 run would place all of them.
 
 **What is not held.** The hold covers the doors named above. It does not cover
-a run-end follow-up that another layer places: the Agency's wait on unfinished
-children and an imported `Stop` hook. Both are the strand's own continuation and
+`api.steer_async`, which carries async execution custody, or a send under that
+custody, whose run is the execution's own. It does not cover a run-end
+follow-up that another layer places: the Agency's wait on unfinished children
+and an imported `Stop` hook. Both are the strand's own continuation and
 neither is an input from outside it. It does not cover a strand that has no ask
 of its own, and an ask routed to a strand does not hold the asker. A store that
 will not answer reads as no open ask, which costs the old behavior, a wake, and
@@ -616,6 +629,13 @@ never a message held by a read nobody could confirm.
 - `agent_send` has a third result for the sender, `held`. A code-mode program
   sees it as `queued`, since a new kind would change the capability's public
   surface for one condition.
+- An answer that was delivered and not settled leaves its ask open. The door
+  delivers before it settles (`client/daemon/attention_door`), and a settling
+  write that fails or loses a race returns `Unsettled` after the prompt has
+  reached the strand. The record stays open, so the strand holds automatic
+  inputs, up to the queue's 16 items, and the reminder returns once compaction
+  drops the answer from the request. The owner's second answer settles it, as
+  119 already says the later answer stands.
 - The owner's "continue" still starts a run, and the model reads the reminder
   rather than being stopped. The hold prevents the agents from waking the strand,
   and the reminder tells the strand what its question's state is. It does not
@@ -633,14 +653,17 @@ never a message held by a read nobody could confirm.
 - `runtime/test/runtime/ask_hold_test`: a send to an idle strand with an open
   ask is `Held` and starts no run, held items are placed in order ahead of the
   next prompt, another strand's ask and an ask routed to a strand hold nothing,
-  an open run is steered, a mark spends with the hold and a second fire is
-  refused, the queue refuses the 17th item, and a held item survives a restart
+  an open run with an open ask is held and not steered while one with no ask is
+  steered, `steer_marking` holds for an open run and refuses an idle strand,
+  `send_as_owner_marking` starts a run despite the ask, a mark spends with the
+  hold and a second fire is refused, the queue refuses the 17th item, and a held item survives a restart
   on a SQLite session.
 - `client/test/client/attention_hold_test`: a woken strand with an open ask is
   reminded and one with none is not, the reminder is gone on the request after
   the answer settles, two open asks with one answered name only the other, the
-  answer's own run is not reminded of the ask it answers, another strand's ask
-  does not remind this one, and an earlier layer's `context` is kept.
+  answer's own run is not reminded of the ask it answers, a message from a
+  peer, a strand or a trigger that copies the answer's line does not release
+  it, another strand's ask does not remind this one, and an earlier layer's `context` is kept.
 - `client/test/client/advisor_test`: a nudge on an idle primary with an open ask
   is queued and reaches the next run start, the held wake does not spend the
   turn, the run end of an asking run places no nudge, and a block is held and
