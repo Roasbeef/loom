@@ -60,7 +60,10 @@ literal workspace-relative UTF-8 `path`, one-character `index_status` and
 control characters without changing the stored path identity.
 
 The `kind` values are `text`, `binary`, `no_net_change`, and `metadata_only`.
-An untracked nested repository is listed as metadata without recursive traversal.
+An untracked nested repository, or any wholly untracked directory, is listed as one
+entry whose `path` ends in `/` and whose `kind` is `metadata_only`, without recursive
+traversal. If the untracked listing exceeds its byte bound, the board keeps the
+records that fit and reports `limited`; it does not fail.
 `extent` is `complete` or `limited`, on both the board and individual entries.
 An unsupported command is an explicit unavailable surface for an older peer. An
 empty complete ready entry list authoritatively reports a clean captured status.

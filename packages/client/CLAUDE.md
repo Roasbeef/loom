@@ -7162,6 +7162,15 @@ so toolchain caches cannot consume the observation budget. Nothing writes
 Tracked changes under those directories still appear. Both outputs retain NUL-framed path identity and the existing
 read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
+The untracked query also passes `--directory --no-empty-directory`, so a wholly
+untracked directory is one record ending in `/`, observed as `metadata_only`
+with no patch, and a tool home of thousands of files costs one short record.
+Only loose untracked files get a patch. When the attached directory is itself
+wholly untracked, Git answers with that directory alone, and the observer
+repeats the query without `--directory`. A listing past `status_byte_limit` is
+cut at its last whole record and the board reports `limited`; the tracked
+changes are never lost to it.
+
 Session assembly keeps `.codemode` out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`
 writes `workspace_policy.ignore_everything` as `.gitignore` inside each, where none
