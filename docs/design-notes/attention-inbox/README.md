@@ -190,6 +190,8 @@ you · 3 insights").
    - labels, a live verdict and `auto` per rule;
    - inferred work published only by a person;
    - the attention budget (acted-on against dismissed);
+   - a cheap model that labels the rows the classifier lifts, proposed in
+     [`../insight-triage.md`](../insight-triage.md) (not a commitment);
    - `project/project-settings`' proposals, such as a `check` proposed from
      the repository.
 
