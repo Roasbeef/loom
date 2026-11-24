@@ -1349,6 +1349,8 @@ fn classify_steer(admitted: Result(EntryId, api.ApiError)) -> Fire {
   }
 }
 
+/// Whether a send fired its occurrence: any admission, held included, spent
+/// the mark, and a refusal is classified by its error.
 fn classify_send(admitted: Result(api.Delivery, api.ApiError)) -> Fire {
   case admitted {
     // A held occurrence has spent its mark in the commit that queued it, so

@@ -12,7 +12,7 @@
 ////
 //// `hooks` → `reminded` → `open_asks`
 ////
-//// 1. `hooks` wraps the `context` slot, so the reminder is re-applied to each
+//// 1. `hooks` wraps the request-context slot, so the reminder is re-applied to each
 ////    request and stored nowhere.
 //// 2. `reminded` finds the strand the request belongs to, reads its open asks
 ////    with `open_asks`, drops the ones the request already carries an answer
@@ -117,12 +117,15 @@ fn reminded(
   operation: OpId,
   projected: List(AgentMessage),
 ) -> List(AgentMessage) {
+  // An operation with no metadata belongs to no strand, so nothing is added.
   case session_read.strand_of(session, operation) {
     Error(Nil) -> projected
     Ok(strand) -> {
       let asks =
         open_asks(session, strand)
         |> attention_hold.unanswered(user_texts(projected))
+
+      // No open ask leaves the request as it was.
       case attention_hold.reminder(asks) {
         Ok(text) -> list.append(projected, [reminder_message(clock, text)])
         Error(Nil) -> projected

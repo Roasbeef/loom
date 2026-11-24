@@ -86,7 +86,7 @@ a model's request, and carries a `lineage/` cell naming its parent.
 `agent_send` and `agent_wait` check that cell before one strand may
 address another, and `strand.roster` lists strands from it.
 
-`ensure_strand` (`client/advisor.gleam:3661`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:3705`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1757`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
@@ -488,7 +488,7 @@ rather than becoming `Woke` or `Delivered`. A downgrade means the primary
 was *not* stopped for it, and either of those acks would claim
 otherwise. The wake is appended to the downgrade's own reason instead.
 
-The actor's `decide` (`client/advisor.gleam:3010`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:3027`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the
 send costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the

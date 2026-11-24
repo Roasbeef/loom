@@ -11,12 +11,13 @@
 ////
 //// ## Flow
 ////
-//// `holding` → `reminder`
+//// `holding` → `unanswered` → `reminder`
 ////
 //// 1. `holding` takes the cells under `attention/ask/`, decodes each one,
 ////    and keeps the open asks that this strand made and routed to the owner,
 ////    oldest first.
-//// 2. `reminder` words those asks as the fixed text a request carries, or
+//// 2. `unanswered` drops the asks whose answer the request already carries.
+//// 3. `reminder` words the rest as the fixed text a request carries, or
 ////    nothing when there are none.
 ////
 //// ## What this module does not decide
@@ -113,9 +114,10 @@ pub fn unanswered(asks: List(Ask), texts: List(String)) -> List(Ask) {
 /// assert string.contains(text, "ask-3f9c01a2b4")
 /// ```
 pub fn reminder(asks: List(Ask)) -> Result(String, Nil) {
+  // No open ask means no reminder, so a request is unchanged.
   case asks {
     [] -> Error(Nil)
-    _ -> {
+    [_, ..] -> {
       let listed = list.take(asks, max_listed)
       let more = list.length(asks) - list.length(listed)
       Ok(string.join(
@@ -134,15 +136,19 @@ pub fn reminder(asks: List(Ask)) -> Result(String, Nil) {
 
 /// One ask as a line: its id, its first question, and how many more it has.
 fn line(ask: Ask) -> String {
+  // The head is the first question, and an ask always has one.
   let first = case ask.questions {
     [question, ..] -> glance.clip(question.prompt, head_bytes)
     [] -> ""
   }
+
+  // The tail says how many more questions the ask has.
   let rest = case list.length(ask.questions) - 1 {
     0 -> ""
     1 -> " (and 1 more question)"
     count -> " (and " <> int.to_string(count) <> " more questions)"
   }
+
   "- " <> ask.header.id <> ": " <> first <> rest
 }
 

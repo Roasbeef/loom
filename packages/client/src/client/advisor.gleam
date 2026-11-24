@@ -2199,6 +2199,10 @@ fn fed(
 // Which advisor run owes the verdict. A send that started a run names
 // it; a send that steered one joined a review that opened between the
 // level read and the send, and the store is asked which.
+
+/// The advisor run that owes the verdict for a goal feed, given how the feed
+/// landed: the run it started, the run it steered as the store names it, or
+/// none for a held delivery, which only the primary can be.
 fn owing_review(state: State, delivery: api.Delivery) -> Option(OpId) {
   case delivery {
     api.Started(operation:) -> Some(operation)
