@@ -2079,6 +2079,13 @@ fn send_child_attempts(
     })
   }
 
+  // A non-positive budget is refused before anything else, as it always was,
+  // so a hold never turns a bad argument into an accepted message.
+  use <- bool.guard(
+    when: non_positive(continuation.within_ms),
+    return: Error(ReadFailed("within_ms must be positive")),
+  )
+
   // A child waiting on its owner's answer is held like any other strand, and
   // the parent's `within_ms` and run continuation do not apply to a message
   // that starts no run. The exception is a send under async execution
@@ -2117,6 +2124,14 @@ fn send_child_attempts(
           }
         Error(error) -> Error(error)
       }
+  }
+}
+
+/// Whether a budget was given and is zero or less.
+fn non_positive(within_ms: Option(Int)) -> Bool {
+  case within_ms {
+    Some(ms) -> ms <= 0
+    None -> False
   }
 }
 
@@ -2174,9 +2189,13 @@ fn send_attempts(
 }
 
 /// How many items a strand holds for its next run at most. An item is held
-/// for a run that only the owner starts, so a sender with a schedule would
-/// otherwise fill the queue for as long as the owner took to answer.
-pub const next_run_limit = 16
+/// until the owner's next message or answer starts a run, and every run until
+/// then holds its automatic inputs too, so a sender with a schedule would
+/// otherwise fill the queue for as long as that took. The number matches the
+/// bound on open asks. It covers the four live jobs a strand may have and a
+/// rationed advisor with room to spare, and it keeps what the next run places
+/// near 200 KB, since a completion notice quotes at most about 5 KB.
+pub const next_run_limit = 32
 
 /// Queues a message as a next-run item: durable, admitted in any state, and
 /// never starting a run or joining one.

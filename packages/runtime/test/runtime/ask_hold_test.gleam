@@ -11,9 +11,9 @@ import core/clock
 import core/ids
 import core/json
 import gleam/erlang/process
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import machine/queue
 import runtime/api
 import runtime/effects
@@ -271,7 +271,6 @@ pub fn the_held_queue_is_bounded_test() {
     api.send_to_strand(rt, to: "main", message: fake.user("one too many"))
     as "the queue refuses past its limit and writes nothing"
   assert limit == api.next_run_limit
-  assert int.to_string(limit) == "16"
   process.kill(rt.tree.supervisor)
 }
 
@@ -352,4 +351,55 @@ pub fn a_held_message_survives_a_restart_test() {
     == ["user:held across", "user:after restart", "user:answer"]
     as "both held messages are delivered, in order, ahead of the answer"
   process.kill(rt2.tree.supervisor)
+}
+
+// Items held while a run is open wait for the run to end and then lead the
+// next accepted run, in the order they were held.
+pub fn items_held_during_an_open_run_are_placed_by_the_next_accept_test() {
+  let rt = runtime()
+  record(rt, ask("ask-0000000001", "main", attention.ToOwner))
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("working")])
+  let assert Ok(api.Held(..)) =
+    api.send_to_strand(rt, to: "main", message: fake.user("first"))
+  let assert Ok(api.Held(..)) =
+    api.send_to_strand(rt, to: "main", message: fake.user("second"))
+
+  // The fixture provider never answers, so the run is ended by an abort.
+  api.abort(rt)
+  let assert Ok(_aborted) = api.await_result(rt, op, within_ms: 5000)
+    as "the aborted run must settle"
+  assert list.filter(harness.final_projection(rt.session), fn(line) {
+      line == "user:first" || line == "user:second"
+    })
+    == []
+    as "nothing held reached the run that was open"
+
+  let assert Ok(_next) = api.accept_quietly(rt, [fake.user("answer")])
+  assert list.filter(harness.final_projection(rt.session), fn(line) {
+      string.starts_with(line, "user:")
+    })
+    == ["user:working", "user:first", "user:second", "user:answer"]
+    as "the next run places the held items ahead of its prompt, in order"
+  process.kill(rt.tree.supervisor)
+}
+
+// A non-positive budget is refused as it always was, and an open ask does not
+// turn that refusal into a held message.
+pub fn a_non_positive_budget_is_refused_before_the_hold_test() {
+  let rt = runtime()
+  record(rt, ask("ask-0000000001", "main", attention.ToOwner))
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("working")])
+
+  let assert Error(api.ReadFailed(reason: "within_ms must be positive")) =
+    api.send_to_child(
+      rt,
+      to: "main",
+      message: fake.user("go"),
+      owner: op,
+      within_ms: Some(0),
+    )
+  let assert Ok(Some(session.Cell(value: state, ..))) =
+    session.strand_state(rt.session, "main")
+  assert state.pending_next_run == [] as "nothing was held"
+  process.kill(rt.tree.supervisor)
 }
