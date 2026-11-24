@@ -86,8 +86,12 @@ const far_future = 4_000_000_000_000
 /// The most a session's request may wait for the model, in milliseconds.
 const answer_timeout_ms = 120_000
 
-/// The ceiling on the model's answer, from the design note's cost table.
-const answer_tokens = 400
+/// The ceiling on the model's answer. The design note's cost table guessed
+/// 400, which an eight-line answer fits, but a model served with reasoning on
+/// spends its output budget thinking even when the request asks for no
+/// thinking: GLM 5.3 Flash on Baseten returned an empty answer for 11 of 30
+/// sessions at 400 and a whole one for all 30 at 2000.
+const answer_tokens = 2000
 
 /// Runs the command named on the command line.
 pub fn main() {
