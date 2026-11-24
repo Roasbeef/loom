@@ -66,6 +66,12 @@ usable from the web.
 4. **Project mode usable from the web** (the project mode section below, and
    the 2026-11-21 plan on #1167).
 
+**A proposal awaiting the owner: insight triage.**
+`design-notes/insight-triage.md` proposes a `triage` role, a cheap model that
+labels the rows the attention classifier lifted with a weight and a reason, drawn
+as the model's opinion. Nothing is built. Its gate is an offline ordering test
+on 30 past sessions, and it ends with eight questions for the owner.
+
 **An open ask was missed on a session's page (2026-11-23).** An agent
 called `ask` and the daemon recorded it (`catalogue_session_attention` showed
 `open_asks = 1`), but the owner, reading the session's transcript in the
