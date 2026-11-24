@@ -358,22 +358,13 @@ pub fn beat(
   // its jobs. The heartbeat carries no mark and its clock is volatile, so
   // skipping it holds nothing: the next beat after the answer finds the
   // strand idle and says the same thing.
-  use <- bool.guard(when: waiting_on_owner(target), return: Ok(Nil))
+  use <- bool.guard(when: api.waiting_on_owner(target), return: Ok(Nil))
 
   // beat handles the api.prompt(target, [harness_message(runtime, text)]) outcomes before continuing the operation.
   case api.prompt(target, [harness_message(runtime, text)]) {
     Ok(_operation) -> Ok(Nil)
     Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> Ok(Nil)
     Error(error) -> Error(string.inspect(error))
-  }
-}
-
-/// Whether `target` has an ask open that waits on the owner. A store that will
-/// not answer reads as none, which costs the old behavior, a heartbeat.
-fn waiting_on_owner(target: Runtime) -> Bool {
-  case api.open_owner_asks(target) {
-    Ok([_, ..]) -> True
-    Ok([]) | Error(_) -> False
   }
 }
 

@@ -2292,7 +2292,8 @@ fn held_outcome(to: String, entry: EntryId) -> ToolOutcome {
     "held for `"
     <> to
     <> "`. It is waiting for its owner to answer a question, so it was not "
-    <> "woken; the message reaches it with its next run.",
+    <> "woken; the message reaches it with its next run. A `within_ms` you "
+    <> "passed did not apply, because no run was started for it.",
   )
   |> tool.with_details(
     json.Object([
