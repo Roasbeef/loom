@@ -204,40 +204,6 @@ pub fn erl() -> String {
   root() <> "/erts-" <> ffi_os.erts_version() <> "/bin/erl"
 }
 
-/// The directories that hold the toolchain this installation carries, for a
-/// `PATH` that has to find it: the `erts-<version>/bin` of the emulator that
-/// is running, and `<root>/bin` when a bundled `gleam` is there.
-///
-/// A release has both, so `erl`, `escript` and `gleam` resolve from them. On a
-/// development host the root is the OTP installation, whose `bin` holds no
-/// `gleam`, so only the ERTS directory is named, and it is the emulator the
-/// harness is running. Existence is the whole discriminator, as it is for
-/// every other rung in this module.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // install.toolchain_directories()
-/// //   == ["/opt/loom-0.1.0-linux-x86_64/erts-17.0.5/bin",
-/// //       "/opt/loom-0.1.0-linux-x86_64/bin"]
-/// ```
-///
-pub fn toolchain_directories() -> List(String) {
-  let erts = root() <> "/erts-" <> ffi_os.erts_version() <> "/bin"
-
-  // A bundled `gleam` is what marks the root as a release tree.
-  let release = case existing_file(gleam_compiler()) {
-    Ok(_) -> [root() <> "/bin"]
-    Error(Nil) -> []
-  }
-
-  // The running ERTS directory is named only when it is on disk.
-  case existing_directory(erts) {
-    Ok(_) -> [erts, ..release]
-    Error(Nil) -> release
-  }
-}
-
 /// Where a release keeps the bundled code-mode build seed:
 /// `<root>/share/codemode-seed`.
 ///

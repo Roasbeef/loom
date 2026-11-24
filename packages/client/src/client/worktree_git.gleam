@@ -87,39 +87,6 @@ pub type Config {
 /// its own to give it.
 pub const system_path = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
-/// The `PATH` a project's setup and check see: the directories the daemon's
-/// installation carries (`client/install.toolchain_directories`), then the
-/// daemon's own `PATH`, or the system directories when it has none.
-///
-/// A release's launcher happens to put its ERTS on the daemon's `PATH`, because
-/// OTP's `erl` start script does. A check is a different environment from the
-/// daemon's, and that side effect is not a contract, so the bundled directories
-/// are named here, in front, as code mode finds its own. This changes where a
-/// command is looked up and nothing else: the jail's readable and writable
-/// roots are untouched. A directory the daemon's `PATH` already names is not
-/// repeated.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert worktree_git.check_path("/usr/bin:/bin", ["/r/erts-1/bin"])
-///   == "/r/erts-1/bin:/usr/bin:/bin"
-/// assert worktree_git.check_path("", ["/r/erts-1/bin"])
-///   == "/r/erts-1/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
-/// ```
-pub fn check_path(daemon: String, bundled: List(String)) -> String {
-  // A daemon with no `PATH` of its own leaves the system directories.
-  let base = case daemon {
-    "" -> system_path
-    inherited -> inherited
-  }
-
-  list.append(bundled, string.split(base, ":"))
-  |> list.filter(fn(directory) { directory != "" })
-  |> list.unique
-  |> string.join(":")
-}
-
 /// A running sandboxed Git: the broker its calls clear through and the Git
 /// binary they name.
 pub opaque type Git {

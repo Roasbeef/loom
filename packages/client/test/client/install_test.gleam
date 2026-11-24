@@ -329,11 +329,3 @@ pub fn a_worker_finds_the_seed_beside_the_owners_checkout_test() {
   assert serve.worker_seed("/clone/build/codemode-seed", "/owner/repo", neither)
     == "/clone/build/codemode-seed"
 }
-
-pub fn the_toolchain_directories_name_the_running_erts_test() {
-  // On a development host the root is the OTP installation, which has no
-  // bundled `gleam`, so the running emulator's directory is what is named.
-  let assert [erts, ..] = install.toolchain_directories()
-  assert string.starts_with(erts, install.root() <> "/erts-")
-  assert string.ends_with(erts, "/bin")
-}

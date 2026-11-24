@@ -587,8 +587,7 @@ state-root and blob masks, so a jailed child cannot print them into a tool
 result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
 `worktree_git.Config` carry the same list, so the sandboxed Git that runs a
 repository's hooks during `git worktree add` masks them too. Both also carry
-`path`, the daemon's own `PATH` read once into `Machine.check_path` behind the
-installation's toolchain directories (`worktree_git.check_path`), which is the
+`path`, the daemon's own `PATH` read once into `Machine.check_path`, which is the
 `PATH` a project's `setup` and `check` see (the system directories stand in when it
 is empty). Both live outside the state
 root, which is why the state-root masks never covered them. An absent path is

@@ -146,7 +146,6 @@ import client/untrusted_config
 import client/workspace_plane
 import client/workspace_policy
 import client/workspaces.{type Workspace}
-import client/worktree_git
 import client/worktrees.{type Worktrees}
 import core/clock
 import core/ids
@@ -203,10 +202,9 @@ pub type Machine {
     /// every jailed child has masked. Empty for a daemon with no
     /// `[distribution]` table.
     credentials: List(String),
-    /// The daemon's own `PATH`, read once when the machine is read, behind the
-    /// directories its installation carries (`worktree_git.check_path`). A
-    /// project's setup and check run with it, so they find the tools the
-    /// daemon's operator has and the release's bundled `erl` and `gleam`.
+    /// The daemon's own `PATH`, read once when the machine is read. A project's
+    /// setup and check run with it, so they find the tools the daemon's
+    /// operator has. Empty when the daemon has none.
     check_path: String,
     /// Where builds and closes report.
     logger: Logger,
@@ -308,10 +306,7 @@ pub fn machine(
     home: workspace_policy.home_directory(),
     mcp_servers:,
     credentials:,
-    check_path: worktree_git.check_path(
-      result.unwrap(workspace_policy.env_text("PATH"), ""),
-      install.toolchain_directories(),
-    ),
+    check_path: result.unwrap(workspace_policy.env_text("PATH"), ""),
     logger:,
   ))
 }
