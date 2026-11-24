@@ -52,7 +52,7 @@ loopback port reserved once and recorded beside the guest).
 | Host daemon (`loomd`) | developer | provider keys, every session store, the hook trust record, approvals, clearance; its `[distribution]` key and the home's `.erlang.cookie`; in a minted guest's deployment, the orchestrator bundle under `<vm home>/<name>/orch/` |
 | `loom-vm` launcher | developer | the libkrun VMM, the hosted network stack and its egress policy, the GitHub credential proxy with the developer's token in memory, the host loopback forward and the guest's epmd registration (`--publish`) |
 | Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`stage_node`, since deleted; `stage_linked_node` writes no cookie); the ledger file in ledger mode; the workspace copies; the state disk |
-| Jailed tool process | `loom`, under `loom-exec` | the workspace copy, the network the policy allows (with GitHub access, the proxy's placeholder token); the node key and cookie are masked by `node_credentials` (`client/executor_plane.gleam:333`) |
+| Jailed tool process | `loom`, under `loom-exec` | the workspace copy, the network the policy allows (with GitHub access, the proxy's placeholder token); the node key and cookie are masked by `node_credentials` (`client/executor_plane.gleam:323`) |
 
 ### What each party holds under the proposal
 
@@ -632,7 +632,7 @@ not change.
 - **F1. The listener key is not masked from the executor's jails.**
   `executor_plane.node_credentials` masks the `[distribution]` key and cookie
   and returns nothing for a daemon with no `[distribution]`
-  (`client/executor_plane.gleam:333` (`node_credentials`)); nothing masks
+  (`client/executor_plane.gleam:323` (`node_credentials`)); nothing masks
   `[executor_listener].key`. Model code under the default host read scope can
   read it. Low impact on a guest (Section 1), more on a pod reached by network
   name. Fixed in slice 1.
