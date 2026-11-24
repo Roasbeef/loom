@@ -7248,6 +7248,8 @@ fn review_message(model: Model, session: String) -> Element(Msg) {
     None -> None
   }
 
+  // The brief's message is drawn when there is one, the overview's last message
+  // is the fallback, and a session that said nothing draws nothing.
   case read, dict.get(model.reports, session) {
     Some(brief), _ ->
       html.div([attribute.class("inbox-said")], [brief_view.latest(brief)])

@@ -26,6 +26,12 @@ import core/glance
 import gleam/list
 import gleam/string
 
+/// Whether the scan is inside a fenced code block.
+type Fence {
+  Open
+  Closed
+}
+
 /// The text cut to at most `max_bytes` bytes of whole blocks, newlines kept, and
 /// the text unchanged when it fits. Text with a dropped block ends in a
 /// paragraph holding `…`.
@@ -63,12 +69,6 @@ fn blocks(text: String) -> List(String) {
     list.fold(string.split(text, "\n"), #([], [], Closed), step)
 
   list.reverse(close(done, current))
-}
-
-/// Whether the scan is inside a fenced code block.
-type Fence {
-  Open
-  Closed
 }
 
 /// One line against the scan: a fence line flips the fence, a blank line outside
@@ -116,11 +116,15 @@ fn fitting(
   case blocks {
     [] -> kept
     [next, ..rest] -> {
+      // The first block costs its own bytes, and a later one also the blank
+      // line that separates it from the block before.
       let cost = case kept {
         [] -> string.byte_size(next)
-        _ -> string.byte_size(next) + 2
+        [_, ..] -> string.byte_size(next) + 2
       }
 
+      // The block is kept when it fits, and the first one that does not ends
+      // the scan, so a later short block never jumps over it.
       case cost <= left {
         True -> fitting(rest, left - cost, [next, ..kept])
         False -> kept
