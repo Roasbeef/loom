@@ -1298,7 +1298,27 @@ pub fn steer_marking(
     when: !reserved_fact_key(mark.key),
     return: Error(UnreservedFactKey(key: mark.key)),
   )
+
+  // Every caller of this door is an automatic input. A steer that joined the
+  // run which made an ask would continue that run past its question, so while
+  // an ask is open the message is held as a next-run item and the entry it
+  // returns names that item. An idle strand falls through to the refusal the
+  // callers already handle: holding is for a run that is open, and a caller
+  // that may start a run goes through `send_to_strand_marking`.
+  use <- bool.lazy_guard(
+    when: waiting_on_owner(runtime) && run_is_open(runtime),
+    return: fn() { hold_next_run(runtime, message, Some(mark)) },
+  )
   enqueue(runtime, message, queue.enqueue_steer, Some(mark))
+}
+
+/// Whether the addressed strand has an open run. An unreadable strand reads
+/// as idle, which leaves the steer to report its own failure.
+fn run_is_open(runtime: Runtime) -> Bool {
+  case read_strand_state(runtime) {
+    Ok(#(_seq, state)) -> option.is_some(state.current_operation)
+    Error(_) -> False
+  }
 }
 
 /// Enqueues a follow-up item onto the open run and rings the doorbell.
@@ -1930,11 +1950,12 @@ pub type Delivery {
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId)
 
-  /// The target was idle with an open ask routed to the owner, so the message
-  /// was not allowed to start a run. It is a durable next-run item: the
+  /// The target has an open ask routed to the owner, so the message was not
+  /// allowed to start a run or to join one. It is a durable next-run item: the
   /// strand's next run, which only the owner's message or the answer starts,
-  /// places it ahead of that run's own prompt. Nothing was woken and the
-  /// doorbell was not rung.
+  /// places it ahead of that run's own prompt. Nothing was woken and this call
+  /// did not ring the doorbell. A caller that rings it afterwards wakes
+  /// nothing, since the doorbell only makes a strand with an open run poll.
   Held(entry: EntryId)
 }
 
@@ -1963,7 +1984,7 @@ pub fn send_to_strand(
   to target: String,
   message message: AgentMessage,
 ) -> Result(Delivery, ApiError) {
-  send_attempts(on_strand(runtime, target), message, None, 4)
+  send_attempts(on_strand(runtime, target), message, None, HoldForAsk, 4)
 }
 
 /// Sends to a child under the caller's current operation. An idle child gains
@@ -2058,21 +2079,22 @@ fn send_child_attempts(
     })
   }
 
-  // A child waiting on its owner's answer is held like any other strand. The
-  // exception is a send under async execution custody, whose run is the
-  // execution's own and is never an idle child with a question outstanding.
-  let start = fn() {
-    case continuation.execution, waiting_on_owner(target) {
-      None, True ->
-        hold_next_run(target, message, None) |> result.map(Held(entry: _))
-      Some(_), _ | None, False -> admission()
-    }
-  }
+  // A child waiting on its owner's answer is held like any other strand, and
+  // the parent's `within_ms` and run continuation do not apply to a message
+  // that starts no run. The exception is a send under async execution
+  // custody, whose run is the execution's own and is never a child with a
+  // question outstanding.
+  use <- bool.lazy_guard(
+    when: option.is_none(continuation.execution) && waiting_on_owner(target),
+    return: fn() {
+      hold_next_run(target, message, None) |> result.map(Held(entry: _))
+    },
+  )
 
   // Determines whether to start fresh run or steer open run based on budget.
   case continuation.within_ms {
     Some(ms) if ms <= 0 -> Error(ReadFailed("within_ms must be positive"))
-    Some(_) -> start()
+    Some(_) -> admission()
     None ->
       case
         enqueue_guarded(
@@ -2088,7 +2110,7 @@ fn send_child_attempts(
           Ok(Steered(entry:))
         }
         Error(QueueRejected(reason: queue.NoActiveRun)) ->
-          case start() {
+          case admission() {
             Error(AcceptRejected(StrandBusy)) ->
               send_child_attempts(target, message, continuation, attempts - 1)
             outcome -> outcome
@@ -2098,14 +2120,35 @@ fn send_child_attempts(
   }
 }
 
+/// Whether `send_attempts` may hold a message for an open ask.
+type Hold {
+  /// An automatic input: an open owner ask on the target holds the message.
+  HoldForAsk
+
+  /// A person's input, which always goes through.
+  NeverHold
+}
+
 /// Retries sending a message by attempting steer and then new run acceptance.
 fn send_attempts(
   target: Runtime,
   message: AgentMessage,
   mark: Option(Mark),
+  hold: Hold,
   attempts: Int,
 ) -> Result(Delivery, ApiError) {
   use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+
+  // An automatic input never reaches a strand with a question outstanding.
+  // Joining the run that made the ask would continue it past the ask, and
+  // starting one would carry on without the answer, so either way the message
+  // waits as a next-run item.
+  use <- bool.lazy_guard(
+    when: hold == HoldForAsk && waiting_on_owner(target),
+    return: fn() {
+      hold_next_run(target, message, mark) |> result.map(Held(entry: _))
+    },
+  )
 
   // Attempts to enqueue message as a steer onto an active run first.
   case enqueue(target, message, queue.enqueue_steer, mark) {
@@ -2114,51 +2157,18 @@ fn send_attempts(
       Ok(Steered(entry:))
     }
     Error(QueueRejected(reason: queue.NoActiveRun)) ->
-      case waiting_on_owner(target) {
-        // An idle strand with a question outstanding is not woken by an
-        // automatic input. The message waits as a next-run item.
-        True -> hold_attempts(target, message, mark, attempts)
-        False -> start_attempts(target, message, mark, attempts)
+      case accept_request(target, AcceptRun(prompts: [message]), mark) {
+        Ok(operation) -> {
+          nudge(target)
+          Ok(Started(operation:))
+        }
+
+        // A run opened between the steer refusal and the accept: try
+        // the steer again.
+        Error(AcceptRejected(reason: StrandBusy)) ->
+          send_attempts(target, message, mark, hold, attempts - 1)
+        Error(error) -> Error(error)
       }
-    Error(error) -> Error(error)
-  }
-}
-
-/// Starts a fresh run on an idle target for `send_attempts`.
-fn start_attempts(
-  target: Runtime,
-  message: AgentMessage,
-  mark: Option(Mark),
-  attempts: Int,
-) -> Result(Delivery, ApiError) {
-  case accept_request(target, AcceptRun(prompts: [message]), mark) {
-    Ok(operation) -> {
-      nudge(target)
-      Ok(Started(operation:))
-    }
-
-    // A run opened between the steer refusal and the accept: try
-    // the steer again.
-    Error(AcceptRejected(reason: StrandBusy)) ->
-      send_attempts(target, message, mark, attempts - 1)
-    Error(error) -> Error(error)
-  }
-}
-
-/// Holds a message for the idle target's next run for `send_attempts`.
-fn hold_attempts(
-  target: Runtime,
-  message: AgentMessage,
-  mark: Option(Mark),
-  attempts: Int,
-) -> Result(Delivery, ApiError) {
-  case hold_next_run(target, message, mark) {
-    Ok(entry) -> Ok(Held(entry:))
-
-    // A run opened between the idle read and the hold: the steer door is
-    // right again, so the ladder starts over from it.
-    Error(AcceptRejected(reason: StrandBusy)) ->
-      send_attempts(target, message, mark, attempts - 1)
     Error(error) -> Error(error)
   }
 }
@@ -2168,13 +2178,12 @@ fn hold_attempts(
 /// otherwise fill the queue for as long as the owner took to answer.
 pub const next_run_limit = 16
 
-/// Queues a message as a next-run item: durable, admitted while the strand is
-/// idle, and never starting a run.
+/// Queues a message as a next-run item: durable, admitted in any state, and
+/// never starting a run or joining one.
 ///
-/// The commit expects the strand state it read, so a run that opened since
-/// the read refuses the hold with `StrandBusy` and the caller steers instead.
-/// A mark, when there is one, spends in the same commit, so a sender that
-/// fires at most once spends its claim exactly when the message is held.
+/// The commit expects the strand state it read, so a lost race re-reads. A
+/// mark, when there is one, spends in the same commit, so a sender that fires
+/// at most once spends its claim exactly when the message is held.
 fn hold_next_run(
   runtime: Runtime,
   message: AgentMessage,
@@ -2183,10 +2192,6 @@ fn hold_next_run(
   retry_admission(4, fn() {
     use <- attempt
     use #(seq, strand_state) <- result.try(read_strand_state(runtime))
-    use <- bool.guard(
-      when: option.is_some(strand_state.current_operation),
-      return: Ok(Done(Error(AcceptRejected(reason: StrandBusy)))),
-    )
     use <- bool.guard(
       when: list.length(strand_state.pending_next_run) >= next_run_limit,
       return: Ok(
@@ -2235,10 +2240,17 @@ pub fn open_owner_asks(
   attention_hold.holding(cells, runtime.strand)
 }
 
-/// Whether the target has a question outstanding. A store that will not
-/// answer reads as none, so the failure costs the old behavior, a wake, and
+/// Whether the addressed strand has a question outstanding. A store that will
+/// not answer reads as none, so the failure costs the old behavior, a wake, and
 /// never a message held by a read nobody could confirm.
-fn waiting_on_owner(target: Runtime) -> Bool {
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.waiting_on_owner(api.on_strand(runtime, "main")) == False
+/// ```
+///
+pub fn waiting_on_owner(target: Runtime) -> Bool {
   case open_owner_asks(target) {
     Ok([_, ..]) -> True
     Ok([]) | Error(_) -> False
@@ -2272,7 +2284,32 @@ pub fn send_to_strand_marking(
     when: !reserved_fact_key(mark.key),
     return: Error(UnreservedFactKey(key: mark.key)),
   )
-  send_attempts(on_strand(runtime, target), message, Some(mark), 4)
+  send_attempts(on_strand(runtime, target), message, Some(mark), HoldForAsk, 4)
+}
+
+/// Sends a person's message to a strand, carrying one write-once claim: the
+/// steer-then-start reconciliation of `send_to_strand_marking` without the
+/// hold. A person's input always goes through, so an open ask on the target
+/// does not keep it from joining an open run or starting one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.send_as_owner_marking(runtime, to: "main", message: typed,
+/// //   mark: api.Mark(key: "relay/received/m1", value: json.Null))
+/// ```
+///
+pub fn send_as_owner_marking(
+  runtime: Runtime,
+  to target: String,
+  message message: AgentMessage,
+  mark mark: Mark,
+) -> Result(Delivery, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(mark.key),
+    return: Error(UnreservedFactKey(key: mark.key)),
+  )
+  send_attempts(on_strand(runtime, target), message, Some(mark), NeverHold, 4)
 }
 
 /// Awaits another strand's terminal result for `operation` — the parent

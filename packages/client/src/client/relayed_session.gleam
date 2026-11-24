@@ -364,17 +364,12 @@ fn deliver(
 
   // This branch resolves the deliver decision before the operation proceeds.
   case
-    api.send_to_strand_marking(
-      runtime,
-      to: main_strand,
-      message: payload,
-      mark:,
-    )
+    api.send_as_owner_marking(runtime, to: main_strand, message: payload, mark:)
   {
     Ok(api.Steered(entry:)) -> Ok(remote_mail.Steered(entry:))
 
-    // The strand waits on its owner's answer, so the message is admitted and
-    // no run opened.
+    // A person's message is never held, so this door cannot answer `Held`;
+    // the arm keeps the match total and reads like the other doors.
     Ok(api.Held(..)) -> Ok(remote_mail.Admitted)
     Ok(api.Started(operation:)) ->
       Ok(remote_mail.Started(operation:, remaining_ms: None))

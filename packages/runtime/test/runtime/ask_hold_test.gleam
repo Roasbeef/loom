@@ -134,14 +134,98 @@ pub fn an_ask_that_does_not_wait_on_the_owner_here_holds_nothing_test() {
   process.kill(rt.tree.supervisor)
 }
 
-pub fn an_open_run_is_steered_not_held_test() {
+// The run that made the ask may still be open when another input arrives, and
+// a steer would continue it past the ask: the planner's checkpoint reads the
+// steer queue before it stops. So an open run is held too, and the run's own
+// queue is left empty.
+pub fn an_open_run_is_held_not_steered_while_an_ask_is_open_test() {
   let rt = runtime()
   record(rt, ask("ask-0000000001", "main", attention.ToOwner))
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+
+  let assert Ok(api.Held(entry: _)) =
+    api.send_to_strand(rt, to: "main", message: fake.user("also this"))
+    as "a message to a run that has an ask open is held"
+  let assert Ok(api.Held(..)) =
+    api.send_to_strand_marking(
+      rt,
+      to: "main",
+      message: fake.user("and this"),
+      mark: claim("open-run"),
+    )
+    as "so is a marked one"
+  let assert Ok(Some(json.String("open-run"))) =
+    api.fact(rt, claim("open-run").key)
+    as "and its claim is spent with the hold"
+  let assert Ok(Some(session.Cell(value: state, ..))) =
+    session.strand_state(rt.session, "main")
+  assert state.current_operation == Some(op)
+  assert list.length(state.pending_next_run) == 2
+    as "both wait for the next run"
+  process.kill(rt.tree.supervisor)
+}
+
+// With no ask open an open run is steered, as it always was.
+pub fn an_open_run_is_steered_when_no_ask_is_open_test() {
+  let rt = runtime()
   let assert Ok(_op) = api.accept_quietly(rt, [fake.user("Hello")])
 
   let assert Ok(api.Steered(entry: _)) =
     api.send_to_strand(rt, to: "main", message: fake.user("also this"))
-    as "a run already open reads its steers, ask or no ask"
+  process.kill(rt.tree.supervisor)
+}
+
+// `steer_marking` is the door of the callers that may only join a run: peer
+// mail on a busy-only link, a steers-only schedule, a rule, a notice and the
+// Agency's reports. With an ask open and a run open it holds, and with the
+// strand idle it still refuses, so those callers keep never starting a run.
+pub fn steer_marking_holds_for_an_open_run_and_refuses_an_idle_strand_test() {
+  let rt = runtime()
+  record(rt, ask("ask-0000000001", "main", attention.ToOwner))
+
+  let assert Error(api.QueueRejected(reason: queue.NoActiveRun)) =
+    api.steer_marking(rt, fake.user("idle"), mark: claim("idle"))
+    as "an idle strand refuses a steer, ask or no ask"
+  let assert Ok(None) = api.fact(rt, claim("idle").key) as "and spends no claim"
+
+  let assert Ok(_op) = api.accept_quietly(rt, [fake.user("Hello")])
+  let assert Ok(_entry) =
+    api.steer_marking(rt, fake.user("busy"), mark: claim("busy"))
+  let assert Ok(Some(session.Cell(value: state, ..))) =
+    session.strand_state(rt.session, "main")
+  assert list.length(state.pending_next_run) == 1
+    as "the steer was held for the next run and not queued on the open run"
+  let assert Ok(Some(json.String("busy"))) = api.fact(rt, claim("busy").key)
+  process.kill(rt.tree.supervisor)
+}
+
+// A person's input is never held. The relayed page's prompt goes through this
+// door, so an open ask neither queues it nor keeps it from starting a run.
+pub fn an_owner_send_starts_a_run_despite_an_open_ask_test() {
+  let rt = runtime()
+  record(rt, ask("ask-0000000001", "main", attention.ToOwner))
+
+  let assert Ok(api.Started(operation: op)) =
+    api.send_as_owner_marking(
+      rt,
+      to: "main",
+      message: fake.user("continue"),
+      mark: claim("typed"),
+    )
+    as "the owner's message starts the run"
+  let assert Ok(Some(json.String("typed"))) = api.fact(rt, claim("typed").key)
+  let assert Ok(api.Steered(entry: _)) =
+    api.send_as_owner_marking(
+      rt,
+      to: "main",
+      message: fake.user("and more"),
+      mark: claim("typed-again"),
+    )
+    as "and a second one joins the open run"
+  let assert Ok(Some(session.Cell(value: state, ..))) =
+    session.strand_state(rt.session, "main")
+  assert state.current_operation == Some(op)
+  assert state.pending_next_run == []
   process.kill(rt.tree.supervisor)
 }
 
