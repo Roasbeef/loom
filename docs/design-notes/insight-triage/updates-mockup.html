@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Updates with insights</title>
+<!--
+  A sketch for docs/design-notes/insight-triage.md, slice 3: the Updates folder
+  with insights folded in. Static; the sessions and rows are invented. The list
+  is ordered by each session's most important insight. In the reading pane,
+  the agent's latest message, the steps, the delegates and the first two lines
+  of each insight row are facts the agent or the classifier recorded. The violet
+  chips ("1 high", "triage") and the "Triage model:" lines are the opinion of
+  the routed triage model. The neutral "2 insights" count is the classifier's.
+  Peer messages carry no chip and no model line. Finds are not shown here; they
+  stay in the Finds folder. Light and dark follow the system setting.
+-->
+<style>
+:root{--bg:#f6f5f1;--sunk:#efede7;--raised:#fff;--fg:#1d1c1a;--quiet:#6b6962;--faint:#8f8c84;--divider:#dedbd3;--op-bg:#efedfe;--op-fg:#3c3489;--op-line:#afa9ec;--signal:#e8a33c;--run:#2f7d4f}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--sunk:#111110;--raised:#1e1e1c;--fg:#ecebe6;--quiet:#a5a39b;--faint:#7e7c75;--divider:#2e2d2a;--op-bg:#2a2650;--op-fg:#cecbf6;--op-line:#534ab7;--signal:#e8a33c;--run:#6cc08c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.app{display:grid;grid-template-columns:200px 340px minmax(0,1fr);min-height:100vh}
+.rail{background:var(--sunk);border-right:1px solid var(--divider);padding:14px 10px}
+.away{margin:0 8px 10px;font-size:12.5px;color:var(--quiet)}
+.away b{color:var(--fg)}
+.folder{display:flex;justify-content:space-between;padding:6px 8px;border-radius:6px;border:1px solid transparent;font-size:13.5px}
+.folder.on{background:var(--raised);border-color:var(--divider)}
+.folder .n{color:var(--quiet);font-size:12px}
+.folder.need .n{background:var(--signal);color:#141517;border-radius:10px;padding:0 6px;font-weight:700}
+.list{border-right:1px solid var(--divider)}
+.lhead{padding:10px 14px;border-bottom:1px solid var(--divider);font-size:12px;color:var(--quiet)}
+.lhead b{color:var(--fg);font-weight:600;font-size:13px}
+.item{padding:10px 14px;border-bottom:1px solid var(--divider)}
+.item.on{background:var(--raised)}
+.l1{display:flex;gap:8px;align-items:baseline}
+.sn{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t{margin-left:auto;color:var(--faint);font-size:12px;white-space:nowrap}
+.cnt{font-size:11px;padding:0 6px;border:1px solid var(--divider);border-radius:6px;color:var(--quiet);white-space:nowrap}
+.tri{font-size:11px;padding:0 6px;border-radius:6px;white-space:nowrap;background:var(--op-bg);color:var(--op-fg);border:1px solid var(--op-line)}
+.glance{margin-top:2px;font-size:12.5px;color:var(--quiet);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item.quiet .sn{font-weight:500}
+.pane{padding:18px 22px;max-width:760px}
+.state{font-size:12px;color:var(--quiet)}
+.state i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--run);margin-right:6px}
+h1{margin:4px 0 12px;font-size:19px;font-weight:600}
+h3{margin:20px 0 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet)}
+.msg{background:var(--sunk);border:1px solid var(--divider);border-radius:8px;padding:10px 12px}
+.irow{padding:9px 0;border-bottom:1px solid var(--divider)}
+.kind{font-size:11px;padding:0 6px;border:1px solid var(--divider);border-radius:6px;color:var(--quiet);white-space:nowrap}
+.head{margin-top:3px}
+.why{margin-top:2px;font-size:12.5px;color:var(--quiet)}
+.why b{color:var(--op-fg);font-weight:600}
+.folded{padding:9px 0;color:var(--quiet);font-size:13px;border-bottom:1px solid var(--divider)}
+.read{margin-top:6px;font-size:12px;color:var(--faint)}
+ul{margin:0;padding:0;list-style:none}
+li{padding:5px 0;border-bottom:1px solid var(--divider);font-size:13px}
+li span{color:var(--faint);margin-right:8px;font-size:12px}
+.box{border:1px solid var(--divider);border-radius:8px;background:var(--raised);padding:10px 12px}
+.box p{margin:0 0 10px;color:var(--faint)}
+.btns{display:flex;gap:8px}
+.btn{font-size:12.5px;padding:3px 12px;border:1px solid var(--divider);border-radius:6px;background:var(--sunk)}
+@media (max-width:900px){.app{grid-template-columns:1fr}.rail,.list{border-right:0;border-bottom:1px solid var(--divider)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Inbox folders">
+    <p class="away"><b>14:20</b> · 6 running sessions</p>
+    <div class="folder"><span>Everything, by need</span></div>
+    <div class="folder need"><span>Needs you</span><span class="n">3</span></div>
+    <div class="folder"><span>To review</span><span class="n">2</span></div>
+    <div class="folder"><span>Finds</span><span class="n">2</span></div>
+    <div class="folder on"><span>Updates</span><span class="n">6</span></div>
+  </nav>
+
+  <section class="list" aria-label="Updates">
+    <div class="lhead"><b>Updates</b> · ordered by insight · triage model on</div>
+    <div class="item on">
+      <div class="l1"><span class="sn">pi402 bug fixes</span><span class="tri">1 high</span><span class="cnt">3 insights</span><span class="t">13:58</span></div>
+      <div class="glance">Fixing the rounding in meter/msat.go</div>
+    </div>
+    <div class="item">
+      <div class="l1"><span class="sn">coord/web-inbox</span><span class="cnt">2 insights</span><span class="t">13:32</span></div>
+      <div class="glance">Waiting on sub:mockup-b</div>
+    </div>
+    <div class="item">
+      <div class="l1"><span class="sn">runner/pod-reach</span><span class="cnt">1 insight</span><span class="t">13:15</span></div>
+      <div class="glance">Probing the pod network from the runner</div>
+    </div>
+    <div class="item quiet">
+      <div class="l1"><span class="sn">lnd-sec-intake</span><span class="t">13:41</span></div>
+      <div class="glance">Reading the intake queue</div>
+    </div>
+    <div class="item quiet">
+      <div class="l1"><span class="sn">docs/next-rewrite</span><span class="t">12:50</span></div>
+      <div class="glance">Re-checking claims against main</div>
+    </div>
+    <div class="item quiet">
+      <div class="l1"><span class="sn">storage/branch-index-repair</span><span class="t">12:12</span></div>
+      <div class="glance">Running the storage tests</div>
+    </div>
+  </section>
+
+  <main class="pane" aria-label="pi402 bug fixes">
+    <div class="state"><i></i>Running · session pi402 bug fixes</div>
+    <h1>pi402 bug fixes</h1>
+
+    <h3>Latest message</h3>
+    <div class="msg">I changed the rounding in <code>meter/msat.go</code> to round half up and I am re-running the meter tests before I touch billing.</div>
+
+    <h3>Insights since you looked · 3</h3>
+    <div class="irow">
+      <div class="l1"><span class="kind">Failed step · bash</span><span class="tri">triage · high</span><span class="t">13:58</span></div>
+      <div class="head">bash go test ./meter/... · exit 1 · 3 failing: TestMsatRounding</div>
+      <div class="why"><b>Triage model:</b> the failing test covers the rounding this session just changed.</div>
+    </div>
+    <div class="irow">
+      <div class="l1"><span class="kind">Sub-agent result · review-billing</span><span class="tri">triage · normal</span><span class="t">13:44</span></div>
+      <div class="head">returned · 2 call sites need the new rounding · settled</div>
+      <div class="why"><b>Triage model:</b> the delegate finished; the main strand has not used its result yet.</div>
+    </div>
+    <div class="folded">1 low folded</div>
+    <p class="read">Read through 14:02; 0 of 3 insights had no label. Approvals, asks and stuck strands are not here; they stay in Needs you.</p>
+
+    <h3>Last few steps</h3>
+    <ul>
+      <li><span>13:58</span>bash go test ./meter/... (exit 1)</li>
+      <li><span>13:55</span>fs_edit meter/msat.go</li>
+      <li><span>13:52</span>fs_read meter/msat.go</li>
+    </ul>
+
+    <h3>Delegates</h3>
+    <ul>
+      <li><span>settled</span>review-billing</li>
+      <li><span>running</span>review-ledger</li>
+    </ul>
+
+    <h3>Message this session</h3>
+    <div class="box">
+      <p>Write a message to pi402 bug fixes</p>
+      <div class="btns"><span class="btn">Queue</span><span class="btn">Steer</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
