@@ -53,6 +53,8 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import web_view/block_clip
+import web_view/markdown_view
 import web_view/thread_words.{type Phrase}
 import web_view/view/phrase
 
@@ -533,9 +535,14 @@ pub fn facts(rows: List(#(String, Element(message)))) -> Element(message) {
   ])
 }
 
+/// The most bytes of a quoted message the pane draws. A longer one is cut at a
+/// block boundary and ends in an ellipsis.
+pub const quote_bytes = 1600
+
 /// The tinted box with a hairline border that holds a session's own words.
 /// `source` says whose they are and that they are untrusted, in the page's fixed
-/// words, and `words` is the text, which is a text node.
+/// words, and `words` is the text, drawn as Markdown (`markdown_view.quoted`)
+/// and cut at a block boundary to `quote_bytes` (`block_clip`).
 ///
 /// ## Examples
 ///
@@ -548,7 +555,9 @@ pub fn quote(source: String, words: String) -> Element(message) {
 
 /// The same box with a source that holds nodes, for a source that names a time,
 /// which the browser draws in its own zone. The nodes are the page's fixed words
-/// and its `<loom-time>`; a name a session chose is a text node among them.
+/// and its `<loom-time>`; a name a session chose is a text node among them. The
+/// words are model text drawn as Markdown: every string is a text node, a raw
+/// tag is text, and a link that is not an `http` or `https` address is code.
 ///
 /// ## Examples
 ///
@@ -561,7 +570,10 @@ pub fn quote_nodes(
 ) -> Element(message) {
   html.div([attribute.class("inbox-quote")], [
     html.b([attribute.class("inbox-quote-source")], source),
-    html.span([attribute.class("inbox-quote-words")], [html.text(words)]),
+    html.div(
+      [attribute.class("inbox-quote-words"), attribute.class("markdown")],
+      markdown_view.quoted(block_clip.clip(words, quote_bytes)),
+    ),
   ])
 }
 

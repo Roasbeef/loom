@@ -371,3 +371,59 @@ pub fn only_the_mermaid_language_selects_the_renderer_test() {
     "loom-mermaid",
   )
 }
+
+fn quoted(source: String) -> String {
+  html.div([], markdown_view.quoted(source))
+  |> element.to_string
+  |> unmemoized
+}
+
+pub fn a_quoted_message_draws_bold_and_inline_code_test() {
+  let html = quoted("**Neither is committed.** See `make check`.")
+
+  assert string.contains(html, "<strong>Neither is committed.</strong>")
+  assert string.contains(html, "<code class=\"md-code-span\">make check</code>")
+  assert !string.contains(html, "**")
+}
+
+pub fn quoted_list_items_are_on_their_own_lines_test() {
+  let html = quoted("Open work:\n\n- first thing\n- second thing\n- third")
+
+  assert count(html, "<li class=\"md-item\">") == 3
+  assert string.contains(html, "<ul class=\"md-list\">")
+}
+
+pub fn a_relative_link_is_drawn_as_its_label_in_code_test() {
+  let html =
+    quoted("In [`.worktrees/native-rpc-mtls`](.worktrees/native-rpc-mtls)")
+
+  assert string.contains(
+    html,
+    "<code class=\"md-code-span\">.worktrees/native-rpc-mtls</code>",
+  )
+  assert !string.contains(html, "loom-link")
+  assert !string.contains(html, "href")
+}
+
+pub fn a_script_and_a_javascript_link_are_not_followed_test() {
+  let html = quoted("<script>alert(1)</script> [x](javascript:alert(1))")
+
+  assert !string.contains(html, "<script>")
+  assert string.contains(html, "&lt;script&gt;")
+  assert !string.contains(html, "loom-link")
+}
+
+pub fn an_http_link_is_the_streams_link_element_test() {
+  let html = quoted("See [the docs](https://example.com/a)")
+
+  assert string.contains(html, "<loom-link>")
+  assert string.contains(html, "https://example.com/a")
+  assert !string.contains(html, "href")
+}
+
+pub fn an_image_is_text_and_loads_nothing_test() {
+  let html = quoted("![logo](https://example.com/x.png)")
+
+  assert !string.contains(html, "<img")
+  assert string.contains(html, "[image: logo")
+}
