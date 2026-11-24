@@ -7306,7 +7306,9 @@ strand-state register and the last-result register, so a row costs a fixed numbe
 of store calls: counts and short items for open owner-routed asks, open finds and
 stuck strands (a non-main, non-advisor strand with no current operation whose last
 result is a failed run), shed to 2,300 bytes in the order finds, stuck, asks,
-oldest first, never reducing a count. `peer_mail.AttentionFeed`, `AttentionRead`
+oldest first, never reducing a count. A crowded row takes newest prefixes in
+reverse eviction order, counting exact encoded item sizes and array commas
+against the empty row's remaining budget. `peer_mail.AttentionFeed`, `AttentionRead`
 and `AttentionSettle` are the Agency commands; `AttentionRead` answers the stored
 record with its revision (the cell's seq) and `AttentionSettle` rewrites an open
 record under that revision through `client/attention.settle`, which writes that

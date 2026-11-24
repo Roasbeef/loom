@@ -85,7 +85,7 @@ const strand_bytes = 96
 
 /// The most items a section holds before shedding. A session holds at most 32
 /// asks and 128 finds, and no row has room for that many, so the lists are cut
-/// here first and the shedding loop re-encodes a short list.
+/// here first to bound the work of fitting the row.
 const item_cap = 40
 
 /// The longest path a row carries, in bytes. A longer one is left out with its
@@ -654,44 +654,73 @@ pub fn last_results(
 /// assert attention_feed.shed(row) == row
 /// ```
 pub fn shed(row: Row) -> Row {
-  case string.byte_size(json.to_string(encode(row))) <= row_bytes {
-    True -> row
-    False ->
-      case without_oldest(row) {
-        Ok(smaller) -> shed(smaller)
-        Error(Nil) -> row
+  // A sparse row usually fits after one serialization. Cap this preliminary
+  // work at three items so a crowded row goes straight to prefix sizing.
+  let sparse =
+    list.length(row.asks.items)
+    + list.length(row.stuck.items)
+    + list.length(row.finds.items)
+    <= 3
+  use <- bool.lazy_guard(sparse, fn() {
+    case string.byte_size(json.to_string(encode(row))) <= row_bytes {
+      True -> row
+      False -> fit_row(row)
+    }
+  })
+  fit_row(row)
+}
+
+/// Fits a crowded row using its empty envelope and the retained prefixes.
+fn fit_row(row: Row) -> Row {
+  let empty =
+    Row(
+      ..row,
+      asks: Section(..row.asks, items: []),
+      finds: Section(..row.finds, items: []),
+      stuck: Section(..row.stuck, items: []),
+    )
+  let budget = row_bytes - string.byte_size(json.to_string(encode(empty)))
+
+  // Taking the newest prefix of each section in reverse eviction order
+  // leaves the same row as dropping old finds, then stuck items, then asks.
+  let #(asks, budget) = fit_items(row.asks.items, budget, ask_json)
+  let #(stuck, budget) = fit_items(row.stuck.items, budget, stuck_json)
+  let #(finds, _) = fit_items(row.finds.items, budget, find_json)
+  Row(
+    ..empty,
+    asks: Section(..empty.asks, items: asks),
+    finds: Section(..empty.finds, items: finds),
+    stuck: Section(..empty.stuck, items: stuck),
+  )
+}
+
+/// Fits a section prefix with exact item bytes and inter-item commas.
+/// A negative remainder closes the budget to every lower-priority section.
+fn fit_items(
+  items: List(item),
+  budget: Int,
+  encode_item: fn(item) -> JsonValue,
+) -> #(List(item), Int) {
+  let #(kept, remaining) =
+    list.fold_until(items, #([], budget), fn(acc, item) {
+      let #(kept, remaining) = acc
+      use <- bool.guard(remaining < 0, list.Stop(acc))
+
+      // The empty-row envelope already accounts for both array delimiters.
+      let comma = case kept {
+        [] -> 0
+        [_, ..] -> 1
       }
-  }
-}
 
-/// The row with its next item gone, or nothing when it holds none.
-fn without_oldest(row: Row) -> Result(Row, Nil) {
-  case row.finds.items, row.stuck.items, row.asks.items {
-    [_, ..], _, _ ->
-      Ok(
-        Row(
-          ..row,
-          finds: Section(..row.finds, items: drop_last(row.finds.items)),
-        ),
-      )
-    [], [_, ..], _ ->
-      Ok(
-        Row(
-          ..row,
-          stuck: Section(..row.stuck, items: drop_last(row.stuck.items)),
-        ),
-      )
-    [], [], [_, ..] ->
-      Ok(
-        Row(..row, asks: Section(..row.asks, items: drop_last(row.asks.items))),
-      )
-    [], [], [] -> Error(Nil)
-  }
-}
+      let cost = string.byte_size(json.to_string(encode_item(item))) + comma
 
-/// A list without its last item, which is the oldest in a newest-first list.
-fn drop_last(items: List(item)) -> List(item) {
-  list.take(items, list.length(items) - 1)
+      // A skipped item would leave a hole in the newest prefix.
+      case cost <= remaining {
+        True -> list.Continue(#([item, ..kept], remaining - cost))
+        False -> list.Stop(#(kept, -1))
+      }
+    })
+  #(list.reverse(kept), remaining)
 }
 
 /// The row as the reply carries it, without the session identity the daemon
