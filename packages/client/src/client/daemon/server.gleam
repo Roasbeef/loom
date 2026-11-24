@@ -2508,7 +2508,7 @@ fn home_grant(
   use Nil <- result.try(case grant.scope {
     ui_sessions.Home -> Ok(Nil)
     ui_sessions.Session(_) | ui_sessions.Admin ->
-      Error(refused_home(403, ending.PageEnded))
+      Error(refused_home(403, ending.OtherPage))
   })
 
   use state <- result.try(
@@ -2548,7 +2548,7 @@ fn admin_grant(
   use Nil <- result.try(case grant.scope {
     ui_sessions.Admin -> Ok(Nil)
     ui_sessions.Session(_) | ui_sessions.Home ->
-      Error(refused_admin(403, ending.PageEnded))
+      Error(refused_admin(403, ending.OtherPage))
   })
 
   use state <- result.try(
