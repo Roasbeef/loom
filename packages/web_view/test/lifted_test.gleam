@@ -272,7 +272,13 @@ pub fn heads_and_sources_carry_no_raw_identity_test() {
   let rail = rail_of(operator(lifting()))
   assert !string.contains(rail, "review-1a2b3c")
   assert !string.contains(rail, "lint-census")
-  assert string.contains(rail, "<span class=\"lift-head\">completed</span>")
+
+  // The result row carries the outcome and the first line of the child's
+  // report, and the report is session text, so its markup is drawn escaped.
+  assert string.contains(
+    rail,
+    "<span class=\"lift-head\">completed · looks &lt;fine&gt; &amp; tidy</span>",
+  )
 }
 
 // The rows are plain buttons: only a disclosure would say `aria-expanded`.

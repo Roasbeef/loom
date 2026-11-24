@@ -251,7 +251,7 @@ and settable in `[roles]` and in `[profiles.<name>.roles]`
 **(a) Labels on rows the classifier lifted.** Each label has a row index (the
 row's position in the request, which the harness maps back to the row's `key`), a
 `weight` from `high`, `normal` and `low`, and a `why` of at most 120
-graphemes, the classifier's own `head_limit` (`session_view/attention.gleam:56`).
+graphemes, the classifier's own `head_limit` (`session_view/attention.gleam:71`).
 
 **(b) Finds of its own.** A row the classifier did not lift, with a transcript
 anchor, a kind and a line of text.
@@ -267,7 +267,7 @@ attention counts say what they read, and a restart test stands behind them
 model's opinion would stop being a count. A `low` row sorts last in its group
 and is drawn at the same size as any other. Triage changes order, and never
 which rows exist, how many there are, which group holds them or how long they
-stay (`Hold`, `session_view/attention.gleam:59`).
+stay (`Hold`, `session_view/attention.gleam:74`).
 
 **Finds of its own are deferred** to the second slice. They are the only output
 that adds a row, so they need their own record kind, a distinct place in the
