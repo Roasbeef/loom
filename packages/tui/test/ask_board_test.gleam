@@ -9,6 +9,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import tui/ask_board
 import tui/ask_form
+import tui/job
 
 fn feed_row(
   session: String,
@@ -69,6 +70,11 @@ fn record(
       ],
     ]),
   )
+}
+
+// A read job's slot, as the board holds one while its read runs.
+fn a_read() -> job.Awaiting(job.AsksReply) {
+  job.awaiting(job.first())
 }
 
 fn ask(id: String, at: Int) -> attention.Ask {
@@ -231,7 +237,7 @@ pub fn the_keyboard_goes_only_to_an_ask_the_owner_can_answer_test() {
   let owned = record(ask("ask-0000000002", 20), 7, True)
   let board = ask_board.loaded(ask_board.empty(), 2, [observed, owned], 0)
   let focused = ask_board.focus_card(board)
-  assert focused.focus == ask_board.Card(1)
+  assert focused.focus == ask_board.Card("ask-0000000002")
 
   let only_observed = ask_board.loaded(ask_board.empty(), 1, [observed], 0)
   assert ask_board.focus_card(only_observed).focus == ask_board.Composer
@@ -241,7 +247,7 @@ pub fn the_keyboard_returns_to_the_composer_when_its_ask_goes_test() {
   let owned = record(ask("ask-0000000001", 10), 7, True)
   let board = ask_board.loaded(ask_board.empty(), 1, [owned], 0)
   let focused = ask_board.focus_card(board)
-  assert focused.focus == ask_board.Card(0)
+  assert focused.focus == ask_board.Card("ask-0000000001")
   let gone = ask_board.loaded(focused, 0, [], 9000)
   assert gone.focus == ask_board.Composer
   assert gone.forms == []
@@ -253,10 +259,10 @@ pub fn cycling_moves_between_answerable_asks_test() {
   let board =
     ask_board.loaded(ask_board.empty(), 2, [first, second], 0)
     |> ask_board.focus_card
-  assert ask_board.cycle(board, 1).focus == ask_board.Card(1)
-  assert ask_board.cycle(board, -1).focus == ask_board.Card(0)
+  assert ask_board.cycle(board, 1).focus == ask_board.Card("ask-0000000002")
+  assert ask_board.cycle(board, -1).focus == ask_board.Card("ask-0000000001")
   assert ask_board.cycle(ask_board.cycle(board, 1), 1).focus
-    == ask_board.Card(1)
+    == ask_board.Card("ask-0000000002")
 }
 
 pub fn an_accepted_answer_removes_the_ask_and_asks_for_a_read_test() {
@@ -264,10 +270,9 @@ pub fn an_accepted_answer_removes_the_ask_and_asks_for_a_read_test() {
   let board =
     ask_board.loaded(ask_board.empty(), 1, [owned], 0)
     |> ask_board.focus_card
-  let done = ask_board.answered(board, "ask-0000000001", "Answer sent")
+  let done = ask_board.answered(board, "ask-0000000001")
   assert done.forms == []
   assert done.phase == ask_board.ReadDue
-  assert done.notice == Some("Answer sent")
   assert done.focus == ask_board.Composer
 }
 
@@ -284,7 +289,7 @@ pub fn a_refused_answer_keeps_the_draft_and_shows_words_test() {
 pub fn the_poll_waits_for_its_rest_and_for_the_request_test() {
   let board = ask_board.empty()
   assert ask_board.read_due(board, 0)
-  assert !ask_board.read_due(ask_board.reading(board), 0)
+  assert !ask_board.read_due(ask_board.reading(board, a_read()), 0)
   assert !ask_board.read_due(ask_board.sending(board, "ask-0000000001"), 0)
   let resting = ask_board.read_failed(board, 100)
   assert !ask_board.read_due(resting, 100 + ask_board.failure_rest_ms - 1)
@@ -312,8 +317,36 @@ pub fn a_rest_can_be_cut_short_and_a_request_in_flight_cannot_test() {
 
   // A read already due or in flight is left as it is.
   assert ask_board.due(ask_board.empty()).phase == ask_board.ReadDue
-  let reading = ask_board.reading(resting)
-  assert ask_board.due(reading).phase == ask_board.Reading
+  let reading = ask_board.reading(resting, a_read())
+  assert ask_board.due(reading).phase == reading.phase
   let sending = ask_board.sending(resting, "ask-0000000001")
   assert ask_board.due(sending).phase == ask_board.Sending("ask-0000000001")
+}
+
+// The keyboard follows an ask, not a position: when an earlier ask is answered
+// elsewhere, Ctrl+s must not land on the ask that moved up into its place.
+pub fn the_keyboard_stays_with_its_ask_when_an_earlier_ask_goes_test() {
+  let first = record(ask("ask-0000000001", 10), 7, True)
+  let second = record(ask("ask-0000000002", 20), 7, True)
+  let board =
+    ask_board.loaded(ask_board.empty(), 2, [first, second], 0)
+    |> ask_board.focus_card
+    |> ask_board.cycle(1)
+  assert board.focus == ask_board.Card("ask-0000000002")
+
+  // The first ask vanishes: the second is now at position zero and still has
+  // the keyboard.
+  let after = ask_board.loaded(board, 1, [second], 9000)
+  let assert Some(#(0, form)) = ask_board.focused(after)
+  assert form.ask.header.id == "ask-0000000002"
+
+  // The ask that has the keyboard vanishes: the keyboard goes to the composer,
+  // and not to the ask that remains.
+  let on_first =
+    ask_board.loaded(ask_board.empty(), 2, [first, second], 0)
+    |> ask_board.focus_card
+  assert on_first.focus == ask_board.Card("ask-0000000001")
+  let gone = ask_board.loaded(on_first, 1, [second], 9000)
+  assert gone.focus == ask_board.Composer
+  assert ask_board.focused(gone) == None
 }

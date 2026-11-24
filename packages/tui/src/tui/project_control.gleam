@@ -497,7 +497,6 @@ fn filed(
     | job.AccessListed(..)
     | job.MembershipsListed(..)
     | job.AccessChanged(..)
-    | job.AsksLoaded(..)
     | job.AskAnswered(..) -> state
   }
 }

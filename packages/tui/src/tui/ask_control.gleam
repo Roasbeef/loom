@@ -42,18 +42,18 @@ import session_view/shared_set
 import tui/ask_board.{type Board}
 import tui/ask_form.{type Form}
 import tui/job
-import tui/model.{
-  type Model, AccessManager, AgentInspector, ApprovalInspector, ControlRequest,
-  DaemonSelector, EvolutionReview, GoalInspector, MemoryOverview, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, ProjectScreen, ProposalReview,
-} as tui_model
+import tui/model.{type Model, ControlRequest, Model} as tui_model
 import tui/view_set
+import weft
 
 /// The words the footer shows when a new ask arrives.
 const arrival_notice = "An agent asked you a question · Alt+A answers"
 
-/// Starts the read the board is due for, when nothing else holds the control
-/// request.
+/// Starts the read the board is due for.
+///
+/// The read is a job with a connection of its own (`job.Asks`), so it never
+/// holds the borrowed control request that the picker and the peer, access and
+/// project screens wait on, and it runs whatever overlay is open.
 ///
 /// ## Examples
 ///
@@ -61,43 +61,25 @@ const arrival_notice = "An agent asked you a question · Alt+A answers"
 /// // ask_control.service(model)
 /// ```
 pub fn service(model: Model) -> Model {
-  // A read starts only for an attached session with a daemon connection, a
-  // free control request and no surface that owns the request.
-  case
-    model.view.daemon_host,
-    model.shared.captured,
-    model.view.control_request,
-    idle_overlay(model)
-  {
-    Some(host), Some(_), None, Idle -> poll(model, host)
-    None, _, _, _
-    | Some(_), None, _, _
-    | Some(_), Some(_), Some(_), _
-    | Some(_), Some(_), None, Occupied
-    -> model
+  // The board belongs to the attached session; another session, or none, starts
+  // over, so a saved session never shows the last session's card.
+  let model = reset_for_session(model)
+
+  // A read starts only for an attached session with a daemon connection.
+  case model.view.daemon_host, model.shared.captured {
+    Some(host), Some(_) -> poll(model, host)
+    None, _ | Some(_), None -> model
   }
 }
 
-/// Whether the open overlay leaves the control request alone.
-type Overlay {
-  Idle
-  Occupied
-}
+/// The model with the board of the session it is attached to.
+fn reset_for_session(model: Model) -> Model {
+  let board = ask_board.for_session(model.view.asks, model.shared.session)
 
-/// The overlays that use the control request are the picker, the peer and
-/// access managers and the project screen; the rest leave it free.
-fn idle_overlay(model: Model) -> Overlay {
-  case model.view.overlay {
-    NoOverlay | AgentInspector(_) | ApprovalInspector(_) -> Idle
-    ModelSelector(_)
-    | GoalInspector(_)
-    | DaemonSelector(_)
-    | PeerLinkManager(_)
-    | AccessManager(_)
-    | ProposalReview(_)
-    | EvolutionReview(_)
-    | MemoryOverview(_)
-    | ProjectScreen(_) -> Occupied
+  // A board of the same session is the same board, and nothing is repainted.
+  case board == model.view.asks {
+    True -> model
+    False -> shown(model, board)
   }
 }
 
@@ -133,36 +115,35 @@ pub fn watch(before: Model, after: Model) -> Model {
 /// Starts a read when the board's rest has passed.
 fn poll(model: Model, host: job.Daemon) -> Model {
   let now = model.shared.stamp.now_ms
-  let board = ask_board.for_session(model.view.asks, model.shared.session)
+  let board = model.view.asks
 
-  // A board that thinks a request runs while the control request is empty lost
-  // its reply, so it rests as a failed read would.
-  let board = case ask_board.in_flight(board) {
-    True -> ask_board.read_failed(board, now)
-    False -> board
+  // A board that thinks an answer is on its way while the control request is
+  // empty lost its reply, so it rests as a failed read would.
+  let board = case ask_board.is_sending(board), model.view.control_request {
+    True, None -> ask_board.read_failed(board, now)
+    True, Some(_) | False, _ -> board
   }
 
   // A read starts only when the rest has passed; otherwise the board is kept.
   case ask_board.read_due(board, now) {
-    True ->
-      start(model, host, board, job.ReadAsks(model.shared.session), reading)
+    True -> {
+      let #(started, key) =
+        tui_model.start_job(model, job.Asks(host.control, model.shared.session))
+
+      held(started, ask_board.reading(board, job.awaiting(key)))
+    }
     False -> held(model, board)
   }
 }
 
-/// The board while the request it just started runs.
-fn reading(board: Board) -> Board {
-  ask_board.reading(board)
-}
-
-/// Starts `request` in the control request and stores the board `marked`
-/// returns, so the board knows what the request holds.
-fn start(
+/// Starts the answer in the control request and stores the board with the
+/// send recorded, so the board knows what the request holds.
+fn start_send(
   model: Model,
   host: job.Daemon,
   board: Board,
   request: job.ControlJob,
-  marked: fn(Board) -> Board,
+  ask: String,
 ) -> Model {
   let #(started, key) =
     tui_model.start_job(model, job.Control(host.control, request))
@@ -170,7 +151,7 @@ fn start(
   Model(
     ..started,
     view: started.view
-      |> view_set.asks(marked(board))
+      |> view_set.asks(ask_board.sending(board, ask))
       |> view_set.control_request(Some(ControlRequest(job.awaiting(key), None))),
   )
 }
@@ -187,6 +168,53 @@ fn shown(model: Model, board: Board) -> Model {
 }
 
 // --- outcomes ---------------------------------------------------------------
+
+/// Takes the read job's next reply, if the runtime has admitted one.
+///
+/// A completed read is filed into the board. A failed or lost one rests the
+/// poll and says nothing, and the board keeps what it drew.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ask_control.drain(model)
+/// ```
+pub fn drain(model: Model) -> Model {
+  // Only a board with a read running has a reply to take.
+  case model.view.asks.phase {
+    ask_board.Reading(job: awaiting) ->
+      case job.take(awaiting) {
+        #(_, Error(Nil)) -> model
+        #(awaiting, Ok(reply)) ->
+          applied(
+            held(
+              model,
+              ask_board.Board(
+                ..model.view.asks,
+                phase: ask_board.Reading(awaiting),
+              ),
+            ),
+            reply,
+          )
+      }
+    ask_board.ReadDue | ask_board.Resting(..) | ask_board.Sending(..) -> model
+  }
+}
+
+/// Applies one reply of the read job.
+fn applied(model: Model, reply: job.AsksReply) -> Model {
+  // Only a completed read carries asks; every other end rests the poll.
+  case reply {
+    weft.PulledOutcome(weft.Completed(value:, ..)) ->
+      loaded(model, value.session, value.count, value.records)
+    weft.NotYet -> model
+    weft.PulledOutcome(_) | weft.AllDelivered | weft.RunLost(_) ->
+      held(
+        model,
+        ask_board.read_failed(model.view.asks, model.shared.stamp.now_ms),
+      )
+  }
+}
 
 /// Files a finished read into the board. A read for a session the terminal has
 /// since left changes nothing.
@@ -264,7 +292,7 @@ pub fn answered(
       let words = delivery_words(way)
       shown(
         Model(..model, shared: shared_set.notice(model.shared, words)),
-        ask_board.answered(board, ask, words),
+        ask_board.answered(board, ask),
       )
     }
     True, Error(refusal) ->
@@ -343,8 +371,8 @@ pub fn failed(model: Model, reason: String) -> Model {
   let board = model.view.asks
   let now = model.shared.stamp.now_ms
 
-  // A read that fails is retried after a rest; a send that fails may have
-  // delivered, so the owner is told and the ask is read again.
+  // Only a send fails into the control request. It may have delivered, so the
+  // owner is told and the ask is read again.
   case board.phase {
     ask_board.Sending(ask:) ->
       shown(
@@ -360,7 +388,7 @@ pub fn failed(model: Model, reason: String) -> Model {
             <> ". The answer may have arrived; reading the ask again.",
         ),
       )
-    ask_board.Reading | ask_board.ReadDue | ask_board.Resting(..) ->
+    ask_board.Reading(..) | ask_board.ReadDue | ask_board.Resting(..) ->
       held(model, ask_board.read_failed(board, now))
   }
 }
@@ -374,7 +402,7 @@ pub fn failed(model: Model, reason: String) -> Model {
 /// // ask_control.owns_request(model)
 /// ```
 pub fn owns_request(model: Model) -> Bool {
-  ask_board.in_flight(model.view.asks)
+  ask_board.is_sending(model.view.asks)
 }
 
 // --- keys -------------------------------------------------------------------
@@ -476,10 +504,10 @@ fn send(model: Model, index: Int, form: Form, answer: json.JsonValue) -> Model {
   case
     model.view.daemon_host,
     model.view.control_request,
-    ask_board.in_flight(board)
+    ask_board.is_sending(board)
   {
     Some(host), None, False ->
-      start(
+      start_send(
         model,
         host,
         board,
@@ -489,7 +517,7 @@ fn send(model: Model, index: Int, form: Form, answer: json.JsonValue) -> Model {
           form.revision,
           answer,
         ),
-        fn(marked) { ask_board.sending(marked, form.ask.header.id) },
+        form.ask.header.id,
       )
       |> tui_model.invalidate_frame
     None, _, _ ->

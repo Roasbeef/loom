@@ -189,6 +189,7 @@ pub fn file(
       running,
       job.ActivityArrived(key:, reply:),
     )
+    job.AsksArrived(key:, reply:) -> #(running, job.AsksArrived(key:, reply:))
     job.AttachArrived(key:, reply:) -> #(
       running,
       job.AttachArrived(key:, reply:),
@@ -302,6 +303,17 @@ pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
         with_control(running, control, fn(host) { fn() { activity(host, ids) } }),
         activity_timeout_ms,
         job.ActivityArrived,
+      )
+
+    // A read makes up to three requests in turn, each bounded at five
+    // seconds, on a connection of its own.
+    job.Asks(control:, session:) ->
+      start_task(
+        running,
+        key,
+        with_control(running, control, fn(host) { fn() { asks(host, session) } }),
+        20_000,
+        job.AsksArrived,
       )
 
     job.Attach(route:, within_ms:) ->
@@ -491,6 +503,7 @@ pub fn dropped(arrival: Arrival(daemon_selection.Host)) -> Nil {
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
     | job.ActivityArrived(..)
+    | job.AsksArrived(..)
     | job.ConfigurationArrived(..)
     | job.ImageArrived(..) -> Nil
   }
@@ -701,9 +714,6 @@ fn control_deadline(request: job.ControlJob) -> Int {
     | job.ChangeProject(..)
     | job.ChangeRule(..)
     | job.AnswerAsk(..) -> 12_000
-
-    // A read makes up to three requests in turn, each bounded at five seconds.
-    job.ReadAsks(..) -> 20_000
   }
 }
 
@@ -737,7 +747,6 @@ fn control_work(
         project_jobs.read_labels(host, project, rule)
       job.ChangeProject(change:) -> project_jobs.change(host, change)
       job.ChangeRule(change:) -> project_jobs.change_rule(host, change)
-      job.ReadAsks(session:) -> ask_jobs.read_asks(host, session)
       job.AnswerAsk(session:, ask:, revision:, answer:) ->
         ask_jobs.answer(host, session, ask, revision, answer)
     }
@@ -920,6 +929,19 @@ fn change_access(host, command) {
       Ok(job.AccessChanged(document))
     _ -> Error("access change returned an unexpected reply")
   }
+}
+
+/// Reads a session's open asks on a connection the worker opens and closes, so
+/// the terminal's borrowed control connection is never held by a poll.
+fn asks(
+  host: daemon_selection.Host,
+  session: String,
+) -> Result(job.AsksRead, String) {
+  use owned <- result.try(daemon_selection.reconnect(host, process.self()))
+  let outcome = ask_jobs.read_asks(owned, session)
+  daemon.close(daemon_selection.control(owned))
+
+  outcome
 }
 
 /// Polls daemon activity for session IDs on an independent connection.

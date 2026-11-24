@@ -620,11 +620,11 @@ fn hints(board: Board, extent: Extent, width: Int) -> span.Line {
   let items = case board.phase, ask_board.focused(board) {
     ask_board.Sending(..), _ -> ["Sending your answer…"]
     ask_board.ReadDue, Some(#(_, form))
-    | ask_board.Reading, Some(#(_, form))
+    | ask_board.Reading(..), Some(#(_, form))
     | ask_board.Resting(..), Some(#(_, form))
     -> focused_hints(form)
     ask_board.ReadDue, None
-    | ask_board.Reading, None
+    | ask_board.Reading(..), None
     | ask_board.Resting(..), None
     -> idle_hints(board, extent)
   }
@@ -687,11 +687,10 @@ fn idle_hints(board: Board, extent: Extent) -> List(String) {
     Whole -> []
   }
 
-  // The notice, when there is one, replaces the key hint.
-  let first = case answerable, board.notice {
-    _, Some(notice) -> [notice]
-    True, None -> [focus_key_name <> " answers"]
-    False, None -> ["You can read this ask but not answer it"]
+  // The hint names the key that takes the keyboard, or says why none does.
+  let first = case answerable {
+    True -> [focus_key_name <> " answers"]
+    False -> ["You can read this ask but not answer it"]
   }
 
   list.append(first, read_more)

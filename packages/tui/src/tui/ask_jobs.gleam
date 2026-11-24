@@ -1,8 +1,10 @@
 //// The daemon requests behind the ask card.
 ////
-//// Each function here runs inside a weft control job (`tui/job_runner`), on
-//// the terminal's borrowed control connection, and returns the outcome that
-//// `tui/ask_control` files into the board. They follow `tui/project_jobs`: a
+//// Each function here runs inside a weft job (`tui/job_runner`) and returns
+//// the outcome that `tui/ask_control` files into the board. `answer` runs on
+//// the terminal's borrowed control connection, because the owner starts it.
+//// `read_asks` is a poll, so the runner gives it a connection of its own and
+//// closes it afterwards. These follow `tui/project_jobs`: a
 //// refusal that the card shows in words is an outcome, and only a request that
 //// did not complete is a failure of the job.
 ////
@@ -22,13 +24,15 @@
 ////
 //// ## Why the feed and the reads are one job
 ////
-//// The terminal's control connection has one outstanding request and the
-//// board polls on a tick. One job that makes the three requests in turn holds
-//// the connection for a fraction of a second and then rests, where three jobs
-//// would each wait for a tick.
+//// The board polls on a tick. One job that makes the three requests in turn
+//// finishes in a fraction of a second on its own connection and then rests,
+//// where three jobs would each wait for a tick. The borrowed connection has one
+//// outstanding request, which the picker and the peer and access screens wait
+//// on, so a poll never uses it.
 
 import core/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import tui/ask_board
 import tui/daemon
@@ -39,8 +43,11 @@ import tui/job
 /// Reads a session's open asks: how many the feed counts for the owner, and the
 /// first of them in full.
 ///
-/// An ask that was answered or removed between the feed and its read is left
-/// out, and the count still includes it until the next read.
+/// An ask that was answered or removed between the feed and its read is
+/// refused `not_found` and is left out; the count still includes it until the
+/// next read. Any other failure of a read fails the job, so the board keeps
+/// what it drew, drafts included, and rests, rather than dropping an ask the
+/// daemon still holds.
 ///
 /// ## Examples
 ///
@@ -50,20 +57,35 @@ import tui/job
 pub fn read_asks(
   host: daemon_selection.Host,
   session: String,
-) -> Result(job.ControlOutcome, String) {
+) -> Result(job.AsksRead, String) {
   use document <- result.try(ask(
     host,
     control_protocol.ReadAttentionFeed(session),
   ))
   use feed <- result.try(ask_board.decode_feed(document, session))
-  let records =
+  use read <- result.map(
     feed.ids
     |> list.take(ask_board.drawn_limit)
-    |> list.filter_map(fn(id) {
-      ask(host, control_protocol.ReadAttentionRecord(session, id))
-    })
+    |> list.try_map(fn(id) {
+      read_one(host, control_protocol.ReadAttentionRecord(session, id))
+    }),
+  )
 
-  Ok(job.AsksLoaded(session:, count: feed.count, records:))
+  job.AsksRead(session:, count: feed.count, records: option.values(read))
+}
+
+/// One ask read in full: its document, or nothing when the daemon says the ask
+/// is gone, or the failure in words.
+fn read_one(
+  host: daemon_selection.Host,
+  request: control_protocol.AttentionRequest,
+) -> Result(Option(json.JsonValue), String) {
+  // Only a refusal that names the ask as absent is an omission.
+  case send(host, request) {
+    Ok(document) -> Ok(Some(document))
+    Error(daemon.Refused("not_found", _)) -> Ok(None)
+    Error(other) -> Error(daemon_selection.failure(other))
+  }
 }
 
 /// Sends the owner's answer. The daemon's refusal comes back as the outcome,

@@ -1170,6 +1170,7 @@ pub fn release(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
     | job.ActivityArrived(..)
+    | job.AsksArrived(..)
     | job.ConfigurationArrived(..)
     | job.ImageArrived(..) -> model
   }

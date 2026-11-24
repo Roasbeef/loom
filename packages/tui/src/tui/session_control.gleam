@@ -556,8 +556,6 @@ fn finish_control(model: Model, result) {
     | Some(Ok(job.ProjectChanged(..) as outcome))
     | Some(Ok(job.ProjectRuled(..) as outcome)) ->
       project_control.finish(model, outcome)
-    Some(Ok(job.AsksLoaded(session:, count:, records:))) ->
-      ask_control.loaded(model, session, count, records)
     Some(Ok(job.AskAnswered(session:, ask:, delivery:))) ->
       ask_control.answered(model, session, ask, delivery)
     Some(Ok(SessionDeleted(id))) ->

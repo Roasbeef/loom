@@ -16,6 +16,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/model as session_model
 import session_view/protocol
 import session_view/shared_set
 import tui/ask_board
@@ -116,17 +117,46 @@ fn fail(model: tui_model.Model, reason: String) -> tui_model.Model {
   |> session_control.drain_control
 }
 
-pub fn the_tick_reads_the_attached_sessions_asks_test() {
+// Hands the read job a completed reply and the relay's end, and drains them.
+fn deliver_read(model: tui_model.Model, read: job.AsksRead) -> tui_model.Model {
+  let assert ask_board.Reading(job: awaiting) = model.view.asks.phase
+  let key = job.key(awaiting)
+
+  model
+  |> runtime.hold(job.AsksArrived(
+    key,
+    weft.PulledOutcome(weft.Completed(0, read)),
+  ))
+  |> runtime.hold(job.AsksArrived(key, weft.AllDelivered))
+  |> ask_control.drain
+}
+
+// Hands the read job a failure and the relay's end, and drains them.
+fn fail_read(model: tui_model.Model, reason: String) -> tui_model.Model {
+  let assert ask_board.Reading(job: awaiting) = model.view.asks.phase
+  let key = job.key(awaiting)
+
+  model
+  |> runtime.hold(job.AsksArrived(
+    key,
+    weft.PulledOutcome(weft.Failed(0, reason)),
+  ))
+  |> runtime.hold(job.AsksArrived(key, weft.AllDelivered))
+  |> ask_control.drain
+}
+
+pub fn the_tick_reads_the_attached_sessions_asks_on_a_connection_of_its_own_test() {
   let #(ticked, effects) = stepping.step(backend.Tick, connected())
   assert jobs(effects)
     |> list.any(fn(spec) {
       case spec {
-        job.Control(_, job.ReadAsks(session)) -> session == ask_scene.session
+        job.Asks(_, session) -> session == ask_scene.session
         _ -> False
       }
     })
-  assert ticked.view.asks.phase == ask_board.Reading
-  assert option.is_some(ticked.view.control_request)
+  assert ask_board.in_flight(ticked.view.asks)
+  assert ticked.view.control_request == None
+    as "a poll never holds the borrowed control request"
 
   // Nothing more is asked while the read is running.
   let #(_, again) = stepping.step(backend.Tick, ticked)
@@ -142,7 +172,7 @@ pub fn a_loaded_read_draws_the_ask_and_says_so_without_moving_the_keyboard_test(
   let #(reading, _) = stepping.step(backend.Tick, connected())
   let document = ask_board_document(the_form().ask, 41, True)
   let loaded =
-    deliver(reading, job.AsksLoaded(ask_scene.session, 1, [document]))
+    deliver_read(reading, job.AsksRead(ask_scene.session, 1, [document]))
   assert list.length(loaded.view.asks.forms) == 1
   assert loaded.view.asks.focus == ask_board.Composer
   assert loaded.shared.notice == ask_control.arrival()
@@ -184,7 +214,7 @@ pub fn an_ask_appearing_never_turns_composer_keys_into_answers_test() {
 pub fn alt_a_gives_the_ask_the_keyboard_and_escape_gives_it_back_test() {
   let model = with_form(connected(), the_form())
   let focused = press(model, "alt+a")
-  assert focused.view.asks.focus == ask_board.Card(0)
+  assert focused.view.asks.focus == ask_board.Card("ask-3f9c01a2b4")
 
   // Keys now move the ask's cursor and the composer stays empty.
   let moved = pressing(focused, ["down", "x", "y"])
@@ -243,7 +273,9 @@ pub fn an_incomplete_answer_sends_nothing_and_says_why_test() {
 }
 
 pub fn a_busy_control_request_keeps_the_draft_and_sends_nothing_test() {
-  let #(busy, _) = stepping.step(backend.Tick, connected())
+  // The picker's page read holds the borrowed control request.
+  let #(busy, _) = stepping.step(backend.KeyPress("left"), connected())
+  assert option.is_some(busy.view.control_request)
   let model = with_form(busy, the_form())
   let ready = pressing(model, ["alt+a", " ", "tab", "enter"])
   let #(held, effects) = stepping.step(backend.KeyPress("ctrl+s"), ready)
@@ -292,7 +324,7 @@ pub fn a_refused_answer_keeps_the_card_with_the_daemons_words_test() {
 
 pub fn a_failed_read_rests_quietly_and_a_failed_send_says_so_test() {
   let #(reading, _) = stepping.step(backend.Tick, connected())
-  let failed = fail(reading, "daemon control timed out")
+  let failed = fail_read(reading, "daemon control timed out")
   assert failed.view.asks.phase
     == ask_board.Resting(failed.shared.stamp.now_ms + ask_board.failure_rest_ms)
   assert failed.shared.notice == reading.shared.notice
@@ -340,7 +372,7 @@ pub fn a_read_for_a_session_the_terminal_left_changes_nothing_test() {
       ),
     )
   let #(reading, _) = stepping.step(backend.Tick, due)
-  let loaded = deliver(reading, job.AsksLoaded("another-session", 0, []))
+  let loaded = deliver_read(reading, job.AsksRead("another-session", 0, []))
   assert loaded.view.asks.forms == model.view.asks.forms
   let _ = frame_scene.model
   let _ = shared_set.notice
@@ -371,4 +403,33 @@ pub fn the_last_run_ending_cuts_the_polls_rest_short_test() {
   assert ask_control.watch(idle, idle).view.asks.phase == model.view.asks.phase
   assert ask_control.watch(idle, running).view.asks.phase
     == model.view.asks.phase
+}
+
+// A poll never waits for the borrowed control request, and never holds it, so
+// the picker and the peer and access screens are not refused while it runs.
+pub fn a_read_starts_while_another_control_request_runs_test() {
+  let #(busy, _) = stepping.step(backend.KeyPress("left"), connected())
+  assert option.is_some(busy.view.control_request)
+  let #(ticked, effects) = stepping.step(backend.Tick, busy)
+  assert list.any(jobs(effects), fn(spec) {
+    case spec {
+      job.Asks(..) -> True
+      _ -> False
+    }
+  })
+  assert ticked.view.control_request == busy.view.control_request
+}
+
+// A saved session is not shown the last session's card.
+pub fn a_change_of_session_clears_the_card_before_anything_else_is_asked_test() {
+  let model = with_form(connected(), the_form())
+  assert model.view.asks.forms != []
+  let elsewhere =
+    tui_model.Model(
+      ..model,
+      shared: session_model.Shared(..model.shared, session: "another-session"),
+    )
+  let ticked = ask_control.service(elsewhere)
+  assert ticked.view.asks.forms == []
+  assert ticked.view.asks.session == "another-session"
 }

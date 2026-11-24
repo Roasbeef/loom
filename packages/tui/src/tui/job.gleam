@@ -280,11 +280,6 @@ pub type ControlOutcome {
   /// nothing about it; the screen shows it as sent.
   ProjectRuled(change: RuleChange, reply: Result(json.JsonValue, String))
 
-  /// What the daemon said about a session's open asks: how many it counted for
-  /// the owner, and the first of them read in full, as `attention.read`
-  /// answered them. The documents are unread; `tui/ask_board` decodes them.
-  AsksLoaded(session: String, count: Int, records: List(json.JsonValue))
-
   /// What the daemon said to the owner's answer to an ask: the way the strand
   /// took it (`admitted` or `queued`), or the daemon's refusal. A refusal is an
   /// outcome here and not a failed job, because the card shows it in words and
@@ -294,6 +289,13 @@ pub type ControlOutcome {
     ask: String,
     delivery: Result(String, AskRefusal),
   )
+}
+
+/// What a read of a session's open asks found: how many the feed counted for
+/// the owner, and the first of them read in full, as `attention.read` answered
+/// them. The documents are unread; `tui/ask_board` decodes them.
+pub type AsksRead {
+  AsksRead(session: String, count: Int, records: List(json.JsonValue))
 }
 
 /// Why the daemon refused an answer to an ask: its error code, which is a
@@ -429,10 +431,6 @@ pub type ControlJob {
   /// Sends a person's change on a rule: its mode, or a verdict run.
   ChangeRule(change: RuleChange)
 
-  /// Reads a session's open asks: the attention feed's row and the first asks
-  /// in full.
-  ReadAsks(session: String)
-
   /// Sends the owner's answer to one ask, naming the revision it was read at.
   AnswerAsk(session: String, ask: String, revision: Int, answer: json.JsonValue)
 }
@@ -449,6 +447,12 @@ pub type Spec {
   /// The picker's activity poll for these resident identities, on a
   /// control connection the worker opens and closes itself.
   Activity(control: ControlKey, ids: List(String))
+
+  /// The ask card's poll of one session's open asks, on a control connection
+  /// the worker opens and closes itself, so a slow daemon never holds the
+  /// borrowed connection that the picker and the other control requests wait
+  /// on.
+  Asks(control: ControlKey, session: String)
 
   /// A provisional attachment: resolve the route through daemon control,
   /// connect a conversation socket, publish it as `Prepared`, and wait for
@@ -562,6 +566,10 @@ pub type ReconnectReply(control) =
 pub type ActivityReply =
   weft.Pulled(List(control_protocol.Activity), String)
 
+/// What the ask poll's relay sends.
+pub type AsksReply =
+  weft.Pulled(AsksRead, String)
+
 /// What the configuration job's relay sends: the canonical configuration
 /// path, empty when there is none, or why it could not be resolved.
 pub type ConfigurationReply =
@@ -588,6 +596,9 @@ pub type Arrival(control) {
 
   /// A reply from the activity poll.
   ActivityArrived(key: Key, reply: ActivityReply)
+
+  /// A reply from the ask poll.
+  AsksArrived(key: Key, reply: AsksReply)
 
   /// A message from an attachment job.
   AttachArrived(key: Key, reply: AttachReply)
@@ -625,6 +636,7 @@ pub fn is_last(arrival: Arrival(control)) -> Bool {
     ControlArrived(reply:, ..) -> ends_run(reply)
     ReconnectArrived(reply:, ..) -> ends_run(reply)
     ActivityArrived(reply:, ..) -> ends_run(reply)
+    AsksArrived(reply:, ..) -> ends_run(reply)
     ConfigurationArrived(reply:, ..) -> ends_run(reply)
     ImageArrived(reply:, ..) -> ends_run(reply)
     AttachArrived(reply: Settled(reply:), ..) -> ends_run(reply)

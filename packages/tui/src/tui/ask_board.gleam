@@ -45,6 +45,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import tui/ask_form.{type Form}
+import tui/job
 
 /// How many asks are drawn at once.
 pub const drawn_limit = 2
@@ -60,21 +61,22 @@ pub type Focus {
   /// The composer does, as it did before any ask arrived.
   Composer
 
-  /// The form at this position in `forms` does.
-  Card(index: Int)
+  /// The form of this ask does. The focus names the ask and not its position,
+  /// so when an earlier ask goes away the keyboard does not move to another.
+  Card(ask: String)
 }
 
-/// Where the board's one daemon request stands.
+/// Where the board's daemon request stands.
 pub type Phase {
-  /// A read is wanted at the next tick that finds the control request free.
+  /// A read is wanted at the next tick.
   ReadDue
 
   /// The last request settled; none is asked before this time, on the clock
   /// the step's stamp carries.
   Resting(until_ms: Int)
 
-  /// A read is in the control request.
-  Reading
+  /// A read is running as a job of its own, whose replies this slot collects.
+  Reading(job: job.Awaiting(job.AsksReply))
 
   /// An answer to this ask is in the control request.
   Sending(ask: String)
@@ -93,8 +95,6 @@ pub type Board {
     phase: Phase,
     /// Who has the keyboard.
     focus: Focus,
-    /// What the owner was last told about an answer, or none.
-    notice: Option(String),
   )
 }
 
@@ -122,14 +122,7 @@ pub type Feed {
 /// assert ask_board.empty().forms == []
 /// ```
 pub fn empty() -> Board {
-  Board(
-    session: "",
-    forms: [],
-    open: 0,
-    phase: ReadDue,
-    focus: Composer,
-    notice: None,
-  )
+  Board(session: "", forms: [], open: 0, phase: ReadDue, focus: Composer)
 }
 
 /// The board when a read should not wait out its rest. A rest is cut short and
@@ -148,7 +141,7 @@ pub fn empty() -> Board {
 pub fn due(board: Board) -> Board {
   case board.phase {
     Resting(..) -> Board(..board, phase: ReadDue)
-    ReadDue | Reading | Sending(..) -> board
+    ReadDue | Reading(..) | Sending(..) -> board
   }
 }
 
@@ -201,19 +194,20 @@ pub fn read_due(board: Board, now_ms: Int) -> Bool {
   case board.phase {
     ReadDue -> True
     Resting(until_ms:) -> now_ms >= until_ms
-    Reading | Sending(..) -> False
+    Reading(..) | Sending(..) -> False
   }
 }
 
-/// The board while a read is in the control request.
+/// The board while a read runs as the job `awaiting` collects.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert ask_board.reading(ask_board.empty()).phase == ask_board.Reading
+/// let board = ask_board.reading(ask_board.empty(), job.awaiting(key))
+/// assert ask_board.in_flight(board)
 /// ```
-pub fn reading(board: Board) -> Board {
-  Board(..board, phase: Reading)
+pub fn reading(board: Board, awaiting: job.Awaiting(job.AsksReply)) -> Board {
+  Board(..board, phase: Reading(awaiting))
 }
 
 /// The board while an answer to `ask` is in the control request.
@@ -225,10 +219,10 @@ pub fn reading(board: Board) -> Board {
 ///   == ask_board.Sending("ask-1")
 /// ```
 pub fn sending(board: Board, ask: String) -> Board {
-  Board(..board, phase: Sending(ask), notice: None)
+  Board(..board, phase: Sending(ask))
 }
 
-/// Whether the board's request is in the control request.
+/// Whether a read or a send is running.
 ///
 /// ## Examples
 ///
@@ -237,8 +231,23 @@ pub fn sending(board: Board, ask: String) -> Board {
 /// ```
 pub fn in_flight(board: Board) -> Bool {
   case board.phase {
-    Reading | Sending(..) -> True
+    Reading(..) | Sending(..) -> True
     ReadDue | Resting(..) -> False
+  }
+}
+
+/// Whether an answer is in the control request. A read is not: it has a
+/// connection of its own, so only a send holds the borrowed one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !ask_board.is_sending(ask_board.empty())
+/// ```
+pub fn is_sending(board: Board) -> Bool {
+  case board.phase {
+    Sending(..) -> True
+    ReadDue | Resting(..) | Reading(..) -> False
   }
 }
 
@@ -288,11 +297,11 @@ fn settled(board: Board, until_ms: Int) -> Board {
   // A card that is no longer drawn cannot keep the keyboard.
   let focus = case board.focus {
     Composer -> Composer
-    Card(index:) ->
-      // The card holds the keyboard only while its form is still there.
-      case index < list.length(board.forms) {
-        True -> Card(index)
-        False -> Composer
+    Card(ask:) ->
+      // The card holds the keyboard only while its ask is still there.
+      case held(board.forms, ask) {
+        Some(_) -> Card(ask)
+        None -> Composer
       }
   }
 
@@ -312,20 +321,20 @@ pub fn read_failed(board: Board, now_ms: Int) -> Board {
   settled(board, now_ms + failure_rest_ms)
 }
 
-/// The board after the daemon accepted the answer to `ask`: its form is gone,
-/// the owner is told, and a read is due so the next ask is drawn.
+/// The board after the daemon accepted the answer to `ask`: its form is gone
+/// and a read is due so the next ask is drawn.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let board = ask_board.answered(ask_board.empty(), "ask-1", "Answer sent.")
+/// let board = ask_board.answered(ask_board.empty(), "ask-1")
 /// assert board.phase == ask_board.ReadDue
 /// ```
-pub fn answered(board: Board, ask: String, words: String) -> Board {
+pub fn answered(board: Board, ask: String) -> Board {
   let forms = list.filter(board.forms, fn(form) { form.ask.header.id != ask })
   let board = Board(..board, forms:, open: int.max(0, board.open - 1))
 
-  Board(..settled(board, 0), phase: ReadDue, notice: Some(words))
+  Board(..settled(board, 0), phase: ReadDue)
 }
 
 /// The board after the daemon refused the answer to `ask`: the form keeps its
@@ -380,11 +389,10 @@ pub fn with_form(board: Board, index: Int, form: Form) -> Board {
 pub fn focused(board: Board) -> Option(#(Int, Form)) {
   case board.focus {
     Composer -> None
-    Card(index:) ->
+    Card(ask:) ->
       board.forms
-      |> list.drop(index)
-      |> list.first
-      |> result.map(fn(form) { #(index, form) })
+      |> list.index_map(fn(form, index) { #(index, form) })
+      |> list.find(fn(entry) { { entry.1 }.ask.header.id == ask })
       |> option.from_result
   }
 }
@@ -405,7 +413,7 @@ pub fn focus_card(board: Board) -> Board {
 
   // The keyboard goes to the first ask the owner can answer, or stays put.
   case answerable {
-    Ok(#(index, _)) -> Board(..board, focus: Card(index), notice: None)
+    Ok(#(_, form)) -> Board(..board, focus: Card(form.ask.header.id))
     Error(Nil) -> board
   }
 }
@@ -420,19 +428,19 @@ pub fn focus_card(board: Board) -> Board {
 /// ```
 pub fn cycle(board: Board, by: Int) -> Board {
   // Only a board whose keyboard is on a card has a card to move away from.
-  case board.focus {
-    Composer -> board
-    Card(index:) -> {
+  case focused(board) {
+    None -> board
+    Some(#(index, _)) -> {
       let target = index + by
       let reachable =
         list.drop(board.forms, target)
         |> list.first
-        |> result.map(fn(form) { form.standing == ask_form.MayAnswer })
 
       // The target must exist, not precede the first card, and be answerable.
       case target >= 0, reachable {
-        True, Ok(True) -> Board(..board, focus: Card(target))
-        True, Ok(False) | True, Error(Nil) | False, _ -> board
+        True, Ok(form) if form.standing == ask_form.MayAnswer ->
+          Board(..board, focus: Card(form.ask.header.id))
+        True, Ok(_) | True, Error(Nil) | False, _ -> board
       }
     }
   }

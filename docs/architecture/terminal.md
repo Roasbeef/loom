@@ -935,14 +935,18 @@ key that reaches the composer can become an answer, and the card says which
 key takes it.
 
 The terminal learns of asks by polling. `session_control.service_activity`
-calls `ask_control.service` on the tick when no surface owns the control
-request, and one job (`ask_jobs.read_asks`) reads the session's attention feed
-row and then the first two asks in full, so the card has each question, option
-and the revision an answer must name. A read rests four seconds, a failed one
-ten, and a failed read says nothing, because an older daemon or a saved
-session cannot read asks and the owner cannot act on that. The asks share the
-terminal's one control request with the picker and the project screen, so a
-send that finds it busy keeps the draft and says to try again.
+calls `ask_control.service` on the tick, and one job (`ask_jobs.read_asks`,
+started as `job.Asks`) reads the session's attention feed row and then the first
+two asks in full, so the card has each question, option and the revision an
+answer must name. The job opens a control connection of its own and closes it,
+as the picker's activity poll does, so a slow daemon never holds the borrowed
+connection that `/sessions`, renames and the peer and access screens wait on. A
+read rests four seconds, a failed one ten, and a failed read says nothing,
+because an older daemon or a saved session cannot read asks and the owner cannot
+act on that. A read that fails on any ask fails whole, so the card keeps what it
+drew; only an ask the daemon says is gone is left out. The answer is sent on the
+borrowed connection, since the owner starts it, and a send that finds that
+connection busy keeps the draft and says to try again.
 
 `ask_board` holds what the daemon said (the forms, the feed's count, the phase
 of the one request, who has the keyboard) and decodes the daemon's documents

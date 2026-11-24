@@ -27,6 +27,7 @@ import session_view/session_channel
 import session_view/shared_set
 import session_view/step as session_step
 import session_view/surfaces
+import tui/ask_control
 import tui/attachment
 import tui/buffered
 import tui/effect
@@ -148,6 +149,7 @@ pub fn update_tick(model: Model) -> Model {
   let switched = drain_candidate(session_control.drain_control(animated))
   let switched = session_control.drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
+  let switched = ask_control.drain(switched)
   let switched = session_control.drain_configuration(switched)
   let switched = image_drain.drain(switched)
   let drained = inbound.drain_connection(switched, tui_model.connection_batch)
