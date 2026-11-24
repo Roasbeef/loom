@@ -194,6 +194,7 @@
 import broker/token
 import client/attention as store
 import client/daemon/attention_door
+import client/daemon/folder_listing
 import client/daemon/manager
 import client/daemon/new_folder
 import client/daemon/project_start
@@ -261,6 +262,7 @@ import web_view/component
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
+import web_view/folder_browse
 import web_view/grants
 import web_view/home
 import web_view/invites
@@ -1158,6 +1160,16 @@ pub fn upgrade_home(
               Error(_) -> []
             }
           })
+        },
+        // The folder picker's directory listing (protocol-change/132) is a read
+        // of the filesystem, so it runs in a task of its own like the reads
+        // above and never in the page's runtime.
+        browse: fn(trail, deliver) {
+          browse_within(
+            fn() { browse_for(standing, open, new_folder.home, trail) },
+            browse_ms,
+            deliver,
+          )
         },
       ),
     )
@@ -5464,6 +5476,82 @@ pub fn recent_for(
   case authorized_owner(standing, open) {
     Ok(_) -> listed_recent(standing, home)
     Error(_) -> []
+  }
+}
+
+/// How long one directory listing for the folder picker may take, in
+/// milliseconds. A listing makes up to `folder_browse.inspect_limit` names
+/// canonical, and a stale network mount under the home can stall one, so the
+/// whole read runs under this deadline.
+const browse_ms = 5000
+
+/// Runs a folder listing in a weft run of its own under `within` milliseconds and
+/// delivers its answer, or `Unreadable` if the deadline passed first. The
+/// deadline kills the read, so a listing that stalls on the filesystem cannot
+/// outlive the press that asked for it, and a person who closes and reopens the
+/// picker cannot pile up reads. It returns at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.browse_within(fn() { answer }, 5000, deliver)
+/// ```
+@internal
+pub fn browse_within(
+  attempt: fn() -> folder_browse.Answer,
+  within: Int,
+  deliver: fn(folder_browse.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        let outcomes =
+          weft.new([fn() { Ok(attempt()) }])
+          |> weft.deadline(within)
+          |> weft.start
+
+        // A listing that passed its deadline is answered all the same, so the
+        // picker never waits for one that will not come.
+        case outcomes {
+          [weft.Completed(value: answer, ..)] -> deliver(answer)
+          _ -> deliver(Error(folder_browse.Unreadable))
+        }
+
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// One directory below the owner's home as the composer's folder picker may draw
+/// it (protocol-change/132). The same owner check as a creation runs first
+/// (`authorized_owner`), so a page that may not create is told nothing about the
+/// filesystem and costs none: the home, which is a path resolution, is read only
+/// after the check, through `home`. A page that fails the check and one whose
+/// registry did not answer get the refusal a missing folder gets, so the answer
+/// does not say which it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.browse_for(standing, open, fn() { Ok("/Users/o") }, ["code"])
+/// ```
+@internal
+pub fn browse_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: fn() -> Result(String, creations.Reason),
+  trail: List(String),
+) -> folder_browse.Answer {
+  // This branch resolves authorized_owner standing open before the operation continues.
+  case authorized_owner(standing, open) {
+    Ok(_) ->
+      case home() {
+        Ok(directory) -> folder_listing.list_in(directory, trail)
+        Error(_) -> Error(folder_browse.NoHome)
+      }
+    Error(_) -> Error(folder_browse.NotAFolder)
   }
 }
 

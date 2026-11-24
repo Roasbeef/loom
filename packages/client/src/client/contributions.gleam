@@ -78,6 +78,7 @@
 //// could grow under a live session would move bytes every strand had
 //// already paid for.
 
+import client/catalog
 import client/scheduleseam
 import client/tool_placement
 import gleam/dict.{type Dict}
@@ -96,6 +97,7 @@ import tools/grep
 import tools/history as history_tool
 import tools/job as job_tool
 import tools/lsp as lsp_tool
+import tools/lsp_query
 import tools/propose
 import tools/remember
 import tools/schedule as schedule_tool
@@ -299,7 +301,8 @@ fn lsp_offer_guidance(
 /// `tools/lsp.diagnostics_observer` so a landed write's result gains its
 /// settled diagnostics. Without one they are the plain tools, byte for
 /// byte. Language-server calls are available through code mode rather
-/// than separate top-level tools. `lsp_hints` are the served profiles'
+/// than separate top-level tools, unless the host also applies
+/// `lsp_query_tools` for an operator who opted in. `lsp_hints` are the served profiles'
 /// hints in server-name order; they extend discovery only on offers
 /// admitting and servicing `cap/lsp`.
 ///
@@ -747,6 +750,36 @@ pub fn with_directory(
       tools: directory_tools(contribution.tools, jobs, directory),
     )
   })
+}
+
+/// Appends the opt-in `lsp_*` query tools to a workspace's tools.
+///
+/// The tools are a surface over the session's one language-server door, so
+/// they need both the operator's word (`[tools] lsp_tools = "on"`) and a
+/// door, which exists only when an `[lsp.<name>]` server is configured. With
+/// either missing the list comes back unchanged, byte for byte: the tool
+/// array is the cached prefix of every request, and a host that did not ask
+/// for these pays nothing. `hints` are the served profiles' hints, which
+/// `lsp_definition`'s description carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert contributions.lsp_query_tools([], catalog.LspToolsOff, None, [])
+///   == []
+/// ```
+///
+pub fn lsp_query_tools(
+  tools: List(Tool),
+  offer: catalog.LspTools,
+  door: Option(query.Door),
+  hints: List(#(String, String)),
+) -> List(Tool) {
+  case offer, door {
+    catalog.LspToolsOn, Some(door) ->
+      list.append(tools, lsp_query.tools(door, hints))
+    catalog.LspToolsOn, None | catalog.LspToolsOff, _ -> tools
+  }
 }
 
 /// Gives `bash` the persistent shell directory and registers the

@@ -1612,7 +1612,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   `manager.recent_folders` and `forget_folder` read and edit it. `recent_for` and
   `forget_for` run `authorized_owner` first and list only entries inside home;
   `home_folders_capability` gives `Start.folders` on the creation capability's
-  condition, and `upgrade_home` builds its two functions with `read_task`.
+  condition, and `upgrade_home` builds its three functions (`recent`, `forget`, `browse`) with `read_task`.
+  The folder picker's listing (protocol-change/132): `client/daemon/folder_listing.list_in(home, trail)`
+  resolves a trail of names below the canonical home (`bootstrap.canonical_directory`,
+  then home or `creations.inside`), reads the directory with
+  `bootstrap.list_directory_bounded` at `folder_browse.entry_limit`, leaves out hidden
+  names, keeps only children that are directories inside the home, marks a `.git`,
+  caps at `shown_limit` and stops at `depth_limit`; every refusal is a
+  `folder_browse.Refusal`. `ui_socket.browse_for` runs it after `authorized_owner`
+  and is the `browse` of the `home.Folders` the owner's page is handed.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential
@@ -3466,6 +3474,15 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   holder. `contributions.attention_tools` registers both tools after
   `propose`; `project_jail.worker_tools.refused_names` refuses `ask` to a
   project worker, which keeps `notice`.
+- `client/attention_hold.{open_asks, holds, hooks}` — the daemon's half of an
+  open ask holding its strand (protocol-change/119, the 2026-11-23 addendum).
+  `hooks` wraps the `context` slot so every request of a strand with an open
+  ask routed to the owner ends with `core/attention_hold.reminder`, built from
+  the records at request time and stored nowhere. `holds` is the advisor's
+  question: `wake_primary` does not wake a primary that holds, and the run-end
+  hook places no nudge as a follow-up on the run that made the ask. The job
+  heartbeat (`notice.beat`) skips a strand that holds. Held automatic inputs
+  are the runtime's (`api.Held`); a schedule counts a held tick as fired.
 - `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
   max_listed, Kind, State, Decision, Source, Proposal, Listing, Wiring, Admin,
   seam, admin, channel, submit, listing, decide, rules, read_rules,
@@ -4544,7 +4561,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   last argument is the served profiles' hints as `#(server name, hint)`,
   attached to offers that admit and serve `cap/lsp`. The `code_mode`
   description and `cap://lsp` read carry them with the native API. The default
-  registry does not register top-level `lsp_*` tools. Without a served LSP
+  registry does not register top-level `lsp_*` tools unless `[tools] lsp_tools
+  = "on"` (`catalog.LspTools`) and a door both exist; `contributions.lsp_query_tools`
+  then appends the five `tools/lsp_query` tools and `tool_placement`
+  places them on the workspace. Without a served LSP
   capability it advertises no naming hints.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters

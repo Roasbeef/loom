@@ -79,6 +79,15 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   time and the principal. `decode` is total, and `covers` is the one rule the
   feed applies: the same strand and the same failed operation. A strand that
   failed again has a new operation and is not covered.
+- `core/attention_hold.{holding, unanswered, reminder}` and
+  `core/attention_answer.{answer_lead, is_answer_to}` — what an open ask does
+  to its strand (protocol-change/119, the 2026-11-23 addendum). `holding`
+  keeps the open asks of one strand that are routed to the owner, from the
+  cells under `attention/ask/`; it is the one answer both the runtime's hold
+  and the daemon's reminder read. `reminder` words those asks as the fixed text
+  a request carries, bounded to four asks. `unanswered` drops the asks whose
+  answer text is already in the request, which covers the gap between the
+  daemon delivering an answer and settling the record.
 - `core/glance.Glance` — a strand's operator-facing title and one-line
   activity summary, written by the daemon's glance loop under the reserved
   `client/glance/{strand}` fact and read by the TUI's agent strip from each

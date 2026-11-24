@@ -156,7 +156,7 @@ census the link sets to `Uncompiled`.
 | Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4438` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
 | Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused`; still refused after the tunnel (protocol-change/117, "Hooks stay refused") | a later change, after 117's preconditions |
-| Goal checks | works (`client/serve.gleam:7027` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
+| Goal checks | works (`client/serve.gleam:7036` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
 | Changes tab (worktree diff) | works (`client/serve.gleam:4824` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
 | Session Git baseline | works: probed once at the first open (`client/serve.gleam:4813` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
 | Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | carried by the tunnel (protocol-change/117; refused before it) | nothing |

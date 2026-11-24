@@ -1669,6 +1669,7 @@ fn deliver_cross(
     // The main strand is idle after its ops, so a steer means a
     // racing run this runner did not open; treat like a lost reply.
     control.Answered(Ok(api.Steered(..)))
+    | control.Answered(Ok(api.Held(..)))
     | control.Answered(Error(_))
     | control.Raised
     | control.Expired ->

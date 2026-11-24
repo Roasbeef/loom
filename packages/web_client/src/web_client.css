@@ -2337,6 +2337,27 @@
   .opt[aria-disabled="true"] .opt-text > span,.opt[aria-disabled="true"] svg.i{color:var(--color-fg-quiet);opacity:.7;}
   /* A row that cannot be chosen gives its reason in full, since the reason is what the row is for. */
   .opt[aria-disabled="true"] .opt-text small{overflow:visible;white-space:normal;}
+  /* The folder picker (protocol-change/132), drawn in the Code list's place: a breadcrumb, the
+     child directories as rows, and a bar with the choice. The breadcrumb scrolls sideways rather
+     than wrapping, so a deep path keeps one line at 375px. */
+  .picker{display:flex;flex-direction:column;gap:4px;}
+  .pick-path{display:flex;align-items:center;flex:0 0 auto;gap:0;margin:2px 2px 4px 2px;padding:2px 6px;overflow-x:auto;scrollbar-width:thin;white-space:nowrap;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);font:13px/1.4 var(--font-sans);}
+  .pick-path > span{display:inline-flex;align-items:center;flex:0 0 auto;}
+  .crumb{margin:0;padding:6px 6px;border:0;border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:inherit;}
+  button.crumb{cursor:pointer;}
+  button.crumb:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
+  button.crumb:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .crumb[aria-current="page"]{color:var(--color-fg);font-weight:550;}
+  .crumb-sep{color:var(--color-fg-quiet);}
+  .pick-rows{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;}
+  .pick-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin:4px 2px 0 2px;padding:8px 4px 2px 4px;border-top:1px solid var(--color-divider);}
+  .pick-alts{display:flex;flex-wrap:wrap;gap:4px;}
+  .pick-alt{margin:0;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+  .pick-alt:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
+  .pick-alt:focus-visible,.pick-use:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .pick-use{margin:0;padding:7px 14px;border:1px solid var(--color-primary-button);border-radius:8px;background:var(--color-primary-button);color:var(--color-bg);font:550 13.5px/1.4 var(--font-sans);cursor:pointer;}
+  .pick-use:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  .pick-note{color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   /* The phone's banner: the session that most needs the person. It is drawn on a
      narrow window only, where the sidebar is shut most of the time. */
   .banner{display:none;align-items:center;gap:10px;width:100%;min-height:48px;box-sizing:border-box;margin:0 0 4px 0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-pill-wait-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
@@ -2444,6 +2465,8 @@
     .pop,.pop.wide{position:fixed;z-index:21;top:auto;left:0;right:0;bottom:0;width:auto;min-width:0;max-width:none;max-height:82dvh;padding:12px 12px 20px 12px;border-width:1px 0 0 0;border-radius:18px 18px 0 0;overflow-y:auto;}
     .pop-scrim{z-index:20;background:rgba(0,0,0,.45);}
     .opt{min-height:48px;}
+    .pick-alt{min-height:44px;}
+    .pick-use{min-height:44px;flex:1 1 100%;}
     .fp{height:36px;}
     .session-open,li.session:not(:has(>.session-open)){min-height:48px;}
   }

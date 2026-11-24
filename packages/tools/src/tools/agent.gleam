@@ -562,6 +562,11 @@ pub type Delivery {
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId, deadline_ms: Option(Int))
 
+  /// The target was idle and is waiting for the owner's answer to an ask, so
+  /// the message did not start a run. It is a durable item the target reads at
+  /// the start of its next run (protocol-change/119, the 2026-11-23 addendum).
+  Held(entry: EntryId)
+
   /// The message was recorded and will be delivered when the other
   /// orchestrator can be reached (protocol-change/084). Nothing says yet
   /// whether the target had an open run, and a delivery that finds a parent
@@ -2275,8 +2280,27 @@ fn run_send(
     Steered(entry:) -> steered_outcome(to, entry)
     Started(operation:, deadline_ms:) ->
       started_outcome(to, operation, deadline_ms)
+    Held(entry:) -> held_outcome(to, entry)
     Queued -> queued_outcome(to)
   }
+}
+
+/// Formats the result outcome for a message held until its target's owner
+/// answers an open ask.
+fn held_outcome(to: String, entry: EntryId) -> ToolOutcome {
+  tool.success(
+    "held for `"
+    <> to
+    <> "`. It is waiting for its owner to answer a question, so it was not "
+    <> "woken; the message reaches it with its next run. A `within_ms` you "
+    <> "passed did not apply, because no run was started for it.",
+  )
+  |> tool.with_details(
+    json.Object([
+      #("delivery", json.String("held")),
+      #("entry", json.String(ids.entry_id_to_string(entry))),
+    ]),
+  )
 }
 
 /// Formats the result outcome for queued delivery to a remote orchestrator.

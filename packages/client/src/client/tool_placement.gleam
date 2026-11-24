@@ -38,6 +38,7 @@ import tools/codemode as codemode_tool
 import tools/context as context_tool
 import tools/history as history_tool
 import tools/job as job_tool
+import tools/lsp_query
 import tools/propose
 import tools/remember
 import tools/schedule as schedule_tool
@@ -63,6 +64,28 @@ pub const workspace_names = [
   job_tool.poll_tool_name, job_tool.kill_tool_name, job_tool.send_tool_name,
   "working_directory",
 ]
+
+/// The opt-in `lsp_*` query tools, which run on the workspace side because
+/// the language-server door is the workspace's. They are not in
+/// `workspace_names`: that list names what every host builds, and a host
+/// that never set `[tools] lsp_tools = "on"` builds none of these. They are
+/// placed all the same, so a call to one reaches the workspace's registry
+/// instead of falling to the owner as an unplaced extension tool would.
+pub const opt_in_workspace_names = lsp_query.tool_names
+
+/// Every name a workspace may run: what every host builds, then the opt-in
+/// tools. A remote session's surface forwards exactly these to the executor,
+/// so an executor that opted in and has a language-server door can answer
+/// the `lsp_*` calls.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(tool_placement.runnable_workspace_names(), "lsp_hover")
+/// ```
+pub fn runnable_workspace_names() -> List(String) {
+  list.append(workspace_names, opt_in_workspace_names)
+}
 
 /// The agent family, as the owner registers it.
 const agent_names = agent.tool_names
@@ -94,7 +117,7 @@ pub fn owner_names() -> List(String) {
 ///
 pub fn placement(name: String) -> Result(Placement, Nil) {
   case
-    list.contains(workspace_names, name),
+    list.contains(runnable_workspace_names(), name),
     list.contains(owner_names(), name)
   {
     True, False -> Ok(WorkspaceSide)

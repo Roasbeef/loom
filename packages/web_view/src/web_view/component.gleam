@@ -39,11 +39,16 @@
 ////
 //// There is no periodic tick. After every transition the component asks
 //// the lane when it next has something to do (`session_channel.next_due`:
-//// the in-flight deadline, or the idle refresh) and arms one timer for that
-//// reading, cancelling the one it armed before. When it fires, `Ticked`
-//// runs the same reduction at the reading taken when the timer message was
-//// received. An idle page therefore wakes once per refresh interval, five
-//// seconds once the daemon has pushed, and not four times a second.
+//// the in-flight deadline, or the idle refresh) and arms one timer for the
+//// earliest of that reading and the page's other reasons to wake (`next_wake`),
+//// cancelling the one it armed before. The sidebar is one of those reasons:
+//// its list is due `sessions_refresh_ms` after the last read and its running
+//// rows' activity `activity_refresh_ms` after the last ask, so a page whose
+//// own lane has nothing due still keeps the other rows current. When the timer
+//// fires, `Ticked` runs the same reduction at the reading taken when the timer
+//// message was received. An idle page therefore wakes once per refresh
+//// interval, five seconds once the daemon has pushed, and not four times a
+//// second.
 ////
 //// The transport is supplied by the host that starts the component, because
 //// what a socket is belongs to that host. In the daemon it is a relay into
@@ -8633,14 +8638,7 @@ fn perform(
 /// is not yet due does nothing.
 fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   let _ = option.map(model.view.armed, process.cancel_timer)
-  let due =
-    earliest(
-      option.then(model.shared.channel, session_channel.next_due),
-      earliest(
-        surfaces.context_deferred_until(model.shared),
-        earliest(surfaces.btw_due(model.shared), evolution_wake(model, now)),
-      ),
-    )
+  let due = next_wake(model, now)
 
   // Re-arm timer if interval is due.
   let armed = case model.view.timer, due {
@@ -8650,6 +8648,64 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   }
 
   Model(..model, view: View(..model.view, armed:))
+}
+
+/// The instant the page next needs a `Ticked`, or `None` when nothing is due.
+///
+/// Five reasons to wake share the one timer: the lane's deadline or idle
+/// refresh, the context board's deferred read, the side conversation's due
+/// reading, the Evolution tab, and the sidebar's own reads (`sidebar_wake`).
+/// The sidebar's reads do not depend on the lane. A page whose lane has
+/// closed under a runtime that is still up, as a relayed page does while it
+/// reconnects, has no lane deadline, so without them no `Ticked` reaches
+/// `reobserved` and the other rows keep the word they had when the list was
+/// read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.next_wake(model, 1000)
+/// ```
+pub fn next_wake(model: Model(socket), now: Int) -> Option(Int) {
+  earliest(
+    option.then(model.shared.channel, session_channel.next_due),
+    earliest(
+      surfaces.context_deferred_until(model.shared),
+      earliest(
+        surfaces.btw_due(model.shared),
+        earliest(evolution_wake(model, now), sidebar_wake(model)),
+      ),
+    ),
+  )
+}
+
+/// When the sidebar next needs a read: the list `sessions_refresh_ms` after
+/// the last one, and the activity of its running rows `activity_refresh_ms`
+/// after the last ask. The activity read is due only while the list names a
+/// running session, which is the case `observing` asks for, so a list with
+/// none costs one wake in `sessions_refresh_ms` and not one in five seconds.
+/// A page that has not yet asked has the `Opened` read owed and no instant
+/// of its own.
+fn sidebar_wake(model: Model(socket)) -> Option(Int) {
+  let list_due =
+    option.map(model.view.listed_at, fn(before) { before + sessions_refresh_ms })
+
+  // Name whether the list holds a running session the activity read covers.
+  let running =
+    list.any(model.view.groups, fn(group) {
+      list.any(group.entries, fn(entry) { entry.residency == sessions.Live })
+    })
+
+  // The activity read is due only while a running session is listed.
+  let activity_due = case running {
+    True ->
+      option.map(model.view.activity_asked_at, fn(before) {
+        before + activity_refresh_ms
+      })
+    False -> None
+  }
+
+  earliest(list_due, activity_due)
 }
 
 // When the Evolution tab next needs a tick: the earliest staging poll or

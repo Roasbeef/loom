@@ -18,6 +18,7 @@ import client/peer_mail
 import client/relayed_session
 import client/remote_mail
 import client/remote_top
+import core/attention
 import core/clock
 import core/ids
 import core/json
@@ -152,6 +153,49 @@ pub fn a_message_starts_a_run_and_a_second_steers_it_test() {
   // The strand has a run open, so the next message is a steer onto it.
   let assert Ok(second) = relayed_session.send(runtime, "msg-2", "and test it")
   let assert Ok(remote_mail.Steered(..)) = remote_mail.decode_landing(second)
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+// A person's prompt on the spawner's page is the owner's own input, so an open
+// ask on the strand neither holds it nor keeps it from starting a run
+// (protocol-change/119, the 2026-11-23 addendum).
+pub fn a_relayed_prompt_is_not_held_by_an_open_ask_test() {
+  let #(_root, runtime) = session("ask")
+  let ask =
+    attention.Ask(
+      header: attention.Header(
+        id: "ask-0000000001",
+        created_at: 1,
+        routing: attention.ToOwner,
+        anchor: attention.Anchor(
+          operation: an_op(5),
+          step_id: "turn-1:tools",
+          source_index: 0,
+        ),
+        strand: "main",
+        parents: [],
+      ),
+      why: None,
+      questions: [attention.Question("q1", "Retry?", attention.Confirm, [])],
+      state: attention.AskOpen,
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      attention.ask_key(ask.header.id),
+      attention.encode_ask(ask),
+    )
+    as "the ask record must be written"
+
+  let assert Ok(first) = relayed_session.send(runtime, "msg-1", "continue")
+  let assert Ok(remote_mail.Started(..)) = remote_mail.decode_landing(first)
+    as "the typed prompt starts a run"
+  let found = overview(runtime, None)
+  assert found.doing == peer_mail.Running
+
+  let assert Ok(second) = relayed_session.send(runtime, "msg-2", "and more")
+  let assert Ok(remote_mail.Steered(..)) = remote_mail.decode_landing(second)
+    as "and a second joins it"
   let assert Ok(Nil) = api.close(runtime)
 }
 

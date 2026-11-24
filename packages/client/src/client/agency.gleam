@@ -2062,7 +2062,7 @@ fn accept_async_brief(
   // State what the branch decides before dispatching.
   case delivery {
     api.Started(operation) -> Ok(operation)
-    api.Steered(_) ->
+    api.Steered(_) | api.Held(_) ->
       Error(agent.PlaneFailed(
         "the initial async brief must start an idle child",
       ))
@@ -3007,6 +3007,7 @@ fn send(
       ))
     Error(error) -> Error(agent.PlaneFailed(reason: describe_api(error)))
     Ok(api.Steered(entry:)) -> Ok(agent.Steered(entry:))
+    Ok(api.Held(entry:)) -> Ok(agent.Held(entry:))
     Ok(api.Started(operation:)) -> {
       use deadline_ms <- result.try(run_deadline(
         runtime,
@@ -5771,6 +5772,11 @@ fn delivered(
         )
       {
         Ok(api.Steered(entry:)) -> Ok(remote_mail.Steered(entry:))
+
+        // The child waits on its owner's answer, so the message is admitted
+        // and no run opened. The landing carries no run details, which is
+        // what `Admitted` says.
+        Ok(api.Held(..)) -> Ok(remote_mail.Admitted)
         Ok(api.Started(operation:)) -> {
           // The receipt and message have already committed. A failed metadata
           // read cannot undo admission or establish the run's remaining budget.

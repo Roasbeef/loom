@@ -405,6 +405,16 @@ mark in the acceptance transaction. If a run opens between those two steps,
 the accept is refused with `StrandBusy` and the steer is retried, up to four
 attempts in all.
 
+If the strand has an open ask routed to the owner, `send_to_strand_marking`
+holds the occurrence instead of accepting a run or steering the open one, and
+`steer_marking`, which a steers-only schedule uses, holds it when a run is open: the heartbeat is queued as a
+next-run item and the mark is spent in the same commit, so the occurrence has
+fired and is delivered with the strand's next run, which the owner's message or
+the answer starts. A full held queue refuses the send with `NextRunFull`, which
+the scanner treats like any other refusal and attempts again on a later tick.
+The job heartbeat of `client/notice` carries no mark and is skipped for such a
+strand, and the next beat after the answer says the same thing.
+
 ### Settled targets
 
 Before any timing arithmetic, the scanner checks whether a schedule's target

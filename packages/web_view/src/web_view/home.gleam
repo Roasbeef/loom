@@ -306,6 +306,7 @@ import web_view/composer
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
+import web_view/folder_browse
 import web_view/inbox_rule
 import web_view/item_pane
 import web_view/landing_rule
@@ -758,6 +759,14 @@ pub type Folders {
     /// Forgets the entry with this identity and answers the list that remains.
     /// An identity that is gone changes nothing.
     forget: fn(Int, fn(List(creations.Recent)) -> Nil) -> Nil,
+    /// Starts the read of one directory below the owner's home for the composer's
+    /// folder picker (protocol-change/132). The argument is the page's own trail,
+    /// built from a listing the daemon gave it, and the answer is a bounded
+    /// listing or a refusal in fixed words, dispatched as `FolderBrowsed`. The
+    /// daemon resolves the trail against the home it reads itself, refuses any
+    /// that leaves it, and checks the page and the owner again, whatever this page
+    /// said.
+    browse: fn(List(String), fn(folder_browse.Answer) -> Nil) -> Nil,
   )
 }
 
@@ -1542,6 +1551,12 @@ pub type Msg {
   /// the effect's own message, dispatched from the daemon's task, and no
   /// handler carries it.
   FoldersRead(rows: List(creations.Recent))
+
+  /// A read of one directory for the folder picker arrived, with the trail it
+  /// answers. It is the effect's own message, dispatched from the daemon's task,
+  /// and no handler carries it; the composer applies it only if it is still
+  /// waiting for that trail.
+  FolderBrowsed(trail: List(String), answer: folder_browse.Answer)
 
   /// A read of the other orchestrators' first pages arrived, numbered by the read
   /// it answers. It is the effect's own message, dispatched from the daemon's
@@ -3152,6 +3167,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         None -> #(model, effect.none())
       }
 
+    // A listing for the folder picker. The composer drops an answer that is not
+    // for the trail it waits on, so a slow answer never overwrites a newer press.
+    FolderBrowsed(trail:, answer:) ->
+      case model.start.folders {
+        Some(_) -> #(
+          Model(
+            ..model,
+            compose: composer.browsed(model.compose, trail, answer),
+          ),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
     // The projects' boards. An answer a newer read overtook is dropped, and so is
     // one for a page that lists no projects; a read that could not ask keeps the
     // boards the page has. A board with the revision the page already holds
@@ -4220,6 +4249,7 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
       case intent {
         composer.Stay -> #(model, effect.none())
         composer.ReadPlacements -> reading_cards(model)
+        composer.Browse(trail:) -> browsing(model, trail)
         composer.ReadAgents -> reading_offers(model, names_of(model))
         composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
         composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
@@ -4579,6 +4609,25 @@ fn offered(listed: List(String), chosen: Option(String)) -> Bool {
   case chosen {
     None -> True
     Some(text) -> list.contains(listed, text)
+  }
+}
+
+/// Asks the daemon to list one directory for the folder picker. A page with no
+/// `Folders` capability cannot ask, so the picker closes instead of waiting for an
+/// answer that will not come.
+fn browsing(model: Model, trail: List(String)) -> #(Model, Effect(Msg)) {
+  case model.start.folders {
+    Some(Folders(browse:, ..)) -> #(Model(..model, note: None), {
+      use dispatch <- effect.from
+      browse(trail, fn(answer) { dispatch(FolderBrowsed(trail, answer)) })
+    })
+    None -> #(
+      Model(
+        ..model,
+        compose: composer.State(..model.compose, browser: composer.Closed),
+      ),
+      effect.none(),
+    )
   }
 }
 
@@ -7314,6 +7363,11 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
       model: fn(model) { Composed(composer.ChoseModel(model)) },
       search: fn(text) { Composed(composer.Searched(text)) },
+      browse: Composed(composer.OpenedBrowser),
+      descend: fn(index) { Composed(composer.Descended(index)) },
+      ascend: fn(depth) { Composed(composer.Ascended(depth)) },
+      pick: Composed(composer.ChosePicked),
+      leave_browser: Composed(composer.ClosedBrowser),
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
       toggle_limits: Composed(composer.ToggledLimits),
       start_with_limits: fn(name, typed, limits) {

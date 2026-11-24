@@ -112,7 +112,7 @@ is not in this list is refused.
 | `roles` | table | Which models serve which role. Required, and must route `main`. | [`[roles]`](#roles) |
 | `profiles` | table of `[profiles.<name>]` | Named alternatives to `[roles]`. | [`[profiles.<name>]`](#profilesname) |
 | `mcp` | table of `[mcp.<name>]` | Stdio and streamable-HTTP MCP servers exposed to code mode. | [`[mcp.<name>]`](#mcpname) |
-| `lsp` | table of `[lsp.<name>]` | Language servers behind the `lsp_*` tools. | [`[lsp.<name>]`](#lspname) |
+| `lsp` | table of `[lsp.<name>]` | Language servers behind `cap/lsp` and, when `[tools] lsp_tools = "on"`, the `lsp_*` tools. | [`[lsp.<name>]`](#lspname) |
 | `rule` | array of tables, `[[rule]]` | Triggered project rules. | [`[[rule]]`](#rule) |
 | `schedule` | array of tables, `[[schedule]]` | Operator-written scheduled heartbeats. | [`[[schedule]]`](#schedule) |
 | `schedules` | table | Whether the model may create schedules. | [`[schedules]`](#schedules) |
@@ -287,7 +287,8 @@ since a server in the executor's file can only run on the executor. See
 ## `[lsp.<name>]`
 
 Optional, one table per language server. Language servers are configured, never
-discovered: with no `[lsp]` table there are no `lsp_*` tools and nothing is
+discovered: with no `[lsp]` table there are no `lsp_*` tools, whatever
+`[tools] lsp_tools` says, and nothing is
 spawned. A table is a language profile
 ([ADR-016](adr/016-language-profiles.md)): an installed extension may ship the
 same table, one decoder reads both, and a table in this file with the same name
@@ -309,7 +310,7 @@ beyond the project. See [lsp](architecture/lsp.md).
 | `language_id` | string | the first extension without its dot | `[a-z0-9][a-z0-9+._-]*`, at most 40 characters | The `languageId` documents are opened with. |
 | `qualifier_separators` | array of strings | `["."]` | non-empty strings, never `/` | What a qualified symbol is split on, such as `["::"]` for Rust. The longest listed is tried first. |
 | `module_case` | string | `as-written` | `as-written`, `snake` | How a qualifier is compared with file and directory names. `snake` maps CamelCase segments first. |
-| `hint` | string | none | one line, at most 200 bytes | Appended to the `lsp_definition` tool description, so the model reads it on every request. |
+| `hint` | string | none | one line, at most 200 bytes | Appended to the `lsp_definition` tool description when `[tools] lsp_tools = "on"`, and to the code-mode `cap/lsp` guidance, so the model reads it on every request. |
 | `prepare` | string | none | `gleam-dependencies` | The operator approves networking for one finite dependency-preparation call while the server stays offline. Requires a command of the form `[<gleam>, "lsp"]`, `project = "writable"`, and `cache_env.XDG_CACHE_HOME`. |
 
 ## `[[rule]]`
@@ -417,6 +418,7 @@ fixed key list.
 | `env` | array of strings | none | non-empty variable names, no duplicates | Host variables passed into every jailed tool shell. |
 | `set` | table | none | variable name to string | Literal variables set in every jailed tool shell. |
 | `path` | array of strings | none | absolute directories, no duplicates | Appended to the shell's `PATH` after the server's own entries, which stay in front. |
+| `lsp_tools` | string | `off` | `off`, `on` | `on` registers five top-level language-server tools for a host whose agents call tools directly rather than through code mode: `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols` (a file's outline) and `lsp_diagnostics`. Each takes `symbol`, optionally narrowed by `path` and the 1-based `line` `fs_read` prints, except `lsp_symbols` (`path`) and `lsp_diagnostics` (optional `path`). They ask the session's one language-server door, so they exist only with a configured `[lsp.<name>]` server, and a file no server owns answers "language server unavailable". Their answers are bounded and say when they cut. `off` leaves the tool array unchanged. See [lsp](architecture/lsp.md#the-opt-in-query-tools). |
 
 ## `[secrets]`
 
