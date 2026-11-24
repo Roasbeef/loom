@@ -1061,12 +1061,10 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
     inbox_rule.ApprovalPending, _, _ -> element.none()
     _, Some(read), _ -> brief_quote(read, head)
     _, None, Some(text) ->
-      case string.trim(text) {
-        "" -> element.none()
-
-        // A message the title holds whole is not quoted again.
-        trimmed if trimmed == head -> element.none()
-        _ ->
+      case string.trim(text) == "" || inbox_rule.head_holds(text, head) {
+        // An empty message, or one the title holds whole, is not quoted.
+        True -> element.none()
+        False ->
           html.div([attribute.class("inbox-said")], [
             brief_view.finished(text, thread.report.last_message_at),
           ])
@@ -1077,7 +1075,7 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
 
 /// A brief's latest message, unless the title already holds it whole.
 fn brief_quote(read: Brief, head: String) -> Element(message) {
-  case brief_said(read) == head {
+  case inbox_rule.head_holds(brief_said(read), head) {
     True -> element.none()
     False -> brief_view.latest(read)
   }

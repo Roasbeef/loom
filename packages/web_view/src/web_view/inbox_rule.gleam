@@ -323,9 +323,15 @@ pub fn selection(
 /// assert inbox_rule.head(report) == "Done."
 /// ```
 pub fn head(report: Report) -> String {
-  // The message's words come first, then what a strand says it is doing, and
-  // the kind's own words when neither says anything.
-  let line = case first_line(report) {
+  cut(line_of(first_line(report), report))
+}
+
+/// The line a head is cut from: the message's first line when there is one,
+/// then what a strand says it is doing, and the kind's own words when neither
+/// says anything.
+fn line_of(first: Option(String), report: Report) -> String {
+  // The message's words come first.
+  case first {
     Some(line) -> line
     None ->
       case newest_summary(report) {
@@ -333,8 +339,6 @@ pub fn head(report: Report) -> String {
         None -> words(kind(report))
       }
   }
-
-  cut(line)
 }
 
 /// The name a thread is drawn under: its own, or "Session " and the first eight
@@ -368,12 +372,29 @@ pub fn shown_name(thread: Thread) -> String {
 /// ```
 pub fn thread_head(thread: Thread) -> String {
   let report = thread.report
+  let first = first_line(report)
 
   // The report's own words win; the name stands in only when it has none.
-  case first_line(report), newest_summary(report) {
+  case first, newest_summary(report) {
     None, None -> cut(shown_name(thread))
-    _, _ -> head(report)
+    Some(_), _ | None, Some(_) -> cut(line_of(first, report))
   }
+}
+
+/// Whether a message is a single line whose words are exactly a head, so the
+/// head already says all of it. A message of several lines or blocks is not
+/// held whole by its first line, and a head that was cut is not equal to it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_rule.head_holds("**Done.**\n", "Done.")
+/// assert !inbox_rule.head_holds("Done.\n\nMore.", "Done.")
+/// ```
+pub fn head_holds(text: String, head: String) -> Bool {
+  let trimmed = string.trim(text)
+
+  !string.contains(trimmed, "\n") && plain_words(trimmed) == head
 }
 
 /// The headline over the list: how many sessions need the owner, and what the
@@ -464,6 +485,15 @@ fn plain_words(line: String) -> String {
     }
   })
   |> result.unwrap(line)
+  |> keep_when_empty(line)
+}
+
+/// The words, or the line as written when stripping the markers left nothing.
+fn keep_when_empty(words: String, line: String) -> String {
+  case string.trim(words) {
+    "" -> line
+    _ -> words
+  }
 }
 
 /// The newest glance's summary, when the glances are newest first (as the daemon

@@ -70,6 +70,7 @@ import session/session
 import storage/snapshot
 import storage/storage
 import tools/blob
+import web_view/block_clip
 
 /// Waking an idle recipient is an independent operator permission.
 pub type Wake {
@@ -1804,9 +1805,10 @@ fn final_message(
     Some(operation.RunLastResult(final_assistant: Some(id), ..)) -> {
       let #(text, at) = assistant_text(runtime, id)
 
-      // Clipping collapses whitespace first, so a message of only
-      // whitespace is null here rather than an empty string.
-      case glance.clip(text, overview_message_bytes) {
+      // The cut keeps the message's newlines and ends between blocks, so a
+      // page can take the first line as a title and draw the rest as Markdown.
+      // A message of only whitespace is null here rather than an empty string.
+      case block_clip.clip(text, overview_message_bytes) {
         "" -> #(json.Null, json.Null)
         text -> #(json.String(text), json.Int(at))
       }
@@ -1837,7 +1839,7 @@ fn assistant_text(runtime: api.Runtime, id: EntryId) -> #(String, Int) {
                 _ -> Error(Nil)
               }
             })
-            |> string.join(" "),
+            |> string.join("\n\n"),
           ts,
         )
         _ -> #("", 0)
