@@ -289,7 +289,7 @@ fn prompted(state: State, value: Entry, sent: message.AgentMessage) -> State {
 /// Whether the harness wrote a user message: an advisor frame, the strand's notes
 /// at the start of a run, or the memory context it attaches to a prompt. None of
 /// them is something a person asked, so none starts a turn.
-fn harness_written(sent: message.AgentMessage) -> Bool {
+pub fn harness_written(sent: message.AgentMessage) -> Bool {
   // The three frames the transcript itself draws as nothing a person said.
   transcript_lines.advisor_payload(sent) != None
   || transcript_lines.agent_notes_payload(sent) != None
