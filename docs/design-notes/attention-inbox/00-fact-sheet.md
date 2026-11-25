@@ -221,8 +221,8 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
   a question is allowed only beside `waiting`, `max_note_chars = 500`, lines 61-62, 841-845).
 - Web: home Projects section, "what is waiting on me in my projects?" Stage groups, most urgent first, then a
   ticket page with the worker's question and an answer box, Close, link to the worker session
-  (`web_view/view/projects.gleam:1-30`; `web_view/home.gleam:723-745` `Projects(boards, ticket, answer, close)`; mounted, when this
-  was written, at `projects_path = "0\t2\t0"`; the section now heads the inbox's Projects folder). Board polled every 5 s (`project_board.refresh_ms`).
+  (`web_view/view/projects.gleam:1-30`; `web_view/home.gleam:723-745` `Projects(boards, ticket, answer, close)`; mounted at
+  `projects_path = "0\t2\t0"`, `home.gleam:384`). Board polled every 5 s (`project_board.refresh_ms`).
 - Per ticket: `id, title, stage, session, mandate(strength, via, source, actor, policy_version), opened_ms,
   question{seq,text,options}, pull_request, failure, actions[CanAnswer|CanClose|CanRetry|CanPublish|CanStop]`
   (`session_view/project_board.gleam:107-189`). Board also carries `would` (what `observe` rules would have done), `rules`
@@ -427,7 +427,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
 | Observer can see counts but not decide | Any inbox surface drawing decide buttons must gate them like approval cards (owner/operator only, 600 ms arming, never auto-focus) | `approvals.md:261-299` |
 | No naked `Bool`, literate comments, lint R0-R22 | Module `////` prose, `///` on every public item, blank line above comments, bodies of at most about eight statements, `make check` is the gate (verify by its own exit code) | `CLAUDE.md` |
 | Pure-state-machine pattern for UI state | State machines as functions; process machinery via weft; no hand-rolled timers/pollers | `CLAUDE.md` ("Process machinery goes through weft"); `docs/weft.md` |
-| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1183` |
+| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1175` |
 
 ---
 

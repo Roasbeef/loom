@@ -279,7 +279,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:9046`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:8944`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1421,11 +1421,9 @@ name field once it holds a name.
 
 #### Projects and a ticket's page
 
-A daemon with project mode adds a Projects section (protocol-change/106, the addendum on
-the web view). It is the head of the inbox list while the rail's "Projects" folder is
-chosen, which an owner's operating page always lists; it was the first 211 px of every
-page's first screen until the fidelity pass of 2026-11-24 took it out of the flow. It
-answers one question, what is waiting on the owner, and a project with
+A daemon with project mode adds a Projects section at the top of the owner's home
+(protocol-change/106, the addendum on the web view), above the composer or the session
+list. It answers one question, what is waiting on the owner, and a project with
 nothing waiting is one line. A project with tickets that need a person lists them
 under the daemon's stage word (delivery, answer, review, blocked, failed, then a
 stage this client does not know but the daemon spelled `person/...`), most urgent

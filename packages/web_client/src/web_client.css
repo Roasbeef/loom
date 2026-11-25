@@ -2760,3 +2760,44 @@ loom-mermaid { display: block; min-width: 0; margin: 12px 0; }
 .mermaid-details summary { cursor: pointer; color: var(--color-fg-quiet); font-size: 12px; }
 .mermaid-error { margin: 0; padding: 8px 12px; border-top: 1px solid var(--color-divider); color: var(--color-fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font: 12px/1.6 var(--font-mono); }
 .mermaid-source { overflow-x: auto; white-space: pre; font: 12px/1.6 var(--font-mono); margin: 8px 0 0; }
+
+  /* The session page, wide (980px and up), as the final design draws the live
+     mode's right column: the "Lifted from this session" rail first, then the
+     tab bar, then the chosen pane. The tab bar is the shell's and the rail is
+     the Strands pane's first child, in separate elements, so the boxes
+     that sit between them (the panel body, the aside and the Strands pane; the
+     aside and what is inside it are the page's light tree, the rest the shell's)
+     take no box of their own and their children become the column's items,
+     ordered here. The document order, and so every path the socket admits, is
+     unchanged. The rail shows on every tab, since it is what the page is for;
+     the column scrolls as one and the tab bar sticks under the rail. The
+     narrow frames below 980px keep their own rules above. */
+  @media (min-width:980px){
+    .region-panel{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+    .region-panel .panel-body,.region-panel ::slotted(aside.panel){display:contents;}
+    aside.panel,aside.panel .pane-strands{display:contents;}
+    loom-shell:not(:state(tab-strands)) section.pane.pane-strands{display:contents;}
+    loom-shell:not(:state(tab-strands)) aside.panel .pane-strands > :not(section.lifted){display:none;}
+    aside.panel .pane-strands > section.lifted{order:-2;flex:0 0 auto;margin:0;padding:12px 12px 4px 12px;}
+    .region-panel .panel-tabs{order:-1;position:sticky;top:0;z-index:2;background:var(--color-bg-sunk);}
+    aside.panel > :not(.pane-strands),aside.panel .pane-strands > :not(section.lifted){margin-left:12px;margin-right:12px;}
+    aside.panel > :last-child{margin-bottom:20px;}
+    aside.panel .pane-strands > :first-child:not(section.lifted){margin-top:12px;}
+    aside.panel > .pane:not(.pane-strands){margin-top:12px;}
+    /* A strand is one row: its name, then its status, with no avatar and no
+       model line. */
+    .chip-hit{grid-template-columns:minmax(0,1fr);padding:6px 12px;}
+    .chip-hit .ring,.chip-hit .avatar,.chip-hit .chip-model{display:none;}
+    .chip-text{grid-template-columns:minmax(0,max-content) minmax(0,1fr);column-gap:10px;align-items:baseline;}
+    .chip-text .chip-status{justify-self:end;}
+    /* The head is one line, the dot and the name, the place, the state and the
+       goal; the figures and the placement chips follow on a quiet line of their
+       own. */
+    main.centre > .stream-head::after{content:"";order:1;flex:0 0 100%;height:0;}
+    main.centre > .stream-head .figures,main.centre > .stream-head > :last-child{order:2;}
+  }
+
+  /* An insight is one sentence in the final design's rail. A failed call's head
+     carries the call and what its result said, which can run to several lines,
+     so an insight's head stops at two; the stream row holds the whole text. */
+  li.lift:not(.lift-pinned) .lift-head{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;}

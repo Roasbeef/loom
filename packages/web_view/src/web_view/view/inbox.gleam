@@ -115,10 +115,6 @@ pub type Offer(message) {
     back: message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
-    /// The Projects section (`web_view/view/projects`), drawn at the head of the
-    /// list while the "Projects" folder is the one chosen, and nowhere else. A
-    /// page that holds no projects capability passes none.
-    projects: Option(Element(message)),
     /// What "New session" sends, on a page that may create one, and nothing on
     /// a page that may not. It is drawn only when no thread is left.
     new_session: Option(message),
@@ -366,18 +362,11 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   }
 
   html.div([attribute.class("inbox-list")], [
-    // In the Projects folder the section is the head of the list: it lists each
-    // project and the tickets that wait in it, so the tickets are not drawn a
-    // second time as a band, and the empty sentence is its own.
-    case offer.folder, offer.projects {
-      inbox_rule.Projecting, Some(section) -> section
-      _, _ -> nothing_waits(offer)
-    },
-    case offer.folder, offer.projects {
-      inbox_rule.Projecting, Some(_) -> element.none()
-      inbox_rule.Projecting, None ->
+    nothing_waits(offer),
+    case offer.folder {
+      inbox_rule.Projecting ->
         projects_group(list.append(attention.tickets, attention.reviews))
-      _, _ ->
+      _ ->
         draw(
           NeedsPart,
           inbox_rule.NeedsYou,
