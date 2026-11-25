@@ -614,7 +614,7 @@ pub fn parse_with_document(
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
       "profiles", "peers", "retry", "distribution", "executors", "pools",
-      "workspaces", "orchestrators", "directory", "spawners", "project",
+      "workspaces", "orchestrators", "directory", "spawners", "project", "jev",
       "executor_link", "executor_listener",
     ],
     "the top level",

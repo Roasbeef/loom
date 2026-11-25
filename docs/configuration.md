@@ -125,7 +125,8 @@ is not in this list is refused.
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
 | `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
-| `project` | table with arrays of `[[project.source]]` and `[[project.rule]]` | Worker limits, finished-work policy and event sources of a project (from protocol-change 106). | [`[project]`](#project) |
+| `project` | table with arrays of `[[project.source]]`, `[[project.rule]]` and `[[project.agent]]` | Worker limits, finished-work policy, event sources and who routes a project (from protocol-change 106). | [`[project]`](#project) |
+| `jev` | table | How the daemon reaches the Jev service that can route project messages first (from protocol-change 106). | [`[jev]`](#jev) |
 | `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
 | `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
 | `executor_link` | table | This orchestrator's certificate for the link to untrusted executors (from protocol-change 109). | [`[executor_link]`](#executor_link) |
@@ -586,6 +587,9 @@ created, and opens a pull request through `gh api`. It never merges. A checkout 
 | `attention_limit` | integer | `5` | 0 to 1000 | A source stops inferring new work while more than this many of its open tickets wait on a person. |
 | `source` | array of tables | none | at most one, `kind = "github"` | An event source besides the composer. See [`[[project.source]]`](#projectsource). |
 | `rule` | array of tables | none | at most 32 | What an inferred trigger may become. See [`[[project.rule]]`](#projectrule). |
+| `router` | string | `model` | `model`, `jev` | Who decides where an incoming message goes first. `model` is the router session alone, as before. `jev` asks the Jev service first and leaves what it cannot place to the router session. It is the daemon's, not a project's, and it sends the message text to a third party, so it is the owner's act and off by default. See [`[jev]`](#jev). |
+| `jev_min_probability` | integer | `80` | 51 to 100 | With `router = "jev"`, how sure Jev must be, as a percent, to attach a message to an existing ticket. The other bars are fixed in code. |
+| `agent` | array of tables | none | at most 16 | The agents Jev may choose among for new work. See [`[[project.agent]]`](#projectagent). |
 
 ### Per-project settings
 
@@ -692,6 +696,38 @@ further. The owner's composer needs no rule and works in every mode.
 | `mode` | string | `observe` | `off`, `observe`, `auto` | The rule's first mode. `off` ignores its inferred work. `observe` offers it to the router and records what the router would have done, without doing it; the board lists those under "would have done". `auto` is refused until the rule has a current passing verdict (see `projects.verdict`), so a rule written with it starts in `observe` unless one already exists. A change to the policy version, the router prompt or the router model makes the verdict stale and returns the rule to `observe`. A person changes the mode with `projects.set_mode`, and the change survives a restart. |
 | `match` | array of strings | required | 1 to 16 non-empty strings of at most 200 bytes | Literal strings, compared without case. There are no patterns. |
 | `approvals` | boolean | `false` | `true`, `false` | Whether work admitted by the rule may route approvals to a person. |
+
+## `[[project.agent]]`
+
+(From protocol-change 106.) An entry of the catalogue that Jev chooses among when a message
+opens a new ticket under `router = "jev"`. The ticket's worker then starts with the entry's
+profile or model in place of the `[roles]` chain. Choosing an agent changes which models a
+worker uses and nothing about its jail, tools, approvals or network, which the ticket's
+mandate decides. With no entry, new work uses the `[roles]` chain. With one entry, that entry
+is used for all new work and Jev is not asked. With two or more, Jev is asked, and below a
+fixed confidence the `[roles]` chain is used.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | required | 1 to 40 characters, unique | The entry's name, as the ledger records the choice. |
+| `use_for` | string | required | 1 to 200 characters | What the agent suits, in the owner's words. Jev reads it, so it leaves the machine with the message. |
+| `profile` | string | none | a `[profiles.<name>]` of the file | The profile the worker's session starts with. |
+| `model` | string | none | a `[models.<name>]` of the file | The model the worker's `main` role is pinned to. An entry names a `profile`, a `model` or both. |
+
+## `[jev]`
+
+(From protocol-change 106.) Optional, read once when the daemon starts. It says how the
+daemon reaches the Jev service, which `[project] router = "jev"` asks first about each
+message. The service's address is fixed in code and is not a key, so a file cannot point the
+key at another host. The key is read once from the environment variable named below and is
+sent only as a bearer header. A daemon with `router = "jev"` and no key logs one warning and
+sends every message to the router session, which is today's behaviour.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `api_key_env` | string | `JEV_API_KEY` | an environment variable name of at most 64 letters, digits and `_`, not starting with a digit | The variable the key is read from. A rotated key needs a daemon restart. |
+| `model` | string | `jev-latest` | at most 64 characters of letters, digits, `.`, `_` and `-` | The model or alias each request names. Jev moves `jev-latest` to each new release, which changes the model a verdict was measured under; a version id such as `jev-1.14.0` keeps it stable. |
+| `timeout_ms` | integer | `3000` | 500 to 30000 | The bound on one request. A whole pass over a batch is bounded to 45 seconds, and the first request that fails to answer ends it. |
 
 ## `[distribution]`
 
