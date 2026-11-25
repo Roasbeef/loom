@@ -495,6 +495,28 @@ pub fn set_agent(state: State, id: TriggerId, agent: String) -> State {
   }
 }
 
+/// Forget the agent chosen for a stored trigger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the same state with the trigger's agent set to None
+/// ```
+pub fn clear_agent(state: State, id: TriggerId) -> State {
+  case dict.get(state.triggers, id) {
+    Ok(found) ->
+      State(
+        ..state,
+        triggers: dict.insert(
+          state.triggers,
+          id,
+          TriggerRecord(..found, agent: None),
+        ),
+      )
+    Error(Nil) -> state
+  }
+}
+
 /// The agent a ticket's worker is to use: the one chosen for the trigger that
 /// opened it, or `None` for the `[roles]` default.
 ///

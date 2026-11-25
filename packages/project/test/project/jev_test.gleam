@@ -1018,6 +1018,37 @@ pub fn a_judgement_with_a_probability_out_of_range_does_not_decode_test() {
   Nil
 }
 
+pub fn a_judgement_naming_an_unsafe_model_does_not_decode_test() {
+  let line = codec.encode(event.RoutedIgnore(TriggerId("c1"), Some(kept())))
+  let forged = string.replace(line, "jev-1.14.0", "jev 1.14")
+  assert forged != line
+  let assert Error(_) = codec.decode(forged)
+  Nil
+}
+
+pub fn a_model_router_settlement_drops_an_agent_a_jev_pass_chose_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let settled =
+    run(offered, [
+      event.AgentChosen(TriggerId("c1"), "small fixes"),
+      accept("c1"),
+    ])
+  let assert Ok(record) = state.record(settled, TriggerId("c1"))
+  assert record.agent == None
+  assert state.agent_of(settled, world.ticket(settled, ticket_of("c1"))) == None
+}
+
+pub fn an_ignore_by_the_model_router_drops_the_chosen_agent_too_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let settled =
+    run(offered, [
+      event.AgentChosen(TriggerId("c1"), "small fixes"),
+      event.RoutedIgnore(TriggerId("c1"), None),
+    ])
+  let assert Ok(record) = state.record(settled, TriggerId("c1"))
+  assert record.agent == None
+}
+
 pub fn an_agent_chosen_event_is_a_new_tag_an_older_reader_would_refuse_test() {
   let line = codec.encode(event.AgentChosen(TriggerId("c1"), "small fixes"))
   assert string.contains(line, "\"t\":\"agent_chosen\"")

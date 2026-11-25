@@ -45,27 +45,6 @@ pub type ReplayFailure {
   )
 }
 
-/// Keep what Jev answered with the trigger it settled. Only a trigger that was
-/// offered before the event takes it, so a repeated routing, which the engine
-/// accepts as a no-op, does not overwrite the first judgement.
-fn keep_judgement(
-  step: Step,
-  before: State,
-  trigger: TriggerId,
-  judgement: option.Option(model.Judgement),
-) -> Step {
-  use #(settled, effects) <- result.map(step)
-
-  // Only a trigger that was offered before the event takes the judgement.
-  case state.record(before, trigger) {
-    Ok(state.TriggerRecord(fate: state.Offered, ..)) -> #(
-      state.set_judgement(settled, trigger, judgement),
-      effects,
-    )
-    _ -> #(settled, effects)
-  }
-}
-
 /// Apply one event. On `Ok` the caller persists the event and performs the
 /// effects; on `Error` it persists nothing and the state is as it was.
 ///
@@ -130,6 +109,40 @@ pub fn apply(current: State, incoming: Event) -> Step {
     event.PullRequestOpened(ticket, pull_request) ->
       work.pull_request_opened(current, ticket, pull_request)
     event.Concluded(ticket, outcome) -> work.concluded(current, ticket, outcome)
+  }
+}
+
+/// Keep what Jev answered with the trigger it settled. Only a trigger that was
+/// offered before the event takes it, so a repeated routing, which the engine
+/// accepts as a no-op, does not overwrite the first judgement.
+///
+/// A settlement with no judgement is the model router's. It also drops any
+/// agent an earlier Jev pass chose for the trigger: that choice was committed
+/// before a routing which was then refused, or never arrived, and the model
+/// router must not inherit it.
+fn keep_judgement(
+  step: Step,
+  before: State,
+  trigger: TriggerId,
+  judgement: option.Option(model.Judgement),
+) -> Step {
+  use #(settled, effects) <- result.map(step)
+
+  // Only a trigger that was offered before the event takes the judgement.
+  case state.record(before, trigger) {
+    Ok(state.TriggerRecord(fate: state.Offered, ..)) -> {
+      let judged = state.set_judgement(settled, trigger, judgement)
+
+      // No judgement means the model router decided, so no Jev choice stays.
+      case judgement {
+        option.Some(_) -> #(judged, effects)
+        option.None -> #(state.clear_agent(judged, trigger), effects)
+      }
+    }
+
+    Ok(state.TriggerRecord(fate: state.Awaiting, ..))
+    | Ok(state.TriggerRecord(fate: state.Decided(_), ..))
+    | Error(_) -> #(settled, effects)
   }
 }
 

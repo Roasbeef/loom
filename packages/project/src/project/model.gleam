@@ -824,7 +824,9 @@ pub type Routing {
 
 /// One probability, in basis points (0 to 10000), against the label it was
 /// given for. A label is a ticket id, a decline word or an agent label of the
-/// request, so a record reads without the list the request was built from.
+/// request, so a record reads without the list the request was built from. An
+/// agent label `agent_N` is the agent's position in the catalogue the request
+/// listed, not its name: the name is on `AgentChosen`.
 pub type Share {
   Share(
     /// What the probability is of.
@@ -855,7 +857,8 @@ pub type Judgement {
     /// The decline-reason Choice's probabilities.
     decline: List(Share),
     /// The largest probabilities of the agent Choice, up to three, labelled
-    /// `agent_N` as the request numbered them.
+    /// `agent_N`, where N is the agent's position in the catalogue as the
+    /// request listed it.
     agent: List(Share),
     /// The tickets the request offered, in the order it listed them.
     offered: List(TicketId),

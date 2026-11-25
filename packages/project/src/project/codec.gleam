@@ -28,12 +28,14 @@
 //// 3. `report_json`, `reason_json` and `routing_json`, with their decoders, are
 ////    the pieces the snapshot reuses.
 
+import gleam/bool
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import project/event.{type CheckResult, type Event}
 import project/host
+import project/jev
 import project/model.{
   type ActorId, type ApprovalGrant, type Head, type Inputs, type Question,
   type Report, type RouteKind, type Routing, type RuleMatch, type Trigger,
@@ -598,6 +600,12 @@ fn share_json(share: model.Share) -> Json {
 @internal
 pub fn judgement_decoder() -> Decoder(model.Judgement) {
   use model_name <- decode.field("model", decode.string)
+
+  // A ledger line is read back into a page, so it is held to the rule a live
+  // response is: a model name that `jev.accept` would refuse is not a value.
+  use <- bool.lazy_guard(!jev.valid_model(model_name), fn() {
+    decode.failure(empty_judgement(), "a valid model name")
+  })
   use shape_version <- decode.field("shape", decode.int)
   use asks_for_work <- decode.field("asks", decode.optional(points()))
   use clear_alone <- decode.field("clear", points())
@@ -623,6 +631,24 @@ pub fn judgement_decoder() -> Decoder(model.Judgement) {
     input_tokens:,
     output_tokens:,
   ))
+}
+
+/// The value a failed judgement decode names while it reports the failure.
+fn empty_judgement() -> model.Judgement {
+  model.Judgement(
+    model: "",
+    shape_version: 0,
+    asks_for_work: None,
+    clear_alone: 0,
+    continues: None,
+    which: [],
+    decline: [],
+    agent: [],
+    offered: [],
+    attach_bar: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+  )
 }
 
 fn share_decoder() -> Decoder(model.Share) {
