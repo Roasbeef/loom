@@ -44,6 +44,8 @@ pub type Offer(message) {
     /// The message the project step's button sends, or none on a page that may
     /// not make a project.
     new_project: Option(message),
+    /// The message a step's "Skip" sends, given the step.
+    skip: fn(get_started.Key) -> message,
     /// The message that closes the page.
     back: message,
   )
@@ -85,14 +87,18 @@ pub fn view(offer: Offer(message)) -> Element(message) {
         html.p([attribute.class("setup-title")], [html.text(offer.heading)]),
         html.p([], [html.text(offer.status)]),
       ]),
-      ..list.map(offer.steps, step_row(_, offer.new_project))
+      ..list.map(offer.steps, step_row(_, offer.new_project, offer.skip))
     ],
   )
 }
 
 /// One step: its name and state word, its sentence, and the project step's
 /// button while the step is open.
-fn step_row(step: Step, new_project: Option(message)) -> Element(message) {
+fn step_row(
+  step: Step,
+  new_project: Option(message),
+  skip: fn(get_started.Key) -> message,
+) -> Element(message) {
   html.div([attribute.class("home-project")], [
     html.div([attribute.class("home-group-head")], [
       html.span([attribute.class("home-folder-name")], [html.text(step.title)]),
@@ -103,17 +109,31 @@ fn step_row(step: Step, new_project: Option(message)) -> Element(message) {
     html.p([attribute.class("home-empty")], [html.text(step.detail)]),
     case step.key, step.state, new_project {
       get_started.FirstProject, get_started.Open, Some(press) ->
-        html.button(
-          [
-            attribute.type_("button"),
-            attribute.class("home-new"),
-            event.on_click(press),
-          ],
-          [html.text("New project")],
-        )
-      _, _, _ -> element.none()
+        button("home-new", press, "New project")
+      get_started.Folder, _, _
+      | get_started.Worktree, _, _
+      | get_started.FirstProject, _, _
+      | get_started.Publish, _, _
+      | get_started.Extras, _, _
+      -> element.none()
+    },
+    case get_started.skippable(step) {
+      True -> button("link-button", skip(step.key), "Skip")
+      False -> element.none()
     },
   ])
+}
+
+/// A button with a fixed class and words.
+fn button(class: String, press: message, words: String) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class(class),
+      event.on_click(press),
+    ],
+    [html.text(words)],
+  )
 }
 
 /// The state word beside a step's name.
@@ -123,6 +143,7 @@ fn state_words(state: get_started.State) -> String {
     get_started.Open -> "not done"
     get_started.NotHere -> "not on this page"
     get_started.Unread -> "not read here yet"
+    get_started.Skipped -> "skipped"
   }
 }
 

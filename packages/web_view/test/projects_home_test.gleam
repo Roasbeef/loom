@@ -20,6 +20,8 @@ import lustre/effect
 import lustre/element.{type Element}
 import session_view/project_board as board
 import web_view/creations
+import web_view/ending
+import web_view/get_started
 import web_view/home
 import web_view/inbox_rule
 import web_view/projects as feed
@@ -890,16 +892,84 @@ pub fn back_returns_to_the_composer_or_the_list_test() {
 
 // --- the checklist -----------------------------------------------------------
 
-pub fn the_rail_hides_get_started_once_the_readable_steps_are_done_test() {
-  // The fixture lists a session in a folder and a project, so the folder step
-  // and the project step are both done and the entry is not drawn.
-  let model = opened(serving(mixed()).0)
-
-  assert !string.contains(drawn(model), "Get started")
+// The owner's page: the fixture's start with the composer's capability, which is
+// what lets the page offer the checklist at all.
+fn creating(projects: option.Option(home.Projects)) -> home.Start {
+  home.Start(
+    ..start_with(projects),
+    create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
+  )
 }
 
-pub fn the_checklist_page_reads_what_the_page_holds_and_has_no_other_control_test() {
-  let model = run(opened(serving(mixed()).0), home.GettingStartedOpened)
+// An owner's page with no session and no project, once both reads have
+// answered.
+fn fresh_owner() -> home.Model {
+  let asked = process.new_subject()
+  let projects =
+    projects_with(
+      asked,
+      fn() { feed.Heard([]) },
+      fn(_, _) { feed.TicketHeard(detail(9)) },
+      fn(_, _, _, _) { feed.Recorded },
+    )
+
+  opened(
+    home.Start(..creating(Some(projects)), sessions: fn(deliver) {
+      deliver(home.Listed([]))
+    }),
+  )
+}
+
+// An owner's page that lists a session and no project.
+fn owner_after_a_session() -> home.Model {
+  let asked = process.new_subject()
+  let projects =
+    projects_with(
+      asked,
+      fn() { feed.Heard([]) },
+      fn(_, _) { feed.TicketHeard(detail(9)) },
+      fn(_, _, _, _) { feed.Recorded },
+    )
+
+  opened(creating(Some(projects)))
+}
+
+const hint_words = "also route a repository"
+
+pub fn the_rail_offers_get_started_on_a_fresh_owner_page_test() {
+  assert string.contains(drawn(fresh_owner()), "Get started")
+}
+
+pub fn the_rail_offers_nothing_on_a_page_that_may_not_create_test() {
+  let model = opened(start_with(None))
+
+  assert !string.contains(drawn(model), "Get started")
+  assert run(model, home.GettingStartedOpened) == model
+}
+
+pub fn skipping_the_unread_steps_lets_the_rail_hide_the_entry_test() {
+  // The fixture lists a session in a folder and a project, so only the three
+  // steps the page cannot read hold the entry.
+  let model =
+    opened(
+      home.Start(
+        ..serving(mixed()).0,
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+  let skipped =
+    list.fold(
+      [get_started.Worktree, get_started.Publish, get_started.Extras],
+      model,
+      fn(model, key) { run(model, home.StepSkipped(key)) },
+    )
+
+  assert string.contains(drawn(model), "Get started")
+  assert !string.contains(drawn(skipped), "Get started")
+}
+
+pub fn the_checklist_page_reads_what_the_page_holds_and_offers_skip_test() {
+  let model = run(fresh_owner(), home.GettingStartedOpened)
   let html = drawn(model)
 
   assert string.contains(html, "Daemon ready")
@@ -907,14 +977,79 @@ pub fn the_checklist_page_reads_what_the_page_holds_and_has_no_other_control_tes
   assert string.contains(html, "First project")
   assert string.contains(html, "GitHub publish")
   assert string.contains(html, "not read here yet")
+  assert string.contains(html, "Skip")
   assert string.contains(html, "Nothing is written from this page.")
+
+  let skipped = run(model, home.StepSkipped(get_started.Publish))
+
+  assert string.contains(drawn(skipped), "skipped")
+}
+
+pub fn the_heading_says_when_the_daemon_is_not_reachable_test() {
+  let connecting = run(home.new(creating(None)), home.GettingStartedOpened)
+  let ended =
+    run(
+      fresh_owner(),
+      home.Answered(
+        home.reads(fresh_owner()),
+        home.Closed(ending.AccessRevoked),
+      ),
+    )
+
+  assert string.contains(drawn(connecting), "Daemon not reachable right now")
+  assert string.contains(
+    drawn(run(ended, home.GettingStartedOpened)),
+    "Daemon not reachable right now",
+  )
+  assert string.contains(
+    drawn(run(fresh_owner(), home.GettingStartedOpened)),
+    "Daemon ready",
+  )
 }
 
 pub fn done_returns_to_where_the_page_rests_test() {
-  let model = run(opened(serving(mixed()).0), home.GettingStartedOpened)
+  let model = run(fresh_owner(), home.GettingStartedOpened)
   let back = run(model, home.GettingStartedClosed)
 
   assert !string.contains(drawn(back), "Nothing is written from this page.")
+}
+
+pub fn the_hint_is_drawn_after_a_session_with_no_project_on_the_inbox_only_test() {
+  let model = owner_after_a_session()
+
+  assert string.contains(drawn(run(model, home.ShowingInbox)), hint_words)
+  assert !string.contains(drawn(model), hint_words)
+}
+
+pub fn the_hint_waits_for_both_reads_and_goes_after_not_now_test() {
+  let model = run(owner_after_a_session(), home.ShowingInbox)
+  let declined = run(model, home.SuggestionDeclined)
+
+  assert !string.contains(drawn(declined), hint_words)
+  assert !string.contains(
+    drawn(run(home.new(creating(None)), home.ShowingInbox)),
+    hint_words,
+  )
+}
+
+pub fn every_handler_with_the_hint_drawn_is_beneath_an_admitted_region_test() {
+  let model = run(owner_after_a_session(), home.ShowingInbox)
+  let keys = handlers(home.view(model))
+  let admitted = fn(key) {
+    string.starts_with(key, home.table_path <> "\t")
+    || string.starts_with(key, home.sidebar_path <> "\t")
+    || string.starts_with(key, home.signins_path <> "\t")
+  }
+
+  assert string.contains(drawn(model), hint_words)
+  assert list.all(keys, admitted)
+}
+
+pub fn the_projects_empty_line_says_what_to_do_test() {
+  assert string.contains(
+    shown(fresh_owner()),
+    "Choose a folder and Loom proposes how to check its work.",
+  )
 }
 
 // --- the answer to a ticket that has gone ------------------------------------

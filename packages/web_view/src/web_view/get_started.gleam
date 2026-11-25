@@ -9,11 +9,16 @@
 //// the model keys the configuration lists), so a person who set things up by
 //// hand sees those steps done.
 ////
-//// A step the page cannot read yet is drawn as `Unread` with the way to do it
-//// from a terminal, and never as done or as missing, because saying either would
-//// be a guess. The entry in the rail hides once every step the page can read is
-//// done (`finished`), and the first-session hint (`hint`) is the same derivation
-//// narrowed to the one step that is the person's next move.
+//// A step the page cannot read is drawn as `Unread` with the way to do it from
+//// a terminal, and never as done or as missing, because saying either would be
+//// a guess. That includes a step whose read has not answered yet: the page
+//// carries whether each read has been heard (`Heard`), and an unheard read is
+//// `Unread`, not "not done". A person may skip a step that is not done for as
+//// long as the page lives (`Skipped`). The rail's entry stays until every step
+//// is done, skipped or not this page's to do (`finished`), so an unread step
+//// never takes the way back to the checklist with it. The first-session hint
+//// (`hint`) is the same derivation narrowed to the one step that is the
+//// person's next move.
 ////
 //// This module is pure. The view draws it (`view/get_started`) and the home
 //// holds the facts.
@@ -41,11 +46,32 @@ pub type Making {
   MayNot
 }
 
+/// Whether a read has answered at least once on this page.
+pub type Heard {
+  /// The read has answered, so what the page holds is what the daemon said.
+  Heard
+
+  /// The read has not answered yet, so an empty list says nothing.
+  Unheard
+}
+
+/// Whether the page lists any session. Only the question matters, so it is
+/// asked of the list's emptiness and not of its length.
+pub type Presence {
+  /// At least one session is listed.
+  Present
+
+  /// No session is listed.
+  Absent
+}
+
 /// What the page holds that bears on setup.
 pub type Facts {
   Facts(
-    /// How many sessions the page lists, whatever their state.
-    sessions: Int,
+    /// Whether the page lists a session, whatever its state.
+    sessions: Presence,
+    /// Whether the session list has been read.
+    listing: Heard,
     /// The folder the person used most recently, as the composer offers it.
     folder: Option(String),
     /// The keys of the `[models.<name>]` tables the configuration lists. Empty
@@ -53,8 +79,12 @@ pub type Facts {
     models: List(String),
     /// How many projects the page lists.
     projects: Int,
+    /// Whether the projects' boards have been read.
+    boards: Heard,
     /// Whether the page may make one.
     making: Making,
+    /// The steps the person skipped on this page.
+    skipped: List(Key),
   )
 }
 
@@ -87,8 +117,11 @@ pub type State {
   /// The step is not done and is not this page's to do.
   NotHere
 
-  /// The page cannot read this step yet.
+  /// The page cannot read this step, or has not heard its read yet.
   Unread
+
+  /// The person skipped the step.
+  Skipped
 }
 
 /// One row of the checklist.
@@ -111,7 +144,7 @@ pub type Step {
 /// ## Examples
 ///
 /// ```gleam
-/// let none = get_started.Facts(0, None, [], 0, get_started.MayMake)
+/// let none = get_started.Facts(get_started.Absent, get_started.Heard, None, [], 0, get_started.Heard, get_started.MayMake, [])
 /// assert list.length(get_started.checklist(none)) == 5
 /// ```
 pub fn checklist(facts: Facts) -> List(Step) {
@@ -121,65 +154,108 @@ pub fn checklist(facts: Facts) -> List(Step) {
       key: Worktree,
       title: "Worktree default",
       state: Unread,
-      detail: "Chosen for each session with the Worktree box in the composer. A worktree keeps one session's changes out of the folder.",
+      detail: "Chosen for each session with the Worktree toggle in the composer. A worktree keeps one session's changes out of the folder.",
     ),
     project_step(facts),
     Step(
       key: Publish,
       title: "GitHub publish",
       state: Unread,
-      detail: "Needs gh logged in on the daemon's machine. To turn it on, run: loom project set publish pull_request --publish-to <url>",
+      detail: "Needs gh logged in on the daemon's machine. In the project's folder, run `loom project set publish pull_request`; it prints the URL and the exact command to confirm.",
     ),
     Step(
       key: Extras,
       title: "Extras",
       state: Unread,
-      detail: "A cheaper model for summaries is the summarize role in loom.toml. docs/configuration.md lists both.",
+      detail: "A cheaper model for summaries is the `summarize` role in loom.toml; docs/configuration.md describes it.",
     ),
   ]
+  |> list.map(skipping(_, facts.skipped))
 }
 
-/// The folder step: done when the person has used a folder.
+/// A step the person skipped reads as skipped, unless it is done or not this
+/// page's: those say more than a skip does.
+fn skipping(step: Step, skipped: List(Key)) -> Step {
+  case step.state, list.contains(skipped, step.key) {
+    Open, True | Unread, True -> Step(..step, state: Skipped)
+    _, _ -> step
+  }
+}
+
+/// Whether a step offers "Skip": any step that is not done, except the folder,
+/// which is not optional and completes by itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !get_started.skippable(get_started.Step(get_started.Folder, "Default folder", get_started.Open, ""))
+/// ```
+pub fn skippable(step: Step) -> Bool {
+  case step.key, step.state {
+    Folder, _ -> False
+    _, Open | _, Unread -> True
+    _, Done | _, NotHere | _, Skipped -> False
+  }
+}
+
+/// The folder step: done when the person has used a folder, and unread until
+/// the session list has answered.
 fn folder_step(facts: Facts) -> Step {
-  case facts.folder {
-    Some(path) ->
+  let title = "Default folder"
+
+  case facts.listing, facts.folder {
+    Unheard, _ ->
       Step(
         key: Folder,
-        title: "Default folder",
-        state: Done,
-        detail: "Last used: " <> path,
+        title:,
+        state: Unread,
+        detail: "Reading this daemon's sessions.",
       )
-    None ->
+    Heard, Some(path) ->
+      Step(key: Folder, title:, state: Done, detail: "Last used: " <> path)
+    Heard, None ->
       Step(
         key: Folder,
-        title: "Default folder",
+        title:,
         state: Open,
         detail: "No folder yet. Choose one when you start a session.",
       )
   }
 }
 
-/// The project step: done when a project exists, open for the page that may make
-/// one, and not this page's otherwise.
+/// The project step: done when a project exists, unread until the boards have
+/// answered, open for the page that may make one, and not this page's
+/// otherwise.
 fn project_step(facts: Facts) -> Step {
   let title = "First project"
 
-  case facts.projects, facts.making {
-    0, MayMake ->
+  case facts.projects, facts.making, facts.boards {
+    0, MayMake, Unheard ->
+      Step(
+        key: FirstProject,
+        title:,
+        state: Unread,
+        detail: "Reading this daemon's projects.",
+      )
+    0, MayMake, Heard ->
       Step(
         key: FirstProject,
         title:,
         state: Open,
         detail: "A project is one router for one repository. Choose a folder and Loom proposes how to check its work.",
       )
-    0, MayNot ->
+    0, MayNot, Heard | 0, MayNot, Unheard ->
       Step(
         key: FirstProject,
         title:,
         state: NotHere,
         detail: "Only the owner's page makes a project.",
       )
-    count, MayMake | count, MayNot ->
+    count, MayMake, Heard
+    | count, MayMake, Unheard
+    | count, MayNot, Heard
+    | count, MayNot, Unheard
+    ->
       Step(
         key: FirstProject,
         title:,
@@ -189,39 +265,40 @@ fn project_step(facts: Facts) -> Step {
   }
 }
 
-/// Whether every step the page can read is done, which lets the rail's entry
-/// hide. A step that is `Unread` or `NotHere` does not hold it open, because the
-/// page cannot do or read it.
+/// Whether every step is done, skipped or not this page's, which lets the
+/// rail's entry hide. A step that is still `Unread` or `Open` keeps it, so the
+/// way back to the checklist outlives the steps this page cannot read.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let done = get_started.Facts(1, Some("/w"), [], 1, get_started.MayMake)
-/// assert get_started.finished(done)
+/// // get_started.finished(facts)
 /// ```
 pub fn finished(facts: Facts) -> Bool {
   list.all(checklist(facts), fn(step) {
     case step.state {
-      Done | NotHere | Unread -> True
-      Open -> False
+      Done | NotHere | Skipped -> True
+      Open | Unread -> False
     }
   })
 }
 
-/// Whether to suggest a project: the person has a session, has no project, and
-/// the page may make one.
+/// Whether to suggest a project: both reads have answered, the person has a
+/// session, has no project, has not skipped the step, and the page may make one.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let facts = get_started.Facts(1, None, [], 0, get_started.MayMake)
-/// assert get_started.hint(facts)
+/// // get_started.hint(facts)
 /// ```
 pub fn hint(facts: Facts) -> Bool {
-  case facts.sessions, facts.projects, facts.making {
-    0, _, _ | _, _, MayNot -> False
-    _, 0, MayMake -> True
-    _, _, MayMake -> False
+  case facts.listing, facts.boards, facts.making {
+    Heard, Heard, MayMake ->
+      case facts.sessions, facts.projects {
+        Present, 0 -> !list.contains(facts.skipped, FirstProject)
+        Present, _ | Absent, _ -> False
+      }
+    Unheard, _, _ | _, Unheard, _ | _, _, MayNot -> False
   }
 }
 

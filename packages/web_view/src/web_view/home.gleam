@@ -1121,6 +1121,14 @@ pub opaque type Model {
     note: Option(Note),
     /// Whether the first-session hint may still be drawn.
     suggestion: Suggestion,
+    /// Whether the session list has answered at least once, which the Get
+    /// started checklist needs to tell an empty list from an unread one.
+    listing_known: get_started.Heard,
+    /// Whether the projects' boards have answered at least once, for the same
+    /// reason.
+    boards_known: get_started.Heard,
+    /// The Get started steps the person skipped, for the page's life.
+    skipped: List(get_started.Key),
     /// The running session whose open is out, if one is. It is set when a press
     /// asks the daemon, so its row can say `Opening…`, and a second press while
     /// it is set asks nothing. A ticket leaves it set, since the page is about
@@ -1655,6 +1663,10 @@ pub type Msg {
   /// checklist.
   GettingStartedOpened
 
+  /// A step's "Skip" was pressed. The page forgets nothing else: the step reads
+  /// as skipped until the page is loaded again.
+  StepSkipped(key: get_started.Key)
+
   /// The checklist's "Done" was pressed: return to where the page rests.
   GettingStartedClosed
 
@@ -2029,6 +2041,9 @@ pub fn new(start: Start) -> Model {
     departure: None,
     note: None,
     suggestion: Suggesting,
+    listing_known: get_started.Unheard,
+    boards_known: get_started.Unheard,
+    skipped: [],
     opening: None,
     resuming: None,
     creating: create.Idle,
@@ -3367,7 +3382,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     BoardsRead(serial:, read:) ->
       case serial == model.board_reads, model.start.projects, read {
         True, Some(_), feed.Heard(projects: listed) ->
-          boards_heard(model, feed.decode(listed))
+          boards_heard(
+            Model(..model, boards_known: get_started.Heard),
+            feed.decode(listed),
+          )
 
         // A read that told nothing, or that a newer one overtook, still ends the
         // wait for the first board, so the round is not held open for ever.
@@ -3590,10 +3608,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The checklist opens for any page that lists projects or sessions, because
     // it only reads what the page holds. Its one button, New project, still goes
     // through `ProjectCreationOpened` and its capability check.
-    GettingStartedOpened -> #(
-      Model(..model, pane: GettingStarted, note: None),
-      effect.none(),
-    )
+    GettingStartedOpened ->
+      case model.start.create {
+        Some(_) -> #(
+          Model(..model, pane: GettingStarted, note: None),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    StepSkipped(key:) ->
+      case list.contains(model.skipped, key) {
+        True -> #(model, effect.none())
+        False -> #(
+          Model(..model, skipped: [key, ..model.skipped]),
+          effect.none(),
+        )
+      }
 
     GettingStartedClosed -> #(
       Model(..model, pane: resting_pane(model)),
@@ -5908,6 +5939,7 @@ fn answered(model: Model, listing: Listing) -> Model {
         Model(
           ..model,
           groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
+          listing_known: get_started.Heard,
           now: model.start.now(),
           status: Connected,
         )
@@ -6126,31 +6158,34 @@ pub fn view(model: Model) -> Element(Msg) {
 /// daemon lists a peer orchestrator, on the list alone, and nothing otherwise.
 /// The Projects section is not here: it was 211 px of every page's first screen,
 /// and it now lives where projects do, in the inbox's "Projects" folder
-/// (`view/inbox`), so the inbox list starts at the top of the page.
+/// (`view/inbox`), so the inbox list starts at the top of the page. Nothing drawn
+/// here may carry a handler: the socket admits a press only beneath `table_path`,
+/// the sidebar and the sign-ins, and this child is none of them, which is why the
+/// first-session hint is the inbox's and not this head's.
 fn centre_head(model: Model) -> Element(Msg) {
   // The peer strip belongs to the list alone, as it did before the section.
   case model.pane {
-    Relayed(_) | Ticketed(_) | ProjectCreating(_) | GettingStarted ->
-      element.none()
-    NewSession -> first_session_hint(model)
-    SessionList ->
-      element.fragment([
-        first_session_hint(model),
-        elsewhere_view.strip(elsewhere_offer(model)),
-      ])
+    NewSession
+    | Relayed(_)
+    | Ticketed(_)
+    | ProjectCreating(_)
+    | GettingStarted -> element.none()
+    SessionList -> elsewhere_view.strip(elsewhere_offer(model))
   }
 }
 
-/// The one line that suggests a project after a first session. It is drawn above
-/// the inbox only, only while the facts say a project is the person's next
-/// move, and not after "Not now".
+/// The one line that suggests a project after a first session, for the inbox's
+/// list, which is where the socket admits its buttons: the head sits outside the
+/// admitted regions (`ui_socket.home_event`). It is drawn only while the facts
+/// say a project is the person's next move, on a page that may make one, and not
+/// after "Not now".
 fn first_session_hint(model: Model) -> Element(Msg) {
   case
     model.suggestion,
-    get_started.hint(setup_facts(model)),
-    landed_inbox(model)
+    model.start.create,
+    get_started.hint(setup_facts(model))
   {
-    Suggesting, True, True ->
+    Suggesting, Some(_), True ->
       get_started_view.hint(GettingStartedOpened, SuggestionDeclined)
     Suggesting, _, _ | Declined, _, _ -> element.none()
   }
@@ -7324,6 +7359,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
           ))
         None -> None
       },
+      hint: first_session_hint(model),
       projects: case projects_offer(model) {
         projects_view.Hidden -> None
         shown -> Some(projects_view.section(shown))
@@ -7994,19 +8030,24 @@ fn running_sessions(model: Model) -> Int {
 /// What the page holds that bears on setup, which the checklist, the rail's
 /// entry and the hint are all derived from.
 fn setup_facts(model: Model) -> get_started.Facts {
+  let entries = listing.entries(model.groups)
+
   get_started.Facts(
-    sessions: list.length(listing.entries(model.groups)),
-    folder: list.first(composer.folders_offered(
-      listing.entries(model.groups),
-      model.recent,
-    ))
+    sessions: case entries {
+      [] -> get_started.Absent
+      [_, ..] -> get_started.Present
+    },
+    listing: model.listing_known,
+    folder: list.first(composer.folders_offered(entries, model.recent))
       |> option.from_result,
     models: model.start.models,
     projects: list.length(model.boards),
+    boards: model.boards_known,
     making: case model.start.projects, model.start.ceiling {
       Some(_), OperatorCeiling -> get_started.MayMake
       Some(_), _ | None, _ -> get_started.MayNot
     },
+    skipped: model.skipped,
   )
 }
 
@@ -8025,6 +8066,7 @@ fn get_started_page(model: Model) -> Element(Msg) {
       get_started.MayMake -> Some(ProjectCreationOpened)
       get_started.MayNot -> None
     },
+    skip: StepSkipped,
     back: GettingStartedClosed,
   ))
 }
@@ -8692,9 +8734,12 @@ fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
       Some(_) -> Some(ShowingNew)
       None -> None
     },
-    getting_started: case get_started.finished(setup_facts(model)) {
-      True -> None
-      False -> Some(GettingStartedOpened)
+    getting_started: case
+      model.start.create,
+      get_started.finished(setup_facts(model))
+    {
+      Some(_), False -> Some(GettingStartedOpened)
+      Some(_), True | None, _ -> None
     },
     administering: case model.start.admin, model.status {
       Some(_), Connected -> Some(AdminRequested)
