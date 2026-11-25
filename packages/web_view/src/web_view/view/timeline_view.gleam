@@ -99,6 +99,7 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
         parts.section("Timeline", [
           bar(offer),
           older(held, offer),
+          hidden(held, offer),
           list_of(held, offer),
         ]),
       ])
@@ -188,6 +189,44 @@ fn density_button(
     ],
     [html.text(label)],
   )
+}
+
+/// How many of the loaded cards the Landmarks density leaves out, with the press
+/// that shows every card, so "Earlier cards" never seems to have fetched nothing
+/// when the cards it brought are all plain work. Nothing at the other densities or
+/// when no card is hidden.
+fn hidden(held: Held, offer: Offer(message)) -> Element(message) {
+  let left_out =
+    list.length(held.cards)
+    - list.length(timeline_rule.shown(held.cards, offer.density))
+
+  // Only the Landmarks density hides cards, and only some of the time.
+  case offer.density, left_out, offer.handlers {
+    timeline_rule.Landmarks, count, Some(handlers) if count > 0 ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("timeline-hidden"),
+          event.on_click(handlers.density(timeline_rule.Standard)),
+        ],
+        [html.text(hidden_words(count))],
+      )
+    timeline_rule.Landmarks, count, None if count > 0 ->
+      html.p([attribute.class("timeline-notice")], [
+        html.text(hidden_words(count)),
+      ])
+    timeline_rule.Landmarks, _, _
+    | timeline_rule.Standard, _, _
+    | timeline_rule.Detailed, _, _
+    -> element.none()
+  }
+}
+
+/// The words of the control that shows the hidden cards.
+fn hidden_words(count: Int) -> String {
+  int.to_string(count)
+  <> plural(count, " card", " cards")
+  <> " hidden at Landmarks · show all"
 }
 
 /// The cards a density shows, as a list, newest last.
@@ -453,7 +492,7 @@ fn line(each: span_feed.Line) -> Element(message) {
       attribute.class("timeline-line"),
       attribute.class(case each.outcome {
         span_lines.Failed -> "timeline-line-failed"
-        span_lines.NoOutcome | span_lines.Running | span_lines.Succeeded ->
+        span_lines.NoOutcome | span_lines.NoResult | span_lines.Succeeded ->
           "timeline-line-plain"
       }),
     ],
@@ -482,10 +521,10 @@ fn mark(kind: span_lines.Kind) -> String {
 
 /// What a result reported, in the page's words, or nothing for a line with none.
 fn outcome_word(outcome: span_lines.Outcome) -> String {
-  // A call that has no result yet says so, and a message says nothing.
+  // A call with no result in the span says so, and a message says nothing.
   case outcome {
     span_lines.NoOutcome -> ""
-    span_lines.Running -> "running"
+    span_lines.NoResult -> "no result in this span"
     span_lines.Succeeded -> "succeeded"
     span_lines.Failed -> "failed"
   }

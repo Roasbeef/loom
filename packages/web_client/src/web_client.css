@@ -843,6 +843,7 @@
   .timeline-line-failed .timeline-outcome{color:var(--color-danger-text);}
   .timeline-open,.timeline-older{margin-top:8px;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12.5px/1.5 var(--font-sans);cursor:pointer;}
   .timeline-older{display:block;margin:0 0 8px 0;}
+  .timeline-hidden{display:block;margin:0 0 8px 0;padding:3px 10px;border:1px dashed var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12.5px/1.5 var(--font-sans);cursor:pointer;}
   @media (max-width:640px){
     .timeline-head{flex-wrap:wrap;}
     .timeline-open{display:block;width:100%;padding:8px;text-align:center;}

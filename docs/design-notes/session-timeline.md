@@ -283,7 +283,7 @@ approval) and, labelled, main's glance. It does not claim progress.
 - *Watch all board:* one row per session: title, now line, a strip of one tick per
   card (red for a failure card); a press expands the last three. It reads
   `sessions.timeline` with `limit` 3 for at most 24 sessions
-  (`client/daemon/protocol.gleam:51`). The board is not on this tree yet.
+  (`client/daemon/protocol.gleam:51`). The board is on this tree (`WatchAllToggled`, `inbox.Watch`); slice 5 draws the strip on it, and slice 1 does not.
 - *Phone:* one column; a card is its title and a wrapped row of chips; expansion
   is inline; the button is full width; the verdict bar stays at the bottom.
 

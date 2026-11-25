@@ -107,21 +107,42 @@ pub fn of_records(
   let cut = timeline.cut(records, timeline.default_step_limit)
   let wanted = int.clamp(limit, 1, timeline_feed.max_cards)
 
-  fit(page(stable(cut, list.length(records) >= scan_cap), before, wanted))
+  fit(page(stable(cut, window_of(records)), before, wanted))
 }
 
 /// The cards the window makes that a longer read would make too. A window that
 /// ended at the scan's cap is cut mid-strand, so the cards before its first hard
-/// boundary are left out; a window that holds the whole strand keeps them all.
-fn stable(cut: timeline.Cut, truncated: Bool) -> timeline.Cut {
+/// boundary are left out, and a truncated window with no hard boundary at all (one
+/// very long turn) offers no card; a window that holds the whole strand keeps
+/// them all.
+fn stable(cut: timeline.Cut, window: Window) -> timeline.Cut {
   // Only a window that was cut short has an unstable start.
-  case truncated {
-    True ->
+  case window {
+    Truncated ->
       timeline.Cut(
         ..cut,
         cards: list.drop_while(cut.cards, fn(card) { !hard(card.kind) }),
       )
-    False -> cut
+    Whole -> cut
+  }
+}
+
+/// What a scan reached of the strand.
+type Window {
+  /// The scan reached the strand's first record, so the cut is the whole strand's.
+  Whole
+
+  /// The scan stopped at its cap, so the window began inside the strand.
+  Truncated
+}
+
+/// Whether the records are the whole strand or a window that ended at the scan's
+/// cap.
+fn window_of(records: List(Entry)) -> Window {
+  // A scan that filled its cap may have left older records unread.
+  case list.length(records) >= scan_cap {
+    True -> Truncated
+    False -> Whole
   }
 }
 
@@ -184,11 +205,11 @@ fn page(cut: timeline.Cut, before: Option(Int), wanted: Int) -> Feed {
   )
 }
 
-/// Sheds the oldest cards until the reply fits, keeping the newest one, and
-/// moves the cursor to the oldest card kept so the shed ones stay reachable. A
-/// card is a few kilobytes at most, so one card and the open span always fit the
-/// bound together with `timeline_feed.feed_bytes`; the open span is dropped
-/// before the last card would be.
+/// Sheds the oldest cards until the reply fits `timeline_feed.feed_bytes`, never
+/// the newest one, and moves the cursor to the oldest card kept so the shed ones
+/// stay reachable. Every string in a card is clipped in bytes, so a card is a few
+/// kilobytes at most and the newest card and the open span always fit together;
+/// the open span is never dropped.
 fn fit(feed: Feed) -> Feed {
   let size = string.byte_size(json.to_string(timeline_feed.to_json(feed)))
 

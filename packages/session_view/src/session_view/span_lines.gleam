@@ -66,8 +66,10 @@ pub type Outcome {
   /// The line is not a step.
   NoOutcome
 
-  /// The call has no result in the span.
-  Running
+  /// The call has no result among the span's records: the result came after the
+  /// span closed, or the session was cut off. The session may still be running
+  /// the call, and the line does not say it is.
+  NoResult
 
   /// The call's result reported success. It says nothing of what the command
   /// meant.
@@ -182,22 +184,15 @@ fn words_line(seq: Int, at: Int, kind: Kind, text: String) -> List(Line) {
 fn step(record: Entry, call: tool_activity.Call) -> Line {
   let words = step_words.of_call(call)
 
-  // A result envelope says how a call ended, and no result means it is running.
+  // A result envelope says how a call ended, and no result in the span says only that.
   let outcome = case call.outcome {
-    None -> Running
+    None -> NoResult
     Some(message.ToolResultMessage(is_error: False, ..)) -> Succeeded
     Some(message.ToolResultMessage(is_error: True, ..)) -> Failed
-    Some(_) -> Running
+    Some(_) -> NoResult
   }
 
-  // A call with no result is worded in the present tense, since the past tense
-  // would claim an outcome it has not reached.
-  let spoken = case outcome {
-    Running -> step_words.pending(words)
-    Succeeded | Failed | NoOutcome -> words
-  }
-
-  Line(record.seq, record.ts, Step, clip(step_words.text(spoken)), outcome)
+  Line(record.seq, record.ts, Step, clip(step_words.text(words)), outcome)
 }
 
 /// The text blocks of a user message, joined.

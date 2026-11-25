@@ -734,10 +734,12 @@ fn clip_path(path: String) -> String {
   case string.byte_size(path) > path_bytes {
     True ->
       "…"
-      <> take_bytes(list.reverse(string.to_graphemes(path)), path_bytes - 3, "")
-      |> string.to_graphemes
-      |> list.reverse
-      |> string.concat
+      <> {
+        take_bytes(list.reverse(string.to_graphemes(path)), path_bytes - 3, "")
+        |> string.to_graphemes
+        |> list.reverse
+        |> string.concat
+      }
     False -> path
   }
 }

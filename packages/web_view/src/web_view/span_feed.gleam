@@ -162,7 +162,7 @@ fn outcome_of(word: String) -> Result(span_lines.Outcome, Nil) {
   // Each word is the one `outcome_word` gives its outcome.
   case word {
     "none" -> Ok(span_lines.NoOutcome)
-    "running" -> Ok(span_lines.Running)
+    "no_result" -> Ok(span_lines.NoResult)
     "succeeded" -> Ok(span_lines.Succeeded)
     "failed" -> Ok(span_lines.Failed)
     _ -> Error(Nil)
@@ -174,7 +174,7 @@ fn outcome_word(outcome: span_lines.Outcome) -> String {
   // The inverse of `outcome_of`.
   case outcome {
     span_lines.NoOutcome -> "none"
-    span_lines.Running -> "running"
+    span_lines.NoResult -> "no_result"
     span_lines.Succeeded -> "succeeded"
     span_lines.Failed -> "failed"
   }

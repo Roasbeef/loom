@@ -13,7 +13,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/composer
-import session_view/span_lines.{Failed, Prompted, Running, Said, Step}
+import session_view/span_lines.{Failed, NoResult, Prompted, Said, Step}
 
 fn id(seq: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
@@ -104,10 +104,10 @@ pub fn a_span_reads_as_what_was_said_and_each_call_in_order_test() {
       "fix the replay",
       "Looking at it.",
       "Ran make check",
-      "Running git status",
+      "Ran git status",
     ]
   assert list.map(lines, fn(line) { line.outcome })
-    == [span_lines.NoOutcome, span_lines.NoOutcome, Failed, Running]
+    == [span_lines.NoOutcome, span_lines.NoOutcome, Failed, NoResult]
   assert list.map(lines, fn(line) { line.seq }) == [1, 2, 3, 5]
 }
 

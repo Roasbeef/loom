@@ -354,3 +354,42 @@ pub fn an_opened_card_draws_its_span_as_text_test() {
   assert string.contains(drawn(span_feed.Loading), "Reading the span")
   assert string.contains(drawn(span_feed.Refused("busy")), "busy")
 }
+
+// At Landmarks the page says how many loaded cards it leaves out and offers every
+// card, and at the other densities it says nothing.
+pub fn landmarks_says_how_many_cards_are_hidden_test() {
+  let drawn = fn(density) {
+    timeline_view.pane(timeline_view.Offer(
+      held: Some(timeline_rule.Held(
+        [
+          card(1, timeline.Prompted),
+          timeline_feed.Card(
+            ..card(4, timeline.Worked),
+            files_total: 0,
+            failed: 0,
+          ),
+        ],
+        None,
+        None,
+        None,
+      )),
+      density:,
+      opened: set.new(),
+      now: 5000,
+      spans: dict.new(),
+      handlers: Some(timeline_view.Handlers(
+        density: fn(_) { Nil },
+        toggle: fn(_) { Nil },
+        older: Nil,
+        open: Nil,
+      )),
+    ))
+    |> element.to_string
+  }
+
+  assert string.contains(
+    drawn(timeline_rule.Landmarks),
+    "1 card hidden at Landmarks · show all",
+  )
+  assert !string.contains(drawn(timeline_rule.Standard), "hidden at Landmarks")
+}

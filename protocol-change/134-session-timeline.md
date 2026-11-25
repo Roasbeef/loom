@@ -62,7 +62,8 @@ so a card's `from_seq` is stable only from the window's first hard boundary: a
 prompt, an answer, an ask or a compaction closes a span whatever came before it, but
 a command or result card needs three steps and the cap counts from the window's
 start. The read therefore offers no card before that boundary and a `before` cursor
-never points into the part it leaves out. A strand that fits the window is cut
+never points into the part it leaves out. A truncated window with no hard
+boundary at all, one very long turn, offers no card. A strand that fits the window is cut
 whole and every card is offered. The cap on cards closed by commands, results and
 the step limit counts only those cards, so prompts and answers do not use it up.
 
@@ -83,7 +84,8 @@ span's length, keeps the records from `from_seq` on, and makes at most 100 lines
 (`session_view/span_lines`), the newest if there are more, with `omitted` counting
 the rest. A line is a person's words, the agent's words, one tool call worded as
 the session's own page words it with the outcome its result reported (`none`,
-`running`, `succeeded`, `failed`), or a compaction; each `words` is clipped to 200
+`no_result`, `succeeded`, `failed`; `no_result` says only that the span holds no
+result for the call, not that it is running), or a compaction; each `words` is clipped to 200
 bytes and marked untrusted. A record id that is not the session's is refused. It
 has the timeline read's authority and spends the brief allowance too.
 
@@ -111,8 +113,10 @@ It writes nothing and stores nothing. It runs no tool and no process, and the
 command text it reads is never executed. It carries no model-written title: that
 is a later slice, with its own protocol change, and the page does not wait for it.
 It does not read a strand other than `main`: neither request names a strand, so
-the strand grant of [072](072-strand-history-read.md) is not engaged, and a read
-of another strand's cards will apply it.
+the strand grant of [072](072-strand-history-read.md) is not engaged by the
+timeline read. The span read names a record by its id and walks that record's own
+parent links inside the session, so it cannot read a record that is not the
+session's; a read of another strand's cards will apply the strand grant to both.
 
 ## What it costs
 
