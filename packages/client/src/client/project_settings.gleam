@@ -29,6 +29,7 @@
 //// refused instead of accepted and ignored, so a file that sets one fails at
 //// startup and not silently.
 
+import client/jev_settings
 import client/project_sources.{type Sources}
 import gleam/dict.{type Dict}
 import gleam/list
@@ -52,6 +53,35 @@ pub type PublishMode {
   PublishPullRequest
 }
 
+/// Who decides where an incoming message goes first.
+pub type Router {
+  /// The router session decides every candidate, as it always has.
+  ModelRouter
+
+  /// Jev decides first, and the router session decides what Jev leaves.
+  JevRouter
+}
+
+/// One entry of the agent catalogue: a name the Jev pass can choose for new
+/// work, and the profile or model that work then starts with. Choosing one
+/// changes which models a worker uses and nothing about its jail, tools,
+/// approvals or network, which the ticket's mandate decides.
+pub type Agent {
+  Agent(
+    /// The entry's name, as the ledger records the choice.
+    name: String,
+    /// The operator's own words about what the agent suits, shown to Jev.
+    use_for: String,
+    /// A `[profiles.<name>]` table, or none.
+    profile: Option(String),
+    /// A `[models.<name>]` entry, or none.
+    model: Option(String),
+  )
+}
+
+/// The most agents a catalogue may hold.
+pub const max_agents = 16
+
 /// The project numbers of a daemon.
 pub type Settings {
   Settings(
@@ -72,6 +102,15 @@ pub type Settings {
     publish: PublishMode,
     /// The event sources and the rules over them (`client/project_sources`).
     sources: Sources,
+    /// Who decides first. The scope is the daemon's, not a project's.
+    router: Router,
+    /// How sure Jev must be to attach a message to an existing ticket, as a
+    /// percent from 51 to 100.
+    jev_min_probability: Int,
+    /// The agents Jev may choose among for new work, at most `max_agents`.
+    agents: List(Agent),
+    /// How the daemon reaches the Jev service (`[jev]`).
+    jev: jev_settings.Settings,
   )
 }
 
@@ -91,6 +130,10 @@ pub const defaults =
     protected_paths: protect.default_paths,
     publish: PublishOff,
     sources: project_sources.none,
+    router: ModelRouter,
+    jev_min_probability: 80,
+    agents: [],
+    jev: jev_settings.defaults,
   )
 
 /// Validates the `[project]` table of a parsed configuration document.
@@ -105,20 +148,55 @@ pub fn from_document(
 ) -> Result(Settings, String) {
   case dict.get(document, "project") {
     Error(Nil) -> Ok(defaults)
-    Ok(tom.Table(fields)) -> from_fields(fields)
+    Ok(tom.Table(fields)) -> from_fields(fields, names_in(document))
     Ok(_) -> Error("project must be a [project] table")
+  }
+  |> result.try(with_jev(_, document))
+}
+
+/// Adds the `[jev]` table, which every daemon reads whether or not it has a
+/// `[project]` table, since the table names the service and not the project.
+fn with_jev(
+  settings: Settings,
+  document: Dict(String, tom.Toml),
+) -> Result(Settings, String) {
+  use jev <- result.map(jev_settings.from_document(document))
+  Settings(..settings, jev:)
+}
+
+/// The `[profiles]` and `[models]` names of a document, which the agent
+/// catalogue's entries must name.
+type Names {
+  Names(profiles: List(String), models: List(String))
+}
+
+fn names_in(document: Dict(String, tom.Toml)) -> Names {
+  Names(
+    profiles: table_keys(document, "profiles"),
+    models: table_keys(document, "models"),
+  )
+}
+
+fn table_keys(document: Dict(String, tom.Toml), table: String) -> List(String) {
+  case dict.get(document, table) {
+    Ok(tom.Table(entries)) -> dict.keys(entries)
+    _ -> []
   }
 }
 
 /// Reads the `[project]` table. An unknown key is refused by name instead of
 /// ignored, so a misspelt limit does not silently leave the default in force.
-fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
+fn from_fields(
+  fields: Dict(String, tom.Toml),
+  names: Names,
+) -> Result(Settings, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
       case key {
         "max_workers" | "token_ceiling" -> Ok(Nil)
         "check" | "setup" | "protected_paths" | "publish" -> Ok(Nil)
         "source" | "rule" | "queue_limit" | "attention_limit" -> Ok(Nil)
+        "router" | "jev_min_probability" | "agent" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [project]")
       }
     }),
@@ -141,7 +219,16 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
   use setup <- result.try(command(fields, "setup"))
   use protected_paths <- result.try(paths(fields))
   use publish <- result.try(publish_mode(fields))
-  use sources <- result.map(project_sources.from_fields(fields))
+  use sources <- result.try(project_sources.from_fields(fields))
+  use router <- result.try(router_choice(fields))
+  use jev_min_probability <- result.try(bounded(
+    fields,
+    "jev_min_probability",
+    defaults.jev_min_probability,
+    51,
+    100,
+  ))
+  use agents <- result.map(agent_catalogue(fields, names))
   Settings(
     max_workers:,
     token_ceiling:,
@@ -150,7 +237,138 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
     protected_paths:,
     publish:,
     sources:,
+    router:,
+    jev_min_probability:,
+    agents:,
+    jev: jev_settings.defaults,
   )
+}
+
+/// `model` or `jev`, and `model` when absent.
+fn router_choice(fields: Dict(String, tom.Toml)) -> Result(Router, String) {
+  case dict.get(fields, "router") {
+    Error(Nil) -> Ok(ModelRouter)
+    Ok(tom.String("model")) -> Ok(ModelRouter)
+    Ok(tom.String("jev")) -> Ok(JevRouter)
+    Ok(_) -> Error("project.router must be \"model\" or \"jev\"")
+  }
+}
+
+/// The `[[project.agent]]` tables. Each has a name of 1 to 40 characters that
+/// no other has, a `use_for` of 1 to 200, and a `profile` or a `model` that the
+/// file defines, so a catalogue cannot name a model the daemon lacks.
+fn agent_catalogue(
+  fields: Dict(String, tom.Toml),
+  names: Names,
+) -> Result(List(Agent), String) {
+  case dict.get(fields, "agent") {
+    Error(Nil) -> Ok([])
+    Ok(tom.ArrayOfTables(found)) ->
+      case list.length(found) <= max_agents {
+        True -> agents_from(found, names)
+        False ->
+          Error("project.agent holds more than " <> string.inspect(max_agents))
+      }
+    Ok(_) -> Error("project.agent must be an array of tables")
+  }
+}
+
+/// Reads each table and refuses a catalogue in which two agents share a name,
+/// since the ledger records a choice by name alone.
+fn agents_from(
+  tables: List(Dict(String, tom.Toml)),
+  names: Names,
+) -> Result(List(Agent), String) {
+  use agents <- result.try(list.try_map(tables, agent_from(_, names)))
+  let named = list.map(agents, fn(agent) { agent.name })
+
+  // Distinct names are as many as all the names.
+  case list.length(list.unique(named)) == list.length(named) {
+    True -> Ok(agents)
+    False -> Error("project.agent names must be distinct")
+  }
+}
+
+/// Reads one agent. An unknown key is refused by name, and an entry must name
+/// a profile or a model that the file defines.
+fn agent_from(
+  table: Dict(String, tom.Toml),
+  names: Names,
+) -> Result(Agent, String) {
+  use _ <- result.try(
+    list.try_map(dict.keys(table), fn(key) {
+      case key {
+        "name" | "use_for" | "profile" | "model" -> Ok(Nil)
+        _ -> Error("unknown key `" <> key <> "` in [[project.agent]]")
+      }
+    }),
+  )
+  use name <- result.try(sized(table, "name", 40))
+  use use_for <- result.try(sized(table, "use_for", 200))
+  use profile <- result.try(named_entry(table, "profile", names.profiles))
+  use model <- result.try(named_entry(table, "model", names.models))
+
+  // An agent that changes neither the profile nor the model changes nothing.
+  case profile, model {
+    None, None ->
+      Error(
+        "project.agent `" <> name <> "` names neither a profile nor a model",
+      )
+    _, _ -> Ok(Agent(name:, use_for:, profile:, model:))
+  }
+}
+
+/// A required string of 1 to `most` characters, trimmed.
+fn sized(
+  table: Dict(String, tom.Toml),
+  key: String,
+  most: Int,
+) -> Result(String, String) {
+  // A missing key and one that is not a string read the same to the owner.
+  case dict.get(table, key) {
+    Ok(tom.String(value)) -> within(key, string.trim(value), most)
+    _ -> Error("project.agent " <> key <> " must be a string")
+  }
+}
+
+/// Text that is not empty and at most `most` characters.
+fn within(key: String, text: String, most: Int) -> Result(String, String) {
+  // An empty or an over-long value is refused by the key's own name.
+  case text != "" && string.length(text) <= most {
+    True -> Ok(text)
+    False ->
+      Error(
+        "project.agent "
+        <> key
+        <> " must be 1 to "
+        <> string.inspect(most)
+        <> " characters",
+      )
+  }
+}
+
+/// An optional key that must name one of `known`.
+fn named_entry(
+  table: Dict(String, tom.Toml),
+  key: String,
+  known: List(String),
+) -> Result(Option(String), String) {
+  case dict.get(table, key) {
+    Error(Nil) -> Ok(None)
+    Ok(tom.String(value)) ->
+      case list.contains(known, value) {
+        True -> Ok(Some(value))
+        False ->
+          Error(
+            "project.agent "
+            <> key
+            <> " `"
+            <> value
+            <> "` is not defined in the file",
+          )
+      }
+    Ok(_) -> Error("project.agent " <> key <> " must be a string")
+  }
 }
 
 /// An integer in `low` to `high`, or the default when the key is absent.

@@ -97,6 +97,7 @@ import client/host
 import client/install
 import client/internal/ffi_os
 import client/internal/ffi_tls_stream
+import client/jev as jev_transport
 import client/ledger_boot
 import client/ledger_control
 import client/ledger_holdings
@@ -4959,6 +4960,20 @@ pub fn project_env(
   book: project_book.Book,
   logger: Logger,
 ) -> Result(project_start.Env, String) {
+  let jev_settings = config.projects.settings.jev
+  let key = jev_transport.key_from(jev_settings, bootstrap.getenv)
+  let jev = jev_transport.client(key, jev_settings.timeout_ms)
+
+  // A daemon told to route with Jev and given no key falls back for every
+  // candidate. That is not a boot failure, but the owner should read why.
+  case config.projects.settings.router, key {
+    project_settings.JevRouter, None ->
+      log.warn(logger, "project.jev_no_key", [
+        field.text(key: "variable", value: jev_settings.api_key_env),
+      ])
+    _, _ -> Nil
+  }
+
   use domain_configuration <- result.map(captured_domain_configuration(
     config.session_defaults,
     "",
@@ -4998,7 +5013,12 @@ pub fn project_env(
       check_wall_ms: project_host.idle_policy.check_wall_ms,
       setup_wall_ms: project_host.idle_policy.setup_wall_ms,
       sources: config.projects.settings.sources,
+      router: config.projects.settings.router,
+      jev_min_probability: config.projects.settings.jev_min_probability,
+      jev_model: config.projects.settings.jev.model,
+      agents: config.projects.settings.agents,
     ),
+    jev: jev,
     logger:,
   )
 }

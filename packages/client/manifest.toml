@@ -114,6 +114,7 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 gose = { version = "== 2.2.0" }
 harness = { path = "../harness" }
 host = { path = "../host" }
+jevelin = { git = "https://github.com/Roasbeef/jevelin.git", ref = "493a1b4207d5f935f351f64f258a50a01bd29779" }
 json_codec = { path = "../json_codec" }
 khepri = { version = "== 0.19.3" }
 kryptos = { version = ">= 1.5.0 and < 2.0.0" }
