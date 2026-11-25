@@ -24,7 +24,7 @@ order to build it. Paths are relative to `packages/` and the tree is
    command with its exit status, a sub-agent's name, a compaction) come from
    records with no model.
 2. A model writes only a title of at most 64 bytes and a detail line of at most
-   200, on the `summarize` or `subagent` route, once per closed card. The text
+   200, on the `summarize` route only, once per closed card. The text
    is untrusted and drawn as a text node beside a chip that says a model wrote
    it. No count, order, verdict or group depends on it.
 3. The live read computes cards from the resident session. What cannot be
@@ -187,13 +187,13 @@ reduces arguments: executable and subcommand only, no argv tail, env or token
 …"` becomes `curl`. The same reduced text is what is stored. The protocol change
 states this exposure, as insight-triage does.
 
-**Route.** `summarize`, then `subagent`, as the glance resolves them. A catalogue
-routing only `main` gets no titles (owner ruling 1): cards show plain record
-words and the page says once "Titles are off: route `summarize` to a cheap
-model". The `subagent` fallback sends transcript text to a provider the owner may
-not have chosen for this purpose; insight-triage's provisional ruling 3 refused
-that for its role (`docs/design-notes/insight-triage.md:660`), while the glance
-already does it. That tension is the owner's call and is left open.
+**Route.** `summarize` only (owner ruling, 2026-11-24). Titles never fall back to
+`subagent` or `main`, as the glance does. A catalogue with no explicit
+`summarize` route gets no titles: cards show plain record words and the page says
+once "Titles are off: route `summarize` to a cheap model". The reason is that a
+fallback would send transcript text to a provider the owner did not choose for
+this purpose, which insight-triage's provisional ruling 3 also refused for its
+role (`docs/design-notes/insight-triage.md:660`).
 
 **Storage.** Slice 3 adds a catalogue table `catalogue_session_timeline`, version
 25, keyed `(session_id, strand, from_seq)` with `to_seq`, `title`, `detail`,
@@ -363,12 +363,49 @@ files" for the first group and "and 6 others" for the second.
 - **Owner rulings (2026-11-24):** a catalogue routing only `main` gets no titles;
   observers see the same cards as the owner, titles included, under the strand
   grant when other strands get cards; the span size is 40 steps, with slice 0
-  printing the distribution for 20, 40 and 80.
-- **Open:** whether the `subagent` fallback should send transcript text to a
-  provider not chosen for this (section 4).
+  printing the distribution for 20, 40 and 80; titles use the `summarize` route
+  only, with no fallback to `subagent` or `main`.
 - **Left out:** a search over cards; editing a title; cards for strands other than
   `main` on the first release (the request takes a `strand`, and the write set
   already covers every strand); a whole-session summary; any claim that a run
   succeeded; hiding a card on a model's opinion; rewriting a title when the model
   improves; cards before a transcript's first record; an owner-pressed "title
   this session" on a `main`-only catalogue, which can be added later.
+
+## 10. Slice 0, as built (2026-11-24)
+
+The cut is `session_view/src/session_view/timeline.gleam`, with its examples and
+five properties in `session_view/test/timeline_test.gleam`: every record is in
+exactly one span, a prefix's cards are a prefix of the whole's, an unknown record
+changes no card, a command or result card holds at least three steps, and a
+strand stops closing landmark cards at 400. It differs from the note in four
+places, each because the records do not hold what the note assumed.
+
+- **No `failure` kind.** A failed call counts in the card's `failed` fact, and a
+  failed command closes a `command` card. A failed turn has no record of its own.
+- **No approval card.** Approvals are register cells, not entries, so the cut
+  cannot see them. Slice 1 reads the pending approvals into the now card.
+- **No `commit` kind yet.** It waits on the review board's commits (section 3),
+  which slice 1 reads; until then a commit is a `command` card.
+- **`turn_seq` is the seq of the prompt that began the turn**, not the divider's
+  fold number. The page maps it to the held turn whose input has that seq.
+
+`gleam run -m timeline_census -- <dir>` (in `packages/client/dev`) cuts copies of
+stores and prints the card count at limits of 20, 40 and 80 steps. Over 174
+sessions copied from the owner's drive stores (never the live daemon's), each
+with a mean of 659 records and 334 steps:
+
+| limit | min | median | p90 | max |
+|---|---|---|---|---|
+| 20 | 3 | 54 | 286 | 615 |
+| 40 | 3 | 51 | 270 | 615 |
+| 80 | 3 | 49 | 270 | 615 |
+
+The limit barely moves the count: landmarks (a prompt, an answer, a command
+after edits, a failed command) close most spans before any limit is reached, as
+the review of this note predicted. A session yields about one card for every
+three steps, which is too many to read as a list of milestones. The page needs a
+density control that shows only the landmark kinds by default, and the 40-step
+ruling stands because nothing here argues for another. Slice 0's last exit
+criterion, that the owner reads the cards of three sessions and says whether they
+could tell what the agent did, is the owner's to give and is not yet.
