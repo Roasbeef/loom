@@ -165,11 +165,10 @@ its Git work one job at a time. A folder becomes a workspace named
 `local-<sixteen hex digits of the SHA-256 of its canonical path>`, and
 `client/local_trees` starts that workspace's service the first time a session of
 the folder needs it and keeps it. Two sessions of one folder therefore share a
-gate, and sessions of different folders do not wait for each other. The
-service's reconciliation base is the first session's; a branch that was deleted
-outside Loom is recreated from that base and not from its own session's. That
-case is rarer than any other recreation here, and the cost of fixing it is a
-base on every ledger row, which this proposal does not take on.
+gate, and sessions of different folders do not wait for each other.
+
+The `git-cow` that makes the tree is resolved from the daemon's `PATH` (or beside the
+server) and runs in the same sandbox as the Git it replaces.
 
 ## What it costs
 
@@ -181,5 +180,11 @@ base on every ledger row, which this proposal does not take on.
   it, and a branch for each session that used the choice.
 - A control client must read the reply's `worktree` member to know that the
   daemon honoured the choice, since an older daemon would ignore it.
+- A session's tree is opened before its settings are resolved and its cleanup is filed
+  only once assembly starts, so a session whose settings fail to resolve leaves a
+  clean tree, recorded as present. The next open adopts it, and the next clean close
+  removes it. This is a known gap, left because the tree holds nothing.
+- A session that works in a worktree is not moved to another orchestrator: a move
+  carries the folder and not the tree, so `sessions.move` refuses it as not movable.
 - The first session of each folder boots a sandboxed Git (two helper pools,
   started lazily) that lives as long as the daemon.

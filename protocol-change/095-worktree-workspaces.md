@@ -355,8 +355,9 @@ and runs in the same sandbox, so the tree is a copy-on-write copy that carries t
 checkout's ignored files, build output among them, and starts faster.
 
 - Exit 2 (a dirty source, or `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or
-  `GIT_COMMON_DIR` set) and exit 3 (no copy-on-write support) are `git-cow` declining.
-  The creation removes what the call left, runs plain `git worktree add` and logs
+  `GIT_COMMON_DIR` set) is `git-cow` declining. A file system without copy-on-write is
+  not a refusal: without `--require-cow`, `git-cow` falls back to plain Git itself and
+  exits 0, so Loom has no case for exit 3. On exit 2 the creation removes what the call left, runs plain `git worktree add` and logs
   `executor.worktree_not_copy_on_write` with the session, the exit and git-cow's
   message. A repository with uncommitted changes therefore gets a plain tree.
 - Any other exit fails the creation with `git cow add exited N: <message>`. There is no
@@ -364,7 +365,8 @@ checkout's ignored files, build output among them, and starts faster.
 - The sandbox's environment is a fixed list that holds no `GIT_*` repository variable,
   so the daemon's own cannot reach `git-cow`.
 - After a copy, a `priv` link under `build/dev/erlang/<package>/` of the tree (at its top
-  or under `packages/<name>`) that resolves outside the tree is deleted, so the next
+  or under `packages/<name>`) that resolves outside the tree is deleted, provided that
+  `build`, `erlang` and `<package>` themselves resolve inside the tree, so the next
   build links it again: a copied link points at the source checkout, and a program that
   reads `priv` would read the wrong tree.
 

@@ -7,7 +7,6 @@
 
 import broker/exec
 import client/worktrees
-import gleam/int
 import gleam/result
 import gleam/string
 import simplifile
@@ -79,20 +78,14 @@ pub fn no_git_cow_makes_the_tree_with_plain_git_test() {
   assert !exists(rig.state <> "/worktrees/repo/cow-args")
 }
 
-pub fn exit_two_and_three_fall_back_to_plain_git_test() {
-  list_each([2, 3], fn(code) {
-    let rig = worktree_rig.rig("cow-declined-" <> int.to_string(code))
-    let program =
-      fake_cow(
-        rig,
-        "git-cow",
-        "echo 'the source is dirty' >&2\nexit " <> int.to_string(code) <> "\n",
-      )
-    let trees = trees_with(rig, fn() { Ok(program) })
+pub fn exit_two_falls_back_to_plain_git_test() {
+  let rig = worktree_rig.rig("cow-declined")
+  let program =
+    fake_cow(rig, "git-cow", "echo 'the source is dirty' >&2\nexit 2\n")
+  let trees = trees_with(rig, fn() { Ok(program) })
 
-    let assert Ok(tree) = worktrees.open(trees, rig.workspace, session(1))
-    assert exists(tree.path <> "/README")
-  })
+  let assert Ok(tree) = worktrees.open(trees, rig.workspace, session(1))
+  assert exists(tree.path <> "/README")
 }
 
 pub fn any_other_exit_is_the_creations_failure_with_no_fallback_test() {
@@ -132,12 +125,41 @@ pub fn a_priv_link_that_points_outside_the_tree_is_removed_after_a_copy_test() {
     == Ok(True)
 }
 
-fn list_each(items: List(a), run: fn(a) -> Nil) -> Nil {
-  case items {
-    [] -> Nil
-    [first, ..rest] -> {
-      run(first)
-      list_each(rest, run)
-    }
-  }
+pub fn a_build_directory_that_links_out_of_the_tree_is_left_alone_test() {
+  let rig = worktree_rig.rig("cow-linked-build")
+  let outside = rig.state <> "/worktrees/repo/outside"
+
+  // The copy's `build` is a link to a directory elsewhere, which holds a `priv`
+  // link of its own. Following the parent would delete a file that is not the
+  // tree's.
+  let program =
+    fake_cow(
+      rig,
+      "git-cow",
+      "shift; git worktree add \"$@\" || exit 1\n"
+        <> "mkdir -p \""
+        <> outside
+        <> "/dev/erlang/p\"\n"
+        <> "ln -s \"$PWD\" \""
+        <> outside
+        <> "/dev/erlang/p/priv\"\n"
+        <> "ln -s \""
+        <> outside
+        <> "\" \"$1/build\"\n",
+    )
+  let trees = trees_with(rig, fn() { Ok(program) })
+
+  let assert Ok(_) = worktrees.open(trees, rig.workspace, session(1))
+  assert simplifile.is_symlink(outside <> "/dev/erlang/p/priv") == Ok(True)
+}
+
+// Without --require-cow `git-cow` falls back to plain Git itself and exits 0, so
+// an exit 3 is not a case Loom handles: it is a failure like any other exit.
+pub fn exit_three_is_a_failure_not_a_fallback_test() {
+  let rig = worktree_rig.rig("cow-three")
+  let program = fake_cow(rig, "git-cow", "echo 'no cow' >&2\nexit 3\n")
+  let trees = trees_with(rig, fn() { Ok(program) })
+
+  let assert Error(reason) = worktrees.open(trees, rig.workspace, session(1))
+  assert string.contains(reason, "git cow add exited 3")
 }

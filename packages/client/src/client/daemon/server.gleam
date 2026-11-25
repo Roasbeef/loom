@@ -6122,6 +6122,7 @@ fn departure_for(
         )),
       )
     True, None -> {
+      use Nil <- result.try(no_worktree(registry, id))
       use target <- result.try(checkout_place(destination))
       use Nil <- result.try(checkout_executor_listed(
         config,
@@ -6169,6 +6170,27 @@ fn checkout_executor_listed(
           <> "`, which this daemon does not list",
         )),
       )
+  }
+}
+
+/// Refuses a session that works in its own worktree. A move carries the
+/// session's directory, which is the folder, and not the tree it works in or
+/// its branch, so the session would resume on the other machine in the folder
+/// with its changes left behind (protocol-change/133).
+fn no_worktree(
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Nil, MoveRefusal) {
+  // A session with a base works in a tree; a read that fails is no answer.
+  case manager.worktree_base(registry, id) {
+    Ok(None) -> Ok(Nil)
+    Ok(Some(_)) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "the session works in its own worktree, which a move does not carry",
+        )),
+      )
+    Error(error) -> Error(Unreadable(error))
   }
 }
 

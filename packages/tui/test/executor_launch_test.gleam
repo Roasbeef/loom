@@ -265,7 +265,16 @@ fn row(
   workspace: String,
   executor: option.Option(String),
 ) -> protocol.Session {
-  protocol.Session(id, workspace, "work", 0, protocol.Saved, None, executor)
+  protocol.Session(
+    id,
+    workspace,
+    "work",
+    0,
+    protocol.Saved,
+    None,
+    executor,
+    None,
+  )
 }
 
 // A registered name is no path, so a listing says which executor it is on, and

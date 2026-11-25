@@ -633,7 +633,7 @@ pub fn update(
     ChosePicked -> #(chose_picked(state, offers), Stay)
     ClosedBrowser -> #(State(..state, browser: Closed), Stay)
     ToggledLimits -> #(toggled_limits(state), Stay)
-    ToggledWorktree -> #(toggled_worktree(state), Stay)
+    ToggledWorktree -> #(toggled_worktree(state, offers, recent), Stay)
     Started(prompt:, typed:) ->
       started(state, offers, recent, prompt, typed, default_limits_input)
     StartedWithLimits(prompt:, typed:, limits:) ->
@@ -1705,15 +1705,21 @@ fn started(
 /// folder on it. An executor's or a pool's workspace chooses its own mode, and
 /// another orchestrator's folders are out of this daemon's reach, so for those
 /// the press changes nothing.
-fn toggled_worktree(state: State) -> State {
-  // Dispatch on the agent and the target the toggle would apply to.
-  case state.agent, state.target {
+fn toggled_worktree(
+  state: State,
+  offers: Offers,
+  recent: List(Recent),
+) -> State {
+  // The target in force counts, whether the person chose it or it is the
+  // default the page drew, so the toggle works on the folder the chip shows.
+  case state.agent, chosen(state, offers, recent) {
     Here, Some(Folder(_)) | Here, Some(TypedFolder) | Here, Some(Picked(_)) ->
       State(..state, worktree: case state.worktree {
         InFolder -> InTree
         InTree -> InFolder
       })
-    Here, Some(OnExecutor(..))
+    Here, Some(Project(..))
+    | Here, Some(OnExecutor(..))
     | Here, Some(InPool(..))
     | Here, None
     | Orchestrator(_), _

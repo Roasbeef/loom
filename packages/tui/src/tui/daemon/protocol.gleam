@@ -605,6 +605,11 @@ pub type Session {
     /// frame has no such member, and so does an older daemon's. A present value
     /// that is not a bounded string reads as absent, as the subtitle does.
     executor: Option(String),
+    /// The branch of the session's own Git worktree (protocol-change/133),
+    /// present only for a session created with one. An older daemon's frames
+    /// have none, which is how a launch that asked for a worktree learns the
+    /// daemon ignored it.
+    worktree: Option(String),
   )
 }
 
@@ -1756,7 +1761,17 @@ fn session(body: json.JsonValue) {
     moving_status(body, status),
     subtitle_of(body),
     executor_of(body),
+    worktree_of(body),
   )
+}
+
+// The optional `worktree` member's branch. A member that is not an object with
+// a bounded `branch` reads as absent, like the other display aids.
+/// Reads the branch of a session's own worktree from a session record.
+fn worktree_of(body: json.JsonValue) -> Option(String) {
+  field(body, "worktree")
+  |> result.try(text_at(_, "branch", 256))
+  |> option.from_result
 }
 
 // The optional `moving` member, which reads over the `saved` the daemon reports

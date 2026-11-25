@@ -27,7 +27,7 @@ fn registry(rig: Rig) -> local_trees.LocalTrees {
     as "the test runner has a working directory"
   let assert Ok(trees) =
     local_trees.start(fn(workspace) {
-      worktrees.start(
+      worktrees.start_with(
         worktrees.Config(
           state_root: rig.state,
           ledger_path: rig.ledger_path,
@@ -38,6 +38,7 @@ fn registry(rig: Rig) -> local_trees.LocalTrees {
           logger: log.discard(),
         ),
         [workspace],
+        fn() { Error(Nil) },
       )
     })
     as "the registry starts"

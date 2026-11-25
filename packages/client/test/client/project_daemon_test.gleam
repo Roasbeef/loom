@@ -552,7 +552,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       },
       domain_configuration: "",
       worktrees_for: fn(workspace) {
-        worktrees.start(
+        worktrees.start_with(
           worktrees.Config(
             state_root: ready.state_root,
             ledger_path: ledger,
@@ -563,6 +563,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
             logger: log.discard(),
           ),
           [workspace],
+          fn() { Error(Nil) },
         )
       },
       now_ms: ffi_os.system_time_ms,

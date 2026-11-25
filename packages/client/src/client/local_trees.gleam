@@ -44,6 +44,7 @@
 //// 3. `close` runs when the session's tools have stopped for good: it has
 ////    `worktrees.close` remove a clean tree and keep one that holds changes.
 
+import broker/internal/call
 import client/workspaces.{type Workspace}
 import client/worktrees.{type Closed, type Tree, type Worktrees}
 import gleam/bit_array
@@ -180,15 +181,13 @@ fn service_of(
   trees: LocalTrees,
   workspace: Workspace,
 ) -> Result(Worktrees, String) {
-  let reply = process.new_subject()
-  process.send(trees.registry, Lookup(workspace:, reply:))
-
   // The registry answers from its own turn, and a start that outlasts the wait
-  // is reported rather than waited for.
-  case process.receive(reply, lookup_within_ms) {
-    Ok(answer) -> answer
-    Error(Nil) -> Error("the local worktree registry did not answer in time")
-  }
+  // or a registry that has died is reported rather than waited for.
+  call.try_call(trees.registry, waiting: lookup_within_ms, sending: Lookup(
+    workspace,
+    _,
+  ))
+  |> result.unwrap(Error("the local worktree registry did not answer"))
 }
 
 /// Answers one lookup: the folder's service if the registry holds it, and a

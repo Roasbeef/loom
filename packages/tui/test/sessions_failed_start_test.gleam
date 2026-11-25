@@ -45,6 +45,7 @@ fn row(status: protocol.Lifecycle) -> protocol.Session {
     status:,
     subtitle: option.None,
     executor: option.None,
+    worktree: option.None,
   )
 }
 

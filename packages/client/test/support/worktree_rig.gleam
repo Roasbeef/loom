@@ -64,7 +64,7 @@ pub fn rig_at(name: String, base: String) -> Rig {
   let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
   let workspace = Workspace("repo", root, workspaces.Worktree(base))
   let assert Ok(trees) =
-    worktrees.start(
+    worktrees.start_with(
       worktrees.Config(
         state_root: state,
         ledger_path:,
@@ -75,6 +75,7 @@ pub fn rig_at(name: String, base: String) -> Rig {
         logger: log.discard(),
       ),
       [workspace],
+      fn() { Error(Nil) },
     )
     as "the worktrees start"
   Rig(trees:, workspace:, root:, state:, ledger_path:)
@@ -86,7 +87,7 @@ pub fn rig_at(name: String, base: String) -> Rig {
 pub fn restart(rig: Rig) -> Rig {
   worktrees.stop(rig.trees)
   let assert Ok(trees) =
-    worktrees.start(
+    worktrees.start_with(
       worktrees.Config(
         state_root: rig.state,
         ledger_path: rig.ledger_path,
@@ -97,6 +98,7 @@ pub fn restart(rig: Rig) -> Rig {
         logger: log.discard(),
       ),
       [rig.workspace],
+      fn() { Error(Nil) },
     )
     as "the worktrees restart"
   Rig(..rig, trees:)

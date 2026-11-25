@@ -317,10 +317,7 @@ pub fn a_failed_add_leaves_no_directory_and_a_removed_record_test() {
 
   let assert Error(reason) = open(rig, 1)
 
-  // The make is `git worktree add` or, with a `git-cow` on the PATH, `git cow
-  // add`; either names the command it failed in.
   assert string.contains(reason, "worktree add")
-    || string.contains(reason, "cow add")
   assert string.byte_size(reason) <= 512
   assert !exists(tree_of(rig, 1))
   assert row(rig, 1) == Ok(exec_ledger.Removed)
@@ -509,7 +506,7 @@ pub fn a_root_that_is_a_linked_worktree_is_refused_at_start_test() {
   let workspace =
     workspaces.Workspace("repo", linked, workspaces.Worktree("main"))
   let assert Error(reason) =
-    worktrees.start(
+    worktrees.start_with(
       worktrees.Config(
         state_root: rig.state,
         ledger_path: rig.ledger_path,
@@ -520,6 +517,7 @@ pub fn a_root_that_is_a_linked_worktree_is_refused_at_start_test() {
         logger: log.discard(),
       ),
       [workspace],
+      fn() { Error(Nil) },
     )
   assert string.contains(reason, "primary checkout")
 }
@@ -527,7 +525,7 @@ pub fn a_root_that_is_a_linked_worktree_is_refused_at_start_test() {
 pub fn a_shared_configuration_starts_nothing_test() {
   let rig = worktree_rig.rig("sharedstart")
   let assert Ok(trees) =
-    worktrees.start(
+    worktrees.start_with(
       worktrees.Config(
         state_root: rig.state,
         ledger_path: rig.ledger_path,
@@ -538,6 +536,7 @@ pub fn a_shared_configuration_starts_nothing_test() {
         logger: log.discard(),
       ),
       [workspaces.shared("repo", rig.root)],
+      fn() { Error(Nil) },
     )
   assert worktrees.unrecorded(trees, [workspaces.shared("repo", rig.root)]) == 0
 }

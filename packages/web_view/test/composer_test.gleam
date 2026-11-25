@@ -830,16 +830,17 @@ pub fn the_worktree_toggle_asks_for_a_tree_of_a_local_folder_test() {
 }
 
 pub fn the_worktree_toggle_does_nothing_without_a_local_folder_test() {
-  // No target yet: nothing to make a tree of.
+  // With no target chosen the default folder is the target in force, and the
+  // toggle applies to the folder the chip shows.
   let fresh = composer.new()
   assert update(fresh, composer.ToggledWorktree, offers()).0.worktree
-    == composer.InFolder
+    == composer.InTree
 
   // An executor's workspace chooses its own mode.
   let remote =
     update(
       composer.new(),
-      composer.ChoseTarget(composer.OnExecutor("build-box", Some("app"))),
+      composer.ChoseTarget(composer.OnExecutor("exec", None)),
       offers(),
     ).0
   assert update(remote, composer.ToggledWorktree, offers()).0.worktree

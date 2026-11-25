@@ -983,7 +983,7 @@ with changes, or on a detached HEAD, is kept unless you name its session with
 `--force-session`. `--config` is this executor's `loom.toml`. Stop the daemon
 first, as for a scope release. The command never deletes a branch.
 
-A tree is made with `git cow add` when a `git-cow` is beside the server or on the daemon's `PATH`, so it starts as a copy-on-write copy that includes the checkout's ignored files and build output, and with plain `git worktree add` otherwise. A dirty checkout, or a file system without copy-on-write, makes `git-cow` decline and the tree is made with plain Git; the log line `executor.worktree_not_copy_on_write` says why. There is no key for this. Any other `git-cow` failure fails the attach.
+A tree is made with `git cow add` when a `git-cow` is beside the server or on the daemon's `PATH`, so it starts as a copy-on-write copy that includes the checkout's ignored files and build output, and with plain `git worktree add` otherwise. A dirty checkout makes `git-cow` decline (exit 2) and the tree is made with plain Git; on a file system without copy-on-write `git-cow` itself falls back to a plain copy. The log line `executor.worktree_not_copy_on_write` says why. There is no key for this. Any other `git-cow` failure fails the attach.
 
 A first attach makes the tree, which checks out the whole repository. The
 orchestrator keeps retrying an attach the executor answers "still preparing" for

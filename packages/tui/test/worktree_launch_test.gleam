@@ -5,10 +5,12 @@
 //// carried as a placement of its own.
 
 import core/agency_limits
+import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/daemon/protocol
+import tui/daemon/selection
 import tui/placement
 import tui/run
 
@@ -115,4 +117,36 @@ pub fn the_creation_sends_the_base_only_for_a_worktree_test() {
     "\"worktree\":{\"base\":\"origin/main\"}",
   )
   assert !string.contains(encoded(None), "worktree")
+}
+
+// A daemon that predates worktrees creates the session in the folder and its
+// reply has no `worktree` member. The launch stops that session and refuses.
+pub fn a_reply_without_the_worktree_stops_the_session_and_fails_the_launch_test() {
+  let commands = process.new_subject()
+  let row =
+    protocol.Session(
+      "made",
+      "/work",
+      "Made",
+      1,
+      protocol.Saved,
+      None,
+      None,
+      None,
+    )
+  let request = fn(command, _) {
+    process.send(commands, command)
+    Ok(protocol.LifecycleReply(protocol.Stopping("incarnation")))
+  }
+
+  let assert Error(reason) =
+    selection.confirm_worktree(row, Some("HEAD"), request)
+  assert string.contains(reason, "worktree")
+  assert process.receive(commands, 0) == Ok(protocol.StopSession("made"))
+
+  // A reply that has it, and a launch that asked for none, stop nothing.
+  let tree = protocol.Session(..row, worktree: Some("loom/made"))
+  assert selection.confirm_worktree(tree, Some("HEAD"), request) == Ok(Nil)
+  assert selection.confirm_worktree(row, None, request) == Ok(Nil)
+  assert process.receive(commands, 0) == Error(Nil)
 }

@@ -984,7 +984,9 @@ fn canonical_root(workspace: Workspace) -> Result(String, String) {
 
 // The names and paths of one session's tree, judged before anything touches
 // the disk. The session id arrives from a peer, so it is checked as a path
-// component, and the base is the configured one, never the peer's.
+// component, and the base comes from the workspace the caller passes: the
+// configured one for an executor's workspace, the session's own for a local
+// folder, and never one a peer sent.
 
 /// Establishes spec of for the caller, keeping its validation and result policy at this boundary.
 fn spec_of(
@@ -1219,8 +1221,9 @@ fn created(
 /// Runs `git-cow add` in the sandbox. Its environment is the helper's fixed one,
 /// which holds no `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or
 /// `GIT_COMMON_DIR` whatever the daemon's own holds, so the exit 2 that those
-/// variables cause cannot come from here; a dirty source can. Exit 2 and 3 are
-/// `git-cow` declining, and the creation falls back to plain Git after
+/// variables cause cannot come from here; a dirty source can. Exit 2 is
+/// `git-cow` declining (without `--require-cow` it falls back to plain Git itself
+/// when the file system has no copy-on-write, and exits 0), and the creation falls back to plain Git after
 /// removing anything the refused call left, logging why the tree is not a
 /// copy. Any other exit is a failure and is reported as one.
 fn copied(
@@ -1241,13 +1244,13 @@ fn copied(
   ))
   let said = said_by(output)
 
-  // Zero made the copy; 2 and 3 declined it; anything else is a failure.
+  // Zero made the copy; 2 declined it; anything else is a failure.
   case output.code {
     0 -> {
       drop_foreign_links(spec.path)
       Ok(output)
     }
-    2 | 3 -> {
+    2 -> {
       log.warn(env.config.logger, "executor.worktree_not_copy_on_write", [
         field.ident(key: "session", value: spec.session),
         field.count("exit", output.code),
@@ -1281,10 +1284,28 @@ fn drop_foreign_links(tree: String) -> Nil {
   ]
   list.each(roots, fn(root) {
     let erlang = root <> "/build/dev/erlang"
-    list.each(directory_entries(erlang), fn(package) {
-      drop_if_foreign(tree, erlang <> "/" <> package <> "/priv")
-    })
+
+    // A `build` or `erlang` that is itself a link out of the tree would make
+    // every path below it the source's, so nothing under one is touched.
+    case within(tree, erlang) {
+      True ->
+        list.each(directory_entries(erlang), fn(package) {
+          case within(tree, erlang <> "/" <> package) {
+            True -> drop_if_foreign(tree, erlang <> "/" <> package <> "/priv")
+            False -> Nil
+          }
+        })
+      False -> Nil
+    }
   })
+}
+
+/// Whether a directory resolves, links followed, to a place under `tree`.
+fn within(tree: String, directory: String) -> Bool {
+  case bootstrap.canonical_directory(directory) {
+    Ok(target) -> string.starts_with(target, tree <> "/")
+    Error(_) -> False
+  }
 }
 
 /// Deletes one `priv` path if it is a link that resolves outside `tree`, or
