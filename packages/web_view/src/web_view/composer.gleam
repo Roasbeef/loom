@@ -239,37 +239,33 @@ pub type Browser {
   )
 }
 
-/// Where the folder search stands. The search asks the daemon for directories
-/// below the home whose name holds the text typed in the Code list's field
-/// (protocol-change/132, the addendum on searching). It keeps the last hits on
-/// show while the next answer is out, so the list does not empty between two
-/// keystrokes.
+/// Where the folder index stands. The Code list's search ranks one index of the
+/// folder names below the home, which the daemon builds once when the list opens
+/// (protocol-change/132, the addendum on searching) and the page keeps for
+/// `folder_browse.index_ttl_ms`. A keystroke then costs a ranking in memory and
+/// asks the daemon for nothing, so at most one build is ever out.
 pub type Seek {
-  /// No search is wanted: the text is empty or too short, or the page may not
-  /// search.
-  Unsought
+  /// No index is held and none is out.
+  Unindexed
 
-  /// The daemon was asked for this fragment and has not answered. `before` is
-  /// what the last answer held, which stays drawn, narrowed to the fragment.
-  Seeking(
-    /// The fragment asked for, as `folder_browse.needle` made it.
-    needle: String,
-    /// The hits of the answer before, if there was one.
-    before: List(folder_browse.Hit),
+  /// The daemon was asked for an index and has not answered. An index held from
+  /// before stays drawn until the new one arrives.
+  Indexing(
+    /// The index held before, if there was one.
+    before: Option(folder_browse.Index),
   )
 
-  /// The daemon answered this fragment.
-  Sought(
-    /// The fragment answered.
-    needle: String,
-    /// What was found.
-    found: folder_browse.Found,
+  /// The daemon answered.
+  Indexed(
+    /// The folder names.
+    index: folder_browse.Index,
+    /// The page's clock when it arrived, in milliseconds.
+    at: Int,
   )
 
-  /// The daemon refused this fragment, in fixed words.
-  Unsearchable(
-    /// The fragment asked for.
-    needle: String,
+  /// The daemon refused to build one, in fixed words. The next open of the list
+  /// asks again.
+  Unindexable(
     /// Why.
     why: folder_browse.Refusal,
   )
@@ -451,14 +447,6 @@ pub type Intent {
     orchestrator: String,
   )
 
-  /// Ask the daemon to search its home for directories whose name holds this
-  /// fragment (protocol-change/132, the addendum on searching). The fragment is
-  /// the one `folder_browse.needle` made of the person's text.
-  Find(
-    /// The lowercase fragment.
-    needle: String,
-  )
-
   /// Ask the daemon to list this directory for the picker (protocol-change/132).
   /// The trail is the page's own, built from the listing it holds.
   Browse(
@@ -532,6 +520,8 @@ pub type Offers {
     /// offers under its own heading. Empty for a page that lists no project and
     /// for another orchestrator.
     projects: List(String),
+    /// The page's clock in milliseconds, which dates the folder index.
+    now: Int,
   )
 }
 
@@ -571,7 +561,7 @@ pub fn new() -> State {
     target: None,
     roles: creations.default_roles,
     search: "",
-    seek: Unsought,
+    seek: Unindexed,
     browser: Closed,
     sending: Ready,
     refusal: None,
@@ -604,13 +594,13 @@ pub fn update(
     Toggled(chip:) -> toggled(state, chip)
     ChoseAgent(agent:) -> #(chose_agent(state, offers, agent), Stay)
     Dismissed -> #(
-      State(..state, open: Shut, search: "", seek: Unsought, browser: Closed),
+      State(..state, open: Shut, search: "", browser: Closed),
       Stay,
     )
     ChoseTarget(target:) -> #(chose_target(state, offers, target), Stay)
     ChoseProfile(profile:) -> #(chose_profile(state, offers, profile), Stay)
     ChoseModel(model:) -> #(chose_model(state, offers, model), Stay)
-    Searched(text:) -> searched(state, offers, text)
+    Searched(text:) -> #(searched(state, text), Stay)
     ChoseFound(index:) -> #(chose_found(state, offers, index), Stay)
     Entered -> #(entered(state, offers), Stay)
     OpenedBrowser -> opened_browser(state, offers)
@@ -1041,17 +1031,11 @@ const unnamed = "Name the workspace, or choose another."
 fn toggled(state: State, chip: Chip) -> #(State, Intent) {
   case state.open {
     Showing(chip: open) if open == chip -> #(
-      State(..state, open: Shut, search: "", seek: Unsought, browser: Closed),
+      State(..state, open: Shut, search: "", browser: Closed),
       Stay,
     )
     Showing(_) | Shut -> #(
-      State(
-        ..state,
-        open: Showing(chip),
-        search: "",
-        seek: Unsought,
-        browser: Closed,
-      ),
+      State(..state, open: Showing(chip), search: "", browser: Closed),
       case chip, state.agent {
         CodeChip, Here -> ReadPlacements
         CodeChip, Orchestrator(name:) -> ReadOn(orchestrator: name)
@@ -1081,7 +1065,6 @@ fn chose_agent(state: State, offers: Offers, agent: Agent) -> State {
         agent:,
         open: Shut,
         search: "",
-        seek: Unsought,
         browser: Closed,
         refusal: None,
         limits:,
@@ -1175,7 +1158,6 @@ fn chose_target(state: State, offers: Offers, target: Target) -> State {
             open: Shut,
             target: Some(target),
             search: "",
-            seek: Unsought,
             browser: Closed,
             refusal: None,
           )
@@ -1282,7 +1264,6 @@ fn chose_picked(state: State, offers: Offers) -> State {
         open: Shut,
         target: Some(Picked(trail)),
         search: "",
-        seek: Unsought,
         browser: Closed,
         refusal: None,
       )
@@ -1321,78 +1302,78 @@ fn chose_model(state: State, offers: Offers, model: Option(String)) -> State {
   }
 }
 
-/// Updates the search text while the Code chip is showing, and owes the daemon a
-/// search when the text is a fragment worth one (`folder_browse.needle`) and the
-/// page may search. Text the search has already asked for is not asked again, so a
-/// keystroke that leaves the fragment as it was costs nothing.
-fn searched(state: State, offers: Offers, text: String) -> #(State, Intent) {
+/// Updates the search text while the Code chip is showing. The text only ranks
+/// the index the page holds, so it asks the daemon for nothing.
+fn searched(state: State, text: String) -> State {
   // The list's own chip is the only place a search is typed.
   case state.open {
-    Showing(chip: CodeChip) -> {
-      let typed = State(..state, search: bounded(text))
-
-      // A fragment worth a search owes one, and text too short for one clears it.
-      case offers.typing, folder_browse.needle(typed.search) {
-        MayType, Ok(needle) -> seeking(typed, needle)
-        MayType, Error(Nil) | MayNotType, _ -> #(
-          State(..typed, seek: Unsought),
-          Stay,
-        )
-      }
-    }
-    Showing(_) | Shut -> #(state, Stay)
+    Showing(chip: CodeChip) -> State(..state, search: bounded(text))
+    Showing(_) | Shut -> state
   }
 }
 
-/// The state while a search for `needle` is out, and the search the daemon is
-/// owed, unless that fragment is already asked or answered. The hits of the last
-/// answer stay drawn meanwhile.
-fn seeking(state: State, needle: String) -> #(State, Intent) {
-  case state.seek {
-    Seeking(needle: held, ..)
-      | Sought(needle: held, ..)
-      | Unsearchable(needle: held, ..)
-      if held == needle
-    -> #(state, Stay)
-    Unsought | Seeking(..) | Sought(..) | Unsearchable(..) -> #(
-      State(..state, seek: Seeking(needle:, before: hits_held(state.seek))),
-      Find(needle:),
-    )
-  }
-}
-
-/// The hits a search state holds on show.
-fn hits_held(seek: Seek) -> List(folder_browse.Hit) {
-  case seek {
-    Seeking(before:, ..) -> before
-    Sought(found:, ..) -> found.hits
-    Unsought | Unsearchable(..) -> []
-  }
-}
-
-/// The daemon's answer to a `Find`. It is applied only while the page waits for
-/// that fragment, so an answer that arrives after the person typed more, or after
-/// the list closed, is dropped.
+/// Whether the page owes the daemon an index, and the state that says it is out.
+/// It is owed while the Code list is open on a page that may type a path, when no
+/// index is held, the last build was refused, or the held one has outlived
+/// `folder_browse.index_ttl_ms`. The seeds are the remembered folders, which the
+/// daemon reads the parents of first. A build already out is never asked twice.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let state = composer.State(..composer.new(), seek: composer.Seeking("loom", []))
-/// let found = folder_browse.Found([], folder_browse.Covered)
-/// assert composer.found(state, "loom", Ok(found)).seek == composer.Sought("loom", found)
+/// let state = composer.State(..composer.new(), open: composer.Showing(composer.CodeChip))
+/// let #(asking, seeds) = composer.indexing(state, offers)
+/// assert asking.seek == composer.Indexing(None)
 /// ```
-pub fn found(
+pub fn indexing(
   state: State,
-  needle: String,
-  answer: folder_browse.FindAnswer,
-) -> State {
-  case state.seek {
-    Seeking(needle: waiting, ..) if waiting == needle ->
-      case answer {
-        Ok(found) -> State(..state, seek: Sought(needle:, found:))
-        Error(why) -> State(..state, seek: Unsearchable(needle:, why:))
+  offers: Offers,
+) -> #(State, Option(List(String))) {
+  // An index is owed only while the Code list is open on a page that may type a path.
+  let owed = case state.open, offers.typing, state.seek {
+    Showing(chip: CodeChip), MayType, Unindexed -> Some(None)
+    Showing(chip: CodeChip), MayType, Unindexable(_) -> Some(None)
+    Showing(chip: CodeChip), MayType, Indexed(index:, at:) ->
+      case offers.now - at >= folder_browse.index_ttl_ms {
+        True -> Some(Some(index))
+        False -> None
       }
-    Unsought | Seeking(..) | Sought(..) | Unsearchable(..) -> state
+    _, _, _ -> None
+  }
+
+  // An index is owed only while the Code list is open on a page that may type a path.
+  case owed {
+    Some(before) -> #(
+      State(..state, seek: Indexing(before:)),
+      Some(offers.folders),
+    )
+    None -> #(state, None)
+  }
+}
+
+/// The daemon's answer to an index request, taken at the page's clock `now`. It is
+/// applied only while a build is out, so a late duplicate changes nothing. A
+/// refusal keeps the index held before, if any, so a daemon that is slow once does
+/// not empty the list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = composer.State(..composer.new(), seek: composer.Indexing(None))
+/// let index = folder_browse.Index("/h", [], folder_browse.Covered)
+/// assert composer.indexed(state, Ok(index), 5).seek == composer.Indexed(index, 5)
+/// ```
+pub fn indexed(
+  state: State,
+  answer: folder_browse.IndexAnswer,
+  now: Int,
+) -> State {
+  case state.seek, answer {
+    Indexing(_), Ok(index) -> State(..state, seek: Indexed(index:, at: now))
+    Indexing(Some(index)), Error(_) ->
+      State(..state, seek: Indexed(index:, at: now))
+    Indexing(None), Error(why) -> State(..state, seek: Unindexable(why:))
+    Unindexed, _ | Indexed(..), _ | Unindexable(_), _ -> state
   }
 }
 
@@ -1416,7 +1397,6 @@ fn picked(state: State, trail: List(String)) -> State {
     open: Shut,
     target: Some(Picked(trail)),
     search: "",
-    seek: Unsought,
     browser: Closed,
     refusal: None,
   )
@@ -1495,16 +1475,30 @@ pub fn choices(state: State, offers: Offers) -> Choices {
     })
 
   let shown = shown_hits(state)
+
+  // A folder that a drawn remembered folder already shows is not offered twice.
+  let home = case state.seek {
+    Indexed(index:, ..) | Indexing(before: Some(index)) -> index.home
+    Unindexed | Unindexable(_) | Indexing(before: None) -> ""
+  }
+
+  // A found folder is left out only when a remembered folder drawn above it is the
+  // same directory, compared by whole path, so a folder of the same name
+  // elsewhere is still offered.
+  let recent_paths =
+    list.filter(offers.folders, holds) |> list.take(menu_recent)
   let found =
-    list.index_map(shown, fn(hit, index) { #(hit, index) })
-    |> list.filter(fn(each) { !remembered(offers.folders, { each.0 }.trail) })
+    list.index_map(shown, fn(trail, index) { #(trail, index) })
+    |> list.filter(fn(each) {
+      !list.contains(recent_paths, home <> "/" <> string.join(each.0, "/"))
+    })
     |> list.map(fn(each) {
-      let trail = { each.0 }.trail
+      let text = folder_browse.trail_text(each.0)
 
       Choice(
-        target: Picked(trail),
-        name: name_of(folder_browse.trail_text(trail)),
-        parent: parent_of(folder_browse.trail_text(trail)),
+        target: Picked(each.0),
+        name: name_of(text),
+        parent: parent_of(text),
         found: Some(each.1),
       )
     })
@@ -1537,25 +1531,20 @@ pub fn first_choice(choices: Choices) -> Option(Choice) {
   }
 }
 
-/// The hits the list draws: those of the answer, or of the one before while the
-/// next is out, narrowed to the fragment now typed, so a longer fragment drops
-/// what no longer matches at once.
-fn shown_hits(state: State) -> List(folder_browse.Hit) {
-  case folder_browse.needle(state.search) {
-    Ok(fragment) ->
-      list.filter(hits_held(state.seek), fn(hit) {
-        folder_browse.matches(fragment, hit.trail)
-      })
-    Error(Nil) -> []
+/// The folders the list draws from the index: the best entries for the fragment
+/// now typed, ranked. A stale index stays in use while its replacement is out.
+fn shown_hits(state: State) -> List(List(String)) {
+  // Ranking needs a held index and a fragment worth ranking.
+  let held = case state.seek {
+    Indexed(index:, ..) | Indexing(before: Some(index)) -> Ok(index)
+    Unindexed | Unindexable(_) | Indexing(before: None) -> Error(Nil)
   }
-}
 
-/// Whether a remembered folder is the directory a trail names. Both lie below the
-/// home, so the trail is the end of the folder's path.
-fn remembered(folders: List(String), trail: List(String)) -> Bool {
-  let tail = "/" <> string.join(trail, "/")
-
-  list.any(folders, fn(path) { string.ends_with(path, tail) })
+  // Ranking needs a held index and a fragment worth ranking.
+  case held, folder_browse.needle(state.search) {
+    Ok(index), Ok(fragment) -> folder_browse.rank(index.entries, fragment)
+    Ok(_), Error(Nil) | Error(Nil), _ -> []
+  }
 }
 
 /// A folder's own name: the last component of its path. A path with none, such

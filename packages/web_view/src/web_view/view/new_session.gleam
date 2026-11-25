@@ -1225,7 +1225,7 @@ fn folder_groups(
   list.flatten([
     group(pane, recent_title, "", choices.recent),
     group(pane, "Folders", "found under your home", choices.found),
-    seek_note(pane.state.seek),
+    seek_note(pane),
     group(pane, "Projects", "", choices.projects),
   ])
 }
@@ -1277,25 +1277,38 @@ fn folder_row(pane: Pane(message), each: composer.Choice) -> Element(message) {
   )
 }
 
-/// What the search says of itself under the found folders: that it is out, that
-/// the daemon refused it, or that it stopped before it had looked everywhere.
-fn seek_note(seek: composer.Seek) -> List(Element(message)) {
-  case seek {
-    composer.Unsought -> []
-    composer.Seeking(..) -> [
-      html.p([attribute.class("pop-foot")], [html.text("Searching…")]),
+/// What the search says of itself under the found folders, once something is
+/// typed: that the index is being built, that the daemon refused to build one, or
+/// that the build stopped before it had looked everywhere.
+fn seek_note(pane: Pane(message)) -> List(Element(message)) {
+  // The note depends on what the index is doing and whether anything is typed.
+  let typing = case folder_browse.needle(pane.state.search) {
+    Ok(_) -> True
+    Error(Nil) -> False
+  }
+
+  // The note depends on what the index is doing and whether anything is typed.
+  case typing, pane.state.seek {
+    False, _ | True, composer.Unindexed -> []
+    True, composer.Indexing(before: None) -> [
+      html.p([attribute.class("pop-foot")], [
+        html.text("Indexing your folders…"),
+      ]),
     ]
-    composer.Unsearchable(why:, ..) -> [
+    True, composer.Indexing(before: Some(_)) -> []
+    True, composer.Unindexable(why:) -> [
       html.p([attribute.class("pop-foot")], [
         html.text(folder_browse.refusal_words(why)),
       ]),
     ]
-    composer.Sought(found:, ..) ->
-      case found.reach {
+    True, composer.Indexed(index:, ..) ->
+      case index.reach {
         folder_browse.Covered -> []
         folder_browse.Stopped -> [
           html.p([attribute.class("pop-foot")], [
-            html.text("Showing the first matches. Type more to narrow them."),
+            html.text(
+              "Not every folder was searched. Type more of the name, or open a folder.",
+            ),
           ]),
         ]
       }
@@ -1331,8 +1344,11 @@ fn nothing_note(
 ) -> List(Element(message)) {
   // A search that is out may still find a row, so it holds the note back.
   let waiting = case pane.state.seek {
-    composer.Seeking(..) -> True
-    composer.Unsought | composer.Sought(..) | composer.Unsearchable(..) -> False
+    composer.Indexing(before: None) -> True
+    composer.Indexing(before: Some(_))
+    | composer.Unindexed
+    | composer.Indexed(..)
+    | composer.Unindexable(_) -> False
   }
 
   // The note is for text that matched no row anywhere and is not waiting for one.

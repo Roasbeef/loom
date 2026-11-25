@@ -2346,7 +2346,7 @@ fn folder_keeper(
           deliver(after)
         },
         browse: fn(_, _) { Nil },
-        find: fn(_, _) { Nil },
+        index: fn(_, _) { Nil },
       ),
     ),
   )
@@ -2604,7 +2604,7 @@ pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
           recent: fn(deliver) { deliver(rows) },
           forget: fn(_, _) { Nil },
           browse: fn(_, _) { Nil },
-          find: fn(_, _) { Nil },
+          index: fn(_, _) { Nil },
         ),
       ),
     )

@@ -6562,36 +6562,39 @@ pub fn the_folder_listing_is_answered_for_the_owners_operating_page_only_test() 
   })
 }
 
-// The folder search is answered for the owner's operating page alone
+// The folder index is answered for the owner's operating page alone
 // (protocol-change/132, the addendum on searching), by the same owner check as the
 // listing, and the home is read only after it.
-pub fn the_folder_search_is_answered_for_the_owners_operating_page_only_test() {
+pub fn the_folder_index_is_answered_for_the_owners_operating_page_only_test() {
   fixture(fn(ready, _, credential) {
-    let home = owners_home("find")
+    let home = owners_home("index")
     let assert Ok(Nil) = simplifile.create_directory_all(home <> "/code/loomy")
-      as "a folder to find"
+      as "a folder to index"
     let #(standing, _) = creator_standing(ready, credential, access.Operator)
 
-    let assert Ok(found) =
-      ui_socket.find_for(standing, page_open, fn() { Ok(home) }, "loom")
-    assert list.map(found.hits, fn(hit) { hit.trail }) == [["code", "loomy"]]
+    let assert Ok(index) =
+      ui_socket.index_for(standing, page_open, fn() { Ok(home) }, [])
+    assert list.contains(list.map(index.entries, fn(entry) { entry.trail }), [
+      "code",
+      "loomy",
+    ])
 
     let refused = Error(folder_browse.NotAFolder)
     let #(readonly, _) = creator_standing(ready, credential, access.Observer)
-    assert ui_socket.find_for(readonly, page_open, fn() { Ok(home) }, "loom")
+    assert ui_socket.index_for(readonly, page_open, fn() { Ok(home) }, [])
       == refused
-    assert ui_socket.find_for(
+    assert ui_socket.index_for(
         standing,
         fn() { Error(Nil) },
         fn() { Ok(home) },
-        "loom",
+        [],
       )
       == refused
-    let existing = create_session(ready, "find-known", 1125)
-    let grant = member(ready, "ui-find", existing, access.Operator)
+    let existing = create_session(ready, "index-known", 1125)
+    let grant = member(ready, "ui-index", existing, access.Operator)
     let #(members, _) = creator_standing(ready, grant, access.Operator)
-    let members = ui_socket.Standing(..members, principal: "ui-find")
-    assert ui_socket.find_for(members, page_open, fn() { Ok(home) }, "loom")
+    let members = ui_socket.Standing(..members, principal: "ui-index")
+    assert ui_socket.index_for(members, page_open, fn() { Ok(home) }, [])
       == refused
 
     // The home is never read for a page that fails the check.
@@ -6600,13 +6603,9 @@ pub fn the_folder_search_is_answered_for_the_owners_operating_page_only_test() {
       process.send(read, Nil)
       Ok(home)
     }
-    assert ui_socket.find_for(readonly, page_open, watching, "loom") == refused
-    assert ui_socket.find_for(members, page_open, watching, "loom") == refused
+    assert ui_socket.index_for(readonly, page_open, watching, []) == refused
+    assert ui_socket.index_for(members, page_open, watching, []) == refused
     assert process.receive(read, 0) == Error(Nil)
-
-    // A fragment the rule refuses is refused to the owner too.
-    assert ui_socket.find_for(standing, page_open, fn() { Ok(home) }, "l")
-      == refused
   })
 }
 
@@ -12463,24 +12462,4 @@ pub fn a_stalled_folder_listing_is_answered_unreadable_at_its_deadline_test() {
 
   ui_socket.browse_within(fn() { Ok(listing) }, 1000, process.send(answers, _))
   assert process.receive(answers, 1500) == Ok(Ok(listing))
-}
-
-// A search runs under the same deadline: one that stalls is answered `Unreadable`
-// when it passes, and a quick one is answered as it is (protocol-change/132).
-pub fn a_stalled_folder_search_is_answered_unreadable_at_its_deadline_test() {
-  let answers = process.new_subject()
-  let found = folder_browse.Found([], folder_browse.Covered)
-
-  ui_socket.find_within(
-    fn() {
-      process.sleep(2000)
-      Ok(found)
-    },
-    100,
-    process.send(answers, _),
-  )
-  assert process.receive(answers, 1500) == Ok(Error(folder_browse.Unreadable))
-
-  ui_socket.find_within(fn() { Ok(found) }, 1000, process.send(answers, _))
-  assert process.receive(answers, 1500) == Ok(Ok(found))
 }

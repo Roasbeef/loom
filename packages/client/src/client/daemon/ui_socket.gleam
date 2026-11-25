@@ -1171,13 +1171,14 @@ pub fn upgrade_home(
             deliver,
           )
         },
-        // The folder search (protocol-change/132, the addendum on searching)
-        // walks the owner's directories, so it is a task of its own under the
-        // same deadline as a listing.
-        find: fn(text, deliver) {
-          find_within(
-            fn() { find_for(standing, open, new_folder.home, text) },
+        // The folder index (protocol-change/132, the addendum on searching) is
+        // one walk of the home, so it is a task of its own under a deadline, and
+        // the page asks for one build at a time.
+        index: fn(seeds, deliver) {
+          within_deadline(
+            fn() { index_for(standing, open, new_folder.home, seeds) },
             browse_ms,
+            Error(folder_browse.Unreadable),
             deliver,
           )
         },
@@ -5515,24 +5516,6 @@ pub fn browse_within(
   within_deadline(attempt, within, Error(folder_browse.Unreadable), deliver)
 }
 
-/// The folder search's counterpart of `browse_within`: runs the walk in a task of
-/// its own under a deadline and delivers its answer, or `Unreadable` once the
-/// deadline has passed, so the page never waits for a search that will not come.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // ui_socket.find_within(fn() { Error(folder_browse.Unreadable) }, 5000, deliver)
-/// ```
-@internal
-pub fn find_within(
-  attempt: fn() -> folder_browse.FindAnswer,
-  within: Int,
-  deliver: fn(folder_browse.FindAnswer) -> Nil,
-) -> Nil {
-  within_deadline(attempt, within, Error(folder_browse.Unreadable), deliver)
-}
-
 /// Runs one attempt in a witnessed weft task under a deadline and delivers its
 /// answer, or `expired` when the deadline passed first. Both folder reads share
 /// it, so the deadline is one rule.
@@ -5595,30 +5578,36 @@ pub fn browse_for(
   }
 }
 
-/// The directories below the owner's home whose name holds a fragment, for the
-/// composer's folder search (protocol-change/132, the addendum on searching). The
-/// same owner check as a creation and a listing runs first, so a page that may
-/// not create is told nothing about the filesystem and costs none, and the home is
-/// read only after it. A page that fails the check gets the refusal a missing
-/// folder gets.
+/// The index of folder names below the owner's home, for the composer's folder
+/// search (protocol-change/132, the addendum on searching). The same owner check as
+/// a creation and a listing runs first, so a page that may not create is told
+/// nothing about the filesystem and costs none, and the home is read only after
+/// it. A page that fails the check gets the refusal a missing folder gets. The
+/// seeds are hints that `folder_listing.index_in` checks itself.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.find_for(standing, open, fn() { Ok("/Users/o") }, "loom")
+/// // ui_socket.index_for(standing, open, fn() { Ok("/Users/o") }, [])
 /// ```
 @internal
-pub fn find_for(
+pub fn index_for(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
   home: fn() -> Result(String, creations.Reason),
-  text: String,
-) -> folder_browse.FindAnswer {
+  seeds: List(String),
+) -> folder_browse.IndexAnswer {
   // This branch resolves authorized_owner standing open before the operation continues.
   case authorized_owner(standing, open) {
     Ok(_) ->
       case home() {
-        Ok(directory) -> folder_listing.find_in(directory, text)
+        Ok(directory) ->
+          Ok(folder_listing.index_in(
+            directory,
+            seeds,
+            folder_listing.limits,
+            bootstrap.system_time_ms,
+          ))
         Error(_) -> Error(folder_browse.NoHome)
       }
     Error(_) -> Error(folder_browse.NotAFolder)

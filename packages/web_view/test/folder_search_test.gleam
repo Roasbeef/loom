@@ -2,29 +2,30 @@
 //// its model in `web_view/composer` and its list in `view/new_session`, driven
 //// through the home component.
 ////
-//// What these tests pin: a fragment of two characters or more owes the daemon one
-//// search, and a shorter one or a page that may not search owes none; an answer
-//// for a fragment the person has since changed is dropped; a longer fragment
-//// narrows the hits on show at once; the rows are the remembered folders, then the
-//// found ones, then the projects, each matched by a fragment anywhere in its path,
-//// with a found folder that a remembered one already shows left out; Enter chooses
-//// the first row; a press on a found folder names an index the page holds, and one
-//// it did not draw changes nothing; a project is offered only when the daemon
-//// listed it; and a name or path is drawn as text and never as an attribute.
+//// What these tests pin: the daemon is asked for one index when the Code list
+//// opens, and never for a keystroke, and never twice while one is out; an index is
+//// kept for its lifetime and asked for again after it, after a refusal and not
+//// before; the ranking puts an exact name before a prefix before any other match,
+//// the shallower first; the rows are the remembered folders, then the found ones,
+//// then the projects; a found folder is left out only when a remembered folder
+//// drawn above it is the same directory by whole path; Enter chooses the first
+//// row; a press on a found folder names an index the page holds, and one it did
+//// not draw changes nothing; a project is offered only when the daemon listed it;
+//// and a name or path is drawn as text and never as an attribute.
 
 import core/agency_limits
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
 import web_view/composer
 import web_view/creations
-import web_view/folder_browse.{Covered, Found, Hit, Plain, Repository, Stopped}
+import web_view/folder_browse.{Covered, Entry, Index, Stopped}
 import web_view/home
 import web_view/placements
-import web_view/sessions.{Entry, Live}
+import web_view/sessions.{Entry as Session, Live}
 import web_view/signins
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -42,6 +43,7 @@ fn offers(typing: composer.Typing) -> composer.Offers {
     agents: [],
     typing:,
     projects: ["/Users/o/code/atlas"],
+    now: 1000,
   )
 }
 
@@ -56,8 +58,22 @@ fn listed() -> composer.State {
   composer.State(..composer.new(), open: composer.Showing(composer.CodeChip))
 }
 
-fn hit(trail: List(String)) -> folder_browse.Hit {
-  Hit(trail:, marker: Plain)
+fn entry(trail: List(String)) -> folder_browse.Entry {
+  let assert Ok(name) = list.last(trail) as "a trail has a name"
+  Entry(trail:, lower: string.lowercase(name))
+}
+
+fn index(trails: List(List(String))) -> folder_browse.Index {
+  Index(home: "/Users/o", entries: list.map(trails, entry), reach: Covered)
+}
+
+// A state whose list is open and whose index is held, with the text typed.
+fn typed(trails: List(List(String)), text: String) -> composer.State {
+  composer.State(
+    ..listed(),
+    search: text,
+    seek: composer.Indexed(index(trails), 1000),
+  )
 }
 
 fn names(choices: List(composer.Choice)) -> List(String) {
@@ -66,162 +82,189 @@ fn names(choices: List(composer.Choice)) -> List(String) {
 
 // --- the model ---------------------------------------------------------------
 
-// A fragment of two characters is asked of the daemon once, in the lowercase and
-// trimmed form the daemon judges again. One character, nothing, or a page that may
-// not type a path asks for nothing.
-pub fn a_fragment_owes_the_daemon_one_search_test() {
-  let #(asking, intent) = step(listed(), composer.Searched("  LoOm "))
-  assert intent == composer.Find("loom")
-  assert asking.seek == composer.Seeking("loom", [])
+// An open list owes one index, and a build that is out is not asked for again,
+// whatever is typed meanwhile. A list that is shut, or a page that may not type a
+// path, owes none.
+pub fn an_open_list_owes_one_index_test() {
+  let #(asking, seeds) = composer.indexing(listed(), offers(composer.MayType))
+  assert asking.seek == composer.Indexing(None)
+  assert seeds == Some(["/Users/o/work/loom", "/Users/o/work/weft"])
 
-  // The same fragment again, as a keystroke that changed nothing might send, is
-  // not asked twice.
-  let #(again, quiet) = step(asking, composer.Searched("loom"))
-  assert again.seek == asking.seek
-  assert quiet == composer.Stay
-
-  let #(short, none) = step(asking, composer.Searched("l"))
-  assert short.seek == composer.Unsought
-  assert none == composer.Stay
+  // Typing while the build is out asks for nothing and costs no message.
+  let #(typing, intent) = step(asking, composer.Searched("loom"))
+  assert intent == composer.Stay
+  let #(again, none) = composer.indexing(typing, offers(composer.MayType))
+  assert again == typing
+  assert none == None
 
   let #(shut, never) =
-    composer.update(
-      listed(),
-      composer.Searched("loom"),
-      offers(composer.MayNotType),
-      [],
+    composer.indexing(composer.new(), offers(composer.MayType))
+  assert shut.seek == composer.Unindexed
+  assert never == None
+  let #(blocked, nothing) =
+    composer.indexing(listed(), offers(composer.MayNotType))
+  assert blocked.seek == composer.Unindexed
+  assert nothing == None
+}
+
+// The answer settles the build only while one is out, an index lives for its
+// lifetime and is asked for again after it with the old one kept on show, and a
+// refusal is asked for again at the next open and keeps an old index.
+pub fn an_index_lives_for_its_lifetime_and_a_refusal_is_retried_test() {
+  let #(asking, _) = composer.indexing(listed(), offers(composer.MayType))
+  let built = index([["loom"]])
+
+  assert composer.indexed(listed(), Ok(built), 5) == listed()
+
+  let held = composer.indexed(asking, Ok(built), 5)
+  assert held.seek == composer.Indexed(built, 5)
+
+  // Inside its lifetime nothing is asked; at the end of it a new build is, and the
+  // old index stays drawn.
+  let young = composer.Offers(..offers(composer.MayType), now: 5 + 299_999)
+  assert composer.indexing(held, young).1 == None
+  let old = composer.Offers(..offers(composer.MayType), now: 5 + 300_000)
+  let #(renewing, seeds) = composer.indexing(held, old)
+  assert renewing.seek == composer.Indexing(Some(built))
+  assert seeds != None
+  let kept =
+    composer.indexed(renewing, Error(folder_browse.Unreadable), 400_000)
+  assert kept.seek == composer.Indexed(built, 400_000)
+
+  // A first build that is refused is asked for again.
+  let refused = composer.indexed(asking, Error(folder_browse.Unreadable), 5)
+  assert refused.seek == composer.Unindexable(folder_browse.Unreadable)
+  let #(retry, again) = composer.indexing(refused, offers(composer.MayType))
+  assert retry.seek == composer.Indexing(None)
+  assert again != None
+}
+
+// The ranking: an exact name, then a name that starts with the fragment, then one
+// that holds it, the shallower first and then the path in order, at most twenty.
+pub fn the_ranking_orders_exact_then_prefix_then_contains_test() {
+  let entries =
+    list.map(
+      [
+        ["a", "b", "oldloom"],
+        ["loom-picker"],
+        ["x", "Loom"],
+        ["loom"],
+        ["code", "loomy"],
+        ["y", "Loom"],
+      ],
+      entry,
     )
-  assert shut.seek == composer.Unsought
-  assert never == composer.Stay
+
+  assert folder_browse.rank(entries, "loom")
+    == [
+      ["loom"],
+      ["x", "Loom"],
+      ["y", "Loom"],
+      ["loom-picker"],
+      ["code", "loomy"],
+      ["a", "b", "oldloom"],
+    ]
+
+  // Past twenty, the best twenty are kept, not the first twenty met.
+  let many =
+    list.append(
+      list.map(string.to_graphemes("abcdefghijklmnopqrstuvwxyzABCD"), fn(each) {
+        entry(["d", "loom" <> each])
+      }),
+      [entry(["deep", "er", "loom"])],
+    )
+  let top = folder_browse.rank(many, "loom")
+  assert list.length(top) == folder_browse.find_limit
+  assert list.first(top) == Ok(["deep", "er", "loom"])
 }
 
-// The answer settles the search only while the page waits for that fragment, and
-// the hits of the answer before stay on show, narrowed to what is now typed.
-pub fn only_the_answer_awaited_settles_the_search_test() {
-  let #(asking, _) = step(listed(), composer.Searched("lo"))
-  let found = Found([hit(["a", "loom"]), hit(["b", "lodge"])], Covered)
-
-  assert composer.found(asking, "loom", Ok(found)) == asking
-
-  let settled = composer.found(asking, "lo", Ok(found))
-  assert settled.seek == composer.Sought("lo", found)
-
-  // A longer fragment is asked, and until it is answered the hits that no longer
-  // match are not drawn.
-  let #(longer, intent) = step(settled, composer.Searched("loo"))
-  assert intent == composer.Find("loo")
-  let drawn = composer.choices(longer, offers(composer.MayType)).found
-  assert names(drawn) == ["loom"]
-
-  // A late answer for the old fragment changes nothing.
-  assert composer.found(longer, "lo", Ok(found)) == longer
-}
-
-// A refusal is kept with its words and draws no folder.
-pub fn a_refused_search_keeps_its_words_test() {
-  let #(asking, _) = step(listed(), composer.Searched("loom"))
-  let refused = composer.found(asking, "loom", Error(folder_browse.Unreadable))
-  assert refused.seek == composer.Unsearchable("loom", folder_browse.Unreadable)
-  assert composer.choices(refused, offers(composer.MayType)).found == []
-}
-
-// The rows: the remembered folders the text matches anywhere in the path, the
-// found ones that no remembered folder shows, and the projects.
+// The rows: the remembered folders the text matches anywhere in the path, the found
+// ones, and the projects; a found folder is left out only when a remembered folder
+// drawn above it is the same directory by whole path.
 pub fn the_rows_are_remembered_then_found_then_projects_test() {
-  let state = composer.State(..listed(), search: "o")
-  let all = composer.choices(state, offers(composer.MayType))
+  let all = composer.choices(typed([], "o"), offers(composer.MayType))
   assert names(all.recent) == ["loom", "weft"]
   assert names(all.projects) == ["atlas"]
 
-  // `work` is in both remembered paths, so both stay; `weft` matches only by name.
-  let by_parent =
-    composer.choices(
-      composer.State(..listed(), search: "WORK"),
-      offers(composer.MayType),
-    )
+  let by_parent = composer.choices(typed([], "WORK"), offers(composer.MayType))
   assert names(by_parent.recent) == ["loom", "weft"]
   assert by_parent.projects == []
 
-  // A found folder that a remembered one already shows is left out, and the
-  // others keep the index a press names.
-  let #(asking, _) = step(listed(), composer.Searched("loom"))
-  let found =
-    Found(
-      [
-        hit(["work", "loom"]),
-        hit(["code", "loom-picker"]),
-        hit(["x", "loomy"]),
-      ],
-      Covered,
+  // `~/work/loom` is drawn as a remembered folder, so its found copy is left out.
+  // `~/loom` has the same name and the same end of a path but is another folder,
+  // and is kept, with the index a press names.
+  let rows =
+    composer.choices(
+      typed([["work", "loom"], ["loom"], ["code", "loom-picker"]], "loom"),
+      offers(composer.MayType),
     )
-  let settled = composer.found(asking, "loom", Ok(found))
-  let rows = composer.choices(settled, offers(composer.MayType))
   assert names(rows.recent) == ["loom"]
-  assert names(rows.found) == ["loom-picker", "loomy"]
-  assert list.map(rows.found, fn(each) { each.found }) == [Some(1), Some(2)]
-  assert list.map(rows.found, fn(each) { each.parent }) == ["~/code", "~/x"]
+  assert names(rows.found) == ["loom", "loom-picker"]
+  assert list.map(rows.found, fn(each) { each.found }) == [Some(0), Some(2)]
+  assert list.map(rows.found, fn(each) { each.parent }) == ["~", "~/code"]
+
+  // A remembered folder that is not drawn, because the text does not match it,
+  // hides nothing.
+  let shown =
+    composer.choices(
+      typed([["work", "loom"]], "oom"),
+      composer.Offers(..offers(composer.MayType), folders: [
+        "/Users/o/archive/old",
+      ]),
+    )
+  assert names(shown.found) == ["loom"]
 }
 
-// Enter chooses the first row in the order the list draws, and changes nothing
-// when there is none.
+// Enter chooses the first row in the order the list draws, and nothing when there
+// is none.
 pub fn enter_chooses_the_first_row_test() {
-  let #(asking, _) = step(listed(), composer.Searched("atlas"))
-  let #(project, _) = step(asking, composer.Entered)
+  let #(project, _) = step(typed([], "atlas"), composer.Entered)
   assert project.target == Some(composer.Project("/Users/o/code/atlas"))
   assert project.open == composer.Shut
   assert project.search == ""
-  assert project.seek == composer.Unsought
 
-  let #(asking, _) = step(listed(), composer.Searched("loom"))
-  let settled =
-    composer.found(asking, "loom", Ok(Found([hit(["x", "loomy"])], Covered)))
-  let #(chosen, _) = step(settled, composer.Entered)
+  let #(chosen, _) = step(typed([["x", "loomy"]], "loom"), composer.Entered)
   assert chosen.target == Some(composer.Folder("/Users/o/work/loom"))
 
   let #(only_found, _) =
     composer.update(
-      settled,
+      typed([["x", "loomy"]], "loom"),
       composer.Entered,
       composer.Offers(..offers(composer.MayType), folders: []),
       [],
     )
   assert only_found.target == Some(composer.Picked(["x", "loomy"]))
 
-  let #(nothing, _) =
-    step(composer.State(..listed(), search: "zzzz"), composer.Entered)
+  let #(nothing, _) = step(typed([], "zzzz"), composer.Entered)
   assert nothing.target == None
   assert nothing.open == composer.Showing(composer.CodeChip)
 }
 
-// A found folder is chosen by an index into the hits the page holds. An index it
-// did not draw, or a message on a page that may not type a path, chooses nothing.
+// A found folder is chosen by an index into the ranking the page holds. An index
+// it did not draw, or a message on a page that may not type a path, chooses
+// nothing, and the index survives the list closing.
 pub fn a_found_folder_is_chosen_by_index_test() {
-  let #(asking, _) = step(listed(), composer.Searched("loom"))
-  let settled =
-    composer.found(
-      asking,
-      "loom",
-      Ok(Found([hit(["x", "loomy"]), hit(["y", "loomer"])], Covered)),
-    )
+  let state = typed([["x", "loomy"], ["y", "loomer"]], "loom")
 
-  let #(chosen, _) = step(settled, composer.ChoseFound(1))
+  let #(chosen, _) = step(state, composer.ChoseFound(1))
   assert chosen.target == Some(composer.Picked(["y", "loomer"]))
+  assert chosen.seek == state.seek
   assert composer.place(composer.Picked(["y", "loomer"]), composer.Nothing)
     == Ok(creations.Typed("~/y/loomer"))
 
   list.each([-1, 2, 99], fn(index) {
-    let #(same, _) = step(settled, composer.ChoseFound(index))
-    assert same == settled
+    let #(same, _) = step(state, composer.ChoseFound(index))
+    assert same == state
   })
 
   let #(blocked, _) =
     composer.update(
-      settled,
+      state,
       composer.ChoseFound(0),
       offers(composer.MayNotType),
       [],
     )
-  assert blocked == settled
+  assert blocked == state
 }
 
 // A project is offered only when the daemon listed it, is chosen like a folder, and
@@ -260,34 +303,32 @@ pub fn a_folder_has_a_name_and_a_parent_test() {
   assert composer.parent_of("/loom") == "/"
 }
 
-// The fragment is judged here as the daemon judges it, and a hit is matched by its
-// name unless the fragment holds a slash.
-pub fn the_fragment_and_the_match_follow_one_rule_test() {
+// The fragment is judged once for the page and its `~/` is the home.
+pub fn the_fragment_follows_one_rule_test() {
   assert folder_browse.needle("  Loom ") == Ok("loom")
+  assert folder_browse.needle("~/code/app") == Ok("code/app")
+  assert folder_browse.needle("~/") == Error(Nil)
   assert folder_browse.needle("l") == Error(Nil)
   assert folder_browse.needle("a\nb") == Error(Nil)
-  assert folder_browse.matches("oom", ["code", "Loom"])
-  assert !folder_browse.matches("code", ["code", "app"])
-  assert folder_browse.matches("code/app", ["code", "app"])
-  assert folder_browse.hit_trail([hit(["a"])], 0) == Ok(["a"])
-  assert folder_browse.hit_trail([hit(["a"])], 1) == Error(Nil)
-  assert folder_browse.hit_trail([hit(["a"])], -1) == Error(Nil)
+  assert folder_browse.hit_trail([["a"]], 0) == Ok(["a"])
+  assert folder_browse.hit_trail([["a"]], 1) == Error(Nil)
+  assert folder_browse.hit_trail([["a"]], -1) == Error(Nil)
 }
 
 // --- the page ----------------------------------------------------------------
 
 fn owner(
-  searched: Subject(String),
-  answer: folder_browse.FindAnswer,
+  asked: Subject(List(String)),
+  answer: folder_browse.IndexAnswer,
 ) -> home.Start {
-  silent(searched, Some(answer))
+  silent(asked, Some(answer))
 }
 
-// The owner's page whose daemon answers a search with `answer`, or never, so the
-// search stays out.
+// The owner's page whose daemon answers an index request with `answer`, or never,
+// so the build stays out.
 fn silent(
-  searched: Subject(String),
-  answer: option.Option(folder_browse.FindAnswer),
+  asked: Subject(List(String)),
+  answer: Option(folder_browse.IndexAnswer),
 ) -> home.Start {
   home.Start(
     name: "Alice",
@@ -296,7 +337,7 @@ fn silent(
     sessions: fn(deliver) {
       deliver(
         home.Listed([
-          Entry(
+          Session(
             id: "B",
             name: "vetting lint",
             workspace: "/src/loom",
@@ -324,8 +365,8 @@ fn silent(
         recent: fn(_) { Nil },
         forget: fn(_, _) { Nil },
         browse: fn(_, _) { Nil },
-        find: fn(needle, deliver) {
-          process.send(searched, needle)
+        index: fn(seeds, deliver) {
+          process.send(asked, seeds)
           case answer {
             Some(answer) -> deliver(answer)
             None -> Nil
@@ -397,67 +438,88 @@ fn pressing(model: home.Model, messages: List(composer.Msg)) -> home.Model {
   list.fold(messages, model, compose)
 }
 
-// Typing in the open list asks the daemon once, and the answer is drawn under a
-// "Folders" heading with each folder's name and its parent as text, beside a
-// remembered folder, which keeps the "Recent" heading.
-pub fn typing_asks_the_daemon_and_draws_the_answer_test() {
-  let searched = process.new_subject()
-  let found =
-    Found(
-      [
-        Hit(["code", "loom-picker"], Repository),
-        Hit(["<b>notes</b>", "loom"], Plain),
+// Opening the list asks the daemon once for the index, with the remembered folders
+// as seeds, and typing asks for nothing: the answer is ranked in memory and drawn
+// under a "Folders" heading with each folder's name and its parent as text, beside
+// a remembered folder, which keeps the "Recent" heading.
+pub fn opening_asks_for_one_index_and_typing_asks_for_none_test() {
+  let asked = process.new_subject()
+  let built =
+    Index(
+      home: "/Users/o",
+      entries: [
+        Entry(["code", "loom-picker"], "loom-picker"),
+        Entry(["<b>notes</b>", "loom"], "loom"),
       ],
-      Covered,
+      reach: Covered,
     )
   let model =
-    opened(owner(searched, Ok(found)))
+    opened(owner(asked, Ok(built)))
     |> pressing([
       composer.Toggled(composer.CodeChip),
+      composer.Searched("lo"),
       composer.Searched("loom"),
     ])
   let html = drawn(model)
 
-  assert process.receive(searched, 0) == Ok("loom")
-  assert process.receive(searched, 0) == Error(Nil)
+  assert process.receive(asked, 0) == Ok(["/src/loom"])
+  assert process.receive(asked, 0) == Error(Nil)
   assert string.contains(html, "<loom-picklist>")
   assert string.contains(html, "class=\"search\"")
   assert string.contains(html, "Recent")
-  assert string.contains(html, ">loom<")
-  assert string.contains(html, ">/src<")
   assert string.contains(html, "Folders")
   assert string.contains(html, ">loom-picker<")
   assert string.contains(html, ">~/code<")
   assert string.contains(html, "&lt;b&gt;notes&lt;/b&gt;")
   assert !string.contains(html, "<b>notes</b>")
   assert string.contains(html, "Open folder…")
-  assert !string.contains(html, "Searching…")
+  assert !string.contains(html, "Indexing")
+
+  // Closing and opening again inside the index's lifetime asks for no second one.
+  let again =
+    pressing(model, [
+      composer.Toggled(composer.CodeChip),
+      composer.Toggled(composer.CodeChip),
+    ])
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(again), "Open folder…")
 }
 
-// While the answer is out the list says so, and a search that stopped says that
-// too.
-pub fn the_list_says_when_it_searches_and_when_it_stopped_test() {
+// While the build is out the list says so, a build that stopped says that, and a
+// refusal says why in fixed words.
+pub fn the_list_says_when_it_indexes_and_when_it_stopped_test() {
   let waiting =
     opened(silent(process.new_subject(), None))
     |> pressing([
       composer.Toggled(composer.CodeChip),
       composer.Searched("loom"),
     ])
-  assert string.contains(drawn(waiting), "Searching…")
+  assert string.contains(drawn(waiting), "Indexing your folders…")
 
   let stopped =
     opened(owner(
       process.new_subject(),
-      Ok(Found([hit(["a", "loomy"])], Stopped)),
+      Ok(Index("/Users/o", [Entry(["a", "loomy"], "loomy")], Stopped)),
     ))
     |> pressing([
       composer.Toggled(composer.CodeChip),
       composer.Searched("loom"),
     ])
-  assert string.contains(drawn(stopped), "Showing the first matches.")
+  assert string.contains(drawn(stopped), "Not every folder was searched.")
+
+  let refused =
+    opened(owner(process.new_subject(), Error(folder_browse.Unreadable)))
+    |> pressing([
+      composer.Toggled(composer.CodeChip),
+      composer.Searched("loom"),
+    ])
+  assert string.contains(
+    drawn(refused),
+    folder_browse.refusal_words(folder_browse.Unreadable),
+  )
 
   let empty =
-    opened(owner(process.new_subject(), Ok(Found([], Covered))))
+    opened(owner(process.new_subject(), Ok(Index("/Users/o", [], Covered))))
     |> pressing([
       composer.Toggled(composer.CodeChip),
       composer.Searched("zzzz"),
@@ -466,11 +528,11 @@ pub fn the_list_says_when_it_searches_and_when_it_stopped_test() {
 }
 
 // A page whose daemon gave it no folder capability asks for nothing and does not
-// say it is searching.
-pub fn a_page_without_the_capability_never_searches_test() {
+// say it is indexing.
+pub fn a_page_without_the_capability_never_indexes_test() {
   let start =
     home.Start(
-      ..owner(process.new_subject(), Ok(Found([], Covered))),
+      ..owner(process.new_subject(), Ok(Index("/h", [], Covered))),
       folders: None,
     )
   let model =
@@ -479,7 +541,7 @@ pub fn a_page_without_the_capability_never_searches_test() {
       composer.Toggled(composer.CodeChip),
       composer.Searched("loom"),
     ])
-  assert !string.contains(drawn(model), "Searching…")
+  assert !string.contains(drawn(model), "Indexing")
 }
 
 // Pressing a found folder chooses it, and the creation is asked for the typed
@@ -488,7 +550,11 @@ pub fn a_found_folder_reaches_the_daemon_as_a_typed_path_test() {
   let model =
     opened(owner(
       process.new_subject(),
-      Ok(Found([hit(["code", "loom-picker"])], Covered)),
+      Ok(Index(
+        "/Users/o",
+        [Entry(["code", "loom-picker"], "loom-picker")],
+        Covered,
+      )),
     ))
     |> pressing([
       composer.Toggled(composer.CodeChip),
@@ -506,7 +572,7 @@ pub fn every_search_handler_is_beneath_the_table_region_test() {
   let model =
     opened(owner(
       process.new_subject(),
-      Ok(Found([hit(["a", "loomy"])], Covered)),
+      Ok(Index("/Users/o", [Entry(["a", "loomy"], "loomy")], Covered)),
     ))
     |> pressing([
       composer.Toggled(composer.CodeChip),

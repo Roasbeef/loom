@@ -3,21 +3,24 @@
 ////
 //// The server draws the Code chip's list inside this element, a search field and
 //// a column of rows (`web_view/view/new_session`), and the element is on the page
-//// exactly while the list is open. It does three things that depend only on the
+//// exactly while the list is open. It does four things that depend only on the
 //// browser: it puts the focus in the search field when the list opens, so the
 //// way to a folder is to type and press Enter; it moves the focus down and up the
-//// column with the arrow keys (`picklist_rule.after_key`); and it closes the list
-//// on Escape by pressing the list's own scrim, the full-page button the server
-//// drew behind it, so the close is the ordinary click the server already
-//// answers.
+//// column with the arrow keys (`picklist_rule.after_key`); it closes the list on
+//// Escape by pressing the list's own scrim, the full-page button the server drew
+//// behind it, so the close is the ordinary click the server already answers; and
+//// it puts the focus back in the search field when the list returns from the
+//// folder picker, whose field is a new element.
 ////
-//// The element draws a slot and nothing else, as `<loom-popover>` does, and keeps
-//// no state but its one document listener. Keys are heard in the capture phase on
-//// the document, because Escape must be decided before the shell's own Escape
-//// (back to `main`) runs, and a consumed key is stopped and cancelled. The arrows
-//// act only when the focus is already inside the list. The element sends the
-//// server nothing and reads no attribute from it, and every row it moves between
-//// is a button or field the server drew.
+//// The element draws a slot and nothing else, as `<loom-popover>` does. Keys are
+//// heard in the capture phase on the document, because Escape must be decided
+//// before the shell's own Escape (back to `main`) runs, and a consumed key is
+//// stopped and cancelled. A key that belongs to an input method's composition is
+//// left alone, since Escape cancels one. The arrows act only when the focus is
+//// already inside the list. A mutation observer on the element's text notices a
+//// search field that is not the one last focused and focuses it. The element sends
+//// the server nothing and reads no attribute from it, and every row it moves
+//// between is a button or field the server drew.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -41,9 +44,14 @@ const items = ".search-field, button.opt"
 // The button behind the list that closes it, inside the chips' row.
 const scrim = ".pop-scrim"
 
-/// What the element holds: the document's key listener while it is connected.
+/// What the element holds while it is connected: the document's key listener, the
+/// observer that notices a new search field, and the field it last focused.
 pub type Model {
-  Model(listener: Option(Listener))
+  Model(
+    listener: Option(Listener),
+    observer: Option(ffi_dom.Observer),
+    field: Option(ffi_dom.Element),
+  )
 }
 
 /// Everything the element can be told.
@@ -54,8 +62,14 @@ pub type Msg {
   /// The element left the page.
   Disconnected
 
-  /// The document's listener is in place.
-  Listening(listener: Listener)
+  /// The document's listener and the observer are in place.
+  Listening(listener: Listener, observer: ffi_dom.Observer)
+
+  /// The list's content changed.
+  Changed
+
+  /// The search field was focused.
+  Focused(field: ffi_dom.Element)
 }
 
 /// Registers the element with the browser.
@@ -85,7 +99,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
 /// assert picklist.init_model().listener == option.None
 /// ```
 pub fn init_model() -> Model {
-  Model(listener: None)
+  Model(listener: None, observer: None, field: None)
 }
 
 /// Applies one message.
@@ -100,30 +114,35 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     // One listener per connection: moving the element stops the old one before
     // it starts another, and the field takes the focus once it is painted.
-    Connected -> #(model, effect.batch([stop(model.listener), listen()]))
+    Connected -> #(model, effect.batch([stop(model), listen()]))
 
     // `listen` registers after the paint, so this can arrive after a later
-    // `Connected`; the listener the model still holds is stopped as the new one
-    // is kept. A disconnect inside that one paint leaves a listener whose keys
-    // reach a detached element, which finds no items and does nothing.
-    Listening(listener:) -> #(
-      Model(listener: Some(listener)),
-      stop(model.listener),
+    // `Connected`; what the model still holds is stopped as the new is kept. A
+    // disconnect inside that one paint leaves a listener whose keys reach a
+    // detached element, which finds no items and does nothing.
+    Listening(listener:, observer:) -> #(
+      Model(..model, listener: Some(listener), observer: Some(observer)),
+      stop(model),
     )
-    Disconnected -> #(Model(listener: None), stop(model.listener))
+    Disconnected -> #(init_model(), stop(model))
+    Changed -> #(model, refocus(model.field))
+    Focused(field:) -> #(Model(..model, field: Some(field)), effect.none())
   }
 }
 
-/// Focuses the search field once the list is painted and starts listening for keys
-/// on the document, reporting the listener back as `Listening` so it can be
-/// removed.
+/// Focuses the search field once the list is painted, starts listening for keys on
+/// the document and watching the list for a new field, and reports both back as
+/// `Listening` so they can be removed.
 fn listen() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
 
   // The list opens with the cursor in the field, so a person types at once.
   case ffi_dom.query_selector(host, ".search-field") {
-    Ok(field) -> ffi_dom.focus(field)
+    Ok(field) -> {
+      ffi_dom.focus(field)
+      dispatch(Focused(field))
+    }
     Error(Nil) -> Nil
   }
 
@@ -131,17 +150,50 @@ fn listen() -> Effect(Msg) {
     ffi_dom.add_capture_listener(ffi_dom.get_document(), "keydown", fn(event) {
       keyed(host, event)
     })
-  dispatch(Listening(key))
+  let observer = ffi_dom.mutation_observer(fn() { dispatch(Changed) })
+  ffi_dom.observe_text(observer, host)
+  dispatch(Listening(key, observer))
+}
+
+/// Focuses the search field when it is not the one that was last focused, which is
+/// what the list shows again after the folder picker was open. A field the person
+/// has already been in is left alone, so a press elsewhere is not undone.
+fn refocus(last: Option(ffi_dom.Element)) -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let host = ffi_dom.host(ffi_dom.as_element(root))
+
+  // The field is looked for in the list as it is now.
+  case ffi_dom.query_selector(host, ".search-field"), last {
+    Ok(field), Some(held) ->
+      case ffi_dom.same(field, held) {
+        True -> Nil
+        False -> {
+          ffi_dom.focus(field)
+          dispatch(Focused(field))
+        }
+      }
+    Ok(field), None -> {
+      ffi_dom.focus(field)
+      dispatch(Focused(field))
+    }
+    Error(Nil), _ -> Nil
+  }
 }
 
 /// Decides one key at once, since stopping an event cannot wait for a message. The
 /// column is read from the page at the key, so it is the rows as they are now, not
 /// as they were when the list opened.
 fn keyed(host: ffi_dom.Element, event: Dynamic) -> Nil {
-  // A key with no name is not one of ours.
-  case decode.run(event, decode.at(["key"], decode.string)) {
-    Error(_) -> Nil
-    Ok(key) -> {
+  // A key with no name is not one of ours, and a key that belongs to an input
+  // method's composition (Escape cancels one) is the method's.
+  let composing =
+    decode.run(event, decode.at(["isComposing"], decode.bool))
+    |> result.unwrap(False)
+
+  // The key is acted on only when it is a plain key with a name.
+  case decode.run(event, decode.at(["key"], decode.string)), composing {
+    Error(_), _ | _, True -> Nil
+    Ok(key), False -> {
       let column = ffi_dom.query_selector_all(host, items)
       let move =
         picklist_rule.after_key(
@@ -200,6 +252,7 @@ fn index_of(
   }
 }
 
+/// Focuses the item at an index of the column, and nothing for an index past it.
 fn focus_at(column: List(ffi_dom.Element), index: Int) -> Nil {
   case list.drop(column, index) {
     [item, ..] -> ffi_dom.focus(item)
@@ -228,15 +281,21 @@ fn consume(event: Dynamic) -> Nil {
   ffi_dom.prevent_default(event)
 }
 
-/// Removes the document's key listener when one is held.
-fn stop(listener: Option(Listener)) -> Effect(Msg) {
-  // A model that never registered one has nothing to remove.
-  case listener {
-    None -> effect.none()
-    Some(key) -> {
-      use _ <- effect.from
+/// Removes the document's key listener and the observer when held.
+fn stop(model: Model) -> Effect(Msg) {
+  use _ <- effect.from
+
+  // A model that never registered either has nothing to remove.
+  case model.listener {
+    Some(key) ->
       ffi_dom.remove_capture_listener(ffi_dom.get_document(), "keydown", key)
-    }
+    None -> Nil
+  }
+
+  // Whatever was registered is removed, and nothing else is touched.
+  case model.observer {
+    Some(observer) -> ffi_dom.disconnect(observer)
+    None -> Nil
   }
 }
 

@@ -62,6 +62,7 @@ fn offers(typing: composer.Typing) -> composer.Offers {
     agents: [],
     typing:,
     projects: [],
+    now: 0,
   )
 }
 
@@ -244,7 +245,7 @@ fn owner(asked: Subject(creations.Place), browsed: Subject(List(String))) {
           process.send(browsed, trail)
           deliver(tree(trail))
         },
-        find: fn(_, _) { Nil },
+        index: fn(_, _) { Nil },
       ),
     ),
     elsewhere: None,
