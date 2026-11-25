@@ -128,14 +128,28 @@ pub fn next(stream: Stream) -> Result(untrusted_codec.Envelope, String) {
 
 /// The next frame's bytes, or why none came within `within_ms`.
 pub fn next_raw(stream: Stream, within_ms: Int) -> Result(BitArray, String) {
-  let assert Ok(Nil) = ffi_tls_stream.arm(stream) as "the stream is armed"
-  let selector =
-    process.new_selector() |> ffi_tls_stream.select(fn(inbound) { inbound })
-  case process.selector_receive(selector, within_ms) {
-    Ok(ffi_tls_stream.Received(frame:)) -> Ok(frame)
-    Ok(ffi_tls_stream.Ended) -> Error("ended")
-    Ok(ffi_tls_stream.Broken) -> Error("broken")
-    Error(Nil) -> Error("silent")
+  case ffi_tls_stream.arm(stream) {
+    // A peer that refuses a connection closes it right after the handshake, and
+    // the socket may already be gone when the reader arms it. Arming then fails
+    // with `closed`, or with `unavailable` when the TLS layer is part way
+    // through tearing down. Either way the stream has ended, which is the answer
+    // a read that had armed in time would have been given.
+    Error(ffi_tls_stream.Closed) | Error(ffi_tls_stream.Unavailable) ->
+      Error("ended")
+    Error(ffi_tls_stream.InvalidConfiguration)
+    | Error(ffi_tls_stream.Refused)
+    | Error(ffi_tls_stream.TimedOut) -> Error("unarmed")
+    Ok(Nil) -> {
+      let selector =
+        process.new_selector()
+        |> ffi_tls_stream.select(fn(inbound) { inbound })
+      case process.selector_receive(selector, within_ms) {
+        Ok(ffi_tls_stream.Received(frame:)) -> Ok(frame)
+        Ok(ffi_tls_stream.Ended) -> Error("ended")
+        Ok(ffi_tls_stream.Broken) -> Error("broken")
+        Error(Nil) -> Error("silent")
+      }
+    }
   }
 }
 
