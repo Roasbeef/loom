@@ -113,13 +113,32 @@ pub fn fetch_with(
   request: http.HttpRequest,
   limit: Int,
 ) -> Result(Response, String) {
+  fetch_within(transport, request, limit, default_timeout_ms)
+}
+
+/// Runs one fetch in a managed scope of its own and waits for it, bounded by
+/// `timeout_ms` for the whole exchange. A caller that is not itself inside a
+/// managed scope, such as a daemon-side call to a service, uses this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // network.fetch_within(transport, request, 65_536, 3000)
+/// ```
+@internal
+pub fn fetch_within(
+  transport: http.Transport,
+  request: http.HttpRequest,
+  limit: Int,
+  timeout_ms: Int,
+) -> Result(Response, String) {
   let outcomes =
     weft.new_prepared([
       weft.managed(fn(ledger) {
-        fetch_adopted(ledger, transport, request, limit, default_timeout_ms)
+        fetch_adopted(ledger, transport, request, limit, timeout_ms)
       }),
     ])
-    |> weft.deadline(default_timeout_ms)
+    |> weft.deadline(timeout_ms)
     |> weft.start
 
   // Map task execution outcome into HTTP response or error code.

@@ -11762,7 +11762,18 @@ ordinary top-level worker session per ticket assignment
   `home.projects_path` for that page only (`ui_socket.home_event`).
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
   `check`, `setup`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
-  tables `source` and `rule`, read by `client/project_sources`).
+  tables `source` and `rule`, read by `client/project_sources`, and `router`,
+  `jev_min_probability` and the `agent` catalogue, with `[jev]` read by `client/jev_settings`).
+- The Jev pass (protocol-change/106, "the Jev pass in the daemon") is `client/jev`, the one
+  transport to the service (`key_from`, `client`, `evaluate`, `pass`), and a section of
+  `project_host`. `jev.evaluate` adds the bearer key at the boundary and maps every failure to a
+  `project/jev.Why`; `jev.pass` runs a batch one request at a time under a 45 s bound and stops
+  asking at the first `Unavailable`. With `Policy.router` `JevRouter`, `project_host.offer`
+  builds each first-offer candidate's request, runs the pass in a task with `offered_at_ms` set to
+  0, commits `AgentChosen` then the routing (or `RoutedIgnore`) per candidate, writes
+  `JevFallback` records for what it leaves, and makes the offer row due so its next run hands
+  the router what is still offered. `StartRequest.agent` carries the catalogue entry chosen for
+  the ticket's origin trigger to `project_start.start_worker`.
 - The template (protocol-change/106, "The template") is two modules and a section of
   `project_host`. `client/project_template` builds it: `base_commit` from the owner's `HEAD`,
   `cut_template_tree` under `.template.making`, `run_setup` through `worktrees.setup_runner`

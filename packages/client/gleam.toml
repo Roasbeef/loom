@@ -13,6 +13,7 @@ storage = { path = "../storage" }
 session = { path = "../session" }
 machine = { path = "../machine" }
 prompt = { path = "../prompt" }
+jevelin = { git = "https://github.com/Roasbeef/jevelin.git", ref = "493a1b4207d5f935f351f64f258a50a01bd29779" }
 project = { path = "../project" }
 events = { path = "../events" }
 runtime = { path = "../runtime" }

@@ -56,6 +56,7 @@
 import broker/internal/call
 import client/daemon/project_verdict
 import client/goalstate
+import client/jev as transport
 import client/notes
 import client/peer_mail
 import client/project_github
@@ -69,13 +70,17 @@ import client/project_records.{
   ReplyJob, StartJob, StopJob, TemplateJob,
 }
 import client/project_retention
-import client/project_settings.{PublishOff, PublishPullRequest}
+import client/project_settings.{
+  type Agent, type Router, JevRouter, ModelRouter, PublishOff,
+  PublishPullRequest,
+}
 import client/project_sources.{type Sources}
 import client/project_template
 import client/project_watcher
 import client/template_state
 import core/json.{type JsonValue}
 import gleam/bit_array
+import gleam/bool
 import gleam/crypto
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -87,11 +92,14 @@ import gleam/otp/actor as otp_actor
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import host/bootstrap
+import jevelin
 import project/action
 import project/engine
 import project/event.{type Event, type Refusal}
 import project/gate
 import project/host as proof
+import project/jev
 import project/judge
 import project/model
 import project/protect
@@ -156,6 +164,10 @@ pub type Ports {
     /// The URL pinned for the project's pushes, which names the one repository
     /// its GitHub source reads, or none when the checkout had no origin.
     remote_url: fn() -> Option(String),
+    /// The transport to Jev, for a daemon whose `[project] router` is `jev`.
+    /// A client with no key answers every request with `NoKey`, so the pass
+    /// costs a project with no key nothing but the fallback line.
+    jev: transport.Client,
     /// Where the actor reports.
     logger: Logger,
   )
@@ -283,6 +295,15 @@ pub type Policy {
     /// The event sources and their rules. With none, the composer is the only
     /// way work starts.
     sources: Sources,
+    /// Who decides where a candidate goes first.
+    router: Router,
+    /// How sure Jev must be to attach a message to a ticket, in percent.
+    jev_min_probability: Int,
+    /// The model or alias each Jev request names.
+    jev_model: String,
+    /// The agents Jev may choose among for new work. A ticket's worker starts
+    /// with the profile or model of the agent chosen for its origin trigger.
+    agents: List(Agent),
   )
 }
 
@@ -297,6 +318,10 @@ pub const idle_policy =
     check_wall_ms: 600_000,
     setup_wall_ms: project_template.default_setup_wall_ms,
     sources: project_sources.none,
+    router: ModelRouter,
+    jev_min_probability: 80,
+    jev_model: jevelin.latest,
+    agents: [],
   )
 
 /// Where a tree is cut from. It follows the commands in force when the request
@@ -329,6 +354,10 @@ pub type StartRequest {
     /// A new assignment's clone starts there, so a resumed or retried worker
     /// sees the work already done.
     head: Option(String),
+    /// The catalogue agent chosen for the ticket's origin trigger, or none for
+    /// the `[roles]` default. Its profile or model is what the session starts
+    /// with. It changes which models the worker uses and nothing about its jail.
+    agent: Option(Agent),
   )
 }
 
@@ -548,6 +577,13 @@ pub opaque type Message {
   )
   PinRouter(prompt_revision: String, router_model: String)
 
+  /// The Jev pass over a batch ended: what each candidate's request came to,
+  /// in the order they were offered. It comes from the pass's task.
+  JevPassSettled(
+    key: String,
+    results: List(#(Candidate, transport.Attempt(jev.Answers))),
+  )
+
   /// A trial of a live verdict ended, with what it spent. It comes from the
   /// run's task and changes only what the rule's row reports.
   VerdictProgress(rule: String, spent: project_judge.Spend)
@@ -609,7 +645,23 @@ type Host {
     /// with, or none when no build runs. A build that ends under other
     /// commands than the project has now is not recorded.
     building: Option(String),
+    /// The keys of the offer rows whose Jev pass has ended, so that the row
+    /// performed again goes to the router and not back to Jev. Memory only: a
+    /// restart reruns the pass, and a re-decision of a settled trigger is a
+    /// no-op in the engine.
+    jev_done: Set(String),
+    /// The router's prompt revision and model that `pin_router` announced,
+    /// held while Jev decides first. The pin that goes to the engine is the
+    /// Jev form, which names the model Jev reported, so it waits for a call.
+    router_pin: Option(#(String, String)),
   )
+}
+
+/// A trigger the Jev pass asks about: the trigger, the shape of what its
+/// request offered, and the message the request carried. The shape travels
+/// with the answer so the decision is read against the list the request had.
+type Candidate {
+  Candidate(trigger: String, shape: jev.Shape, message: jev.Message)
 }
 
 /// The latest check the host ran for a ticket, as the ledger recorded it.
@@ -1053,6 +1105,8 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       changed: dict.new(),
       revision: 0,
       building: None,
+      jev_done: set.new(),
+      router_pin: None,
     )
 
   // A compacted ledger starts from its snapshot and replays what follows.
@@ -1358,7 +1412,9 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       actor.continue(perform_due(next))
     }
     PinRouter(prompt_revision:, router_model:) ->
-      actor.continue(pin_now(host, prompt_revision, router_model))
+      actor.continue(router_pinned(host, prompt_revision, router_model))
+    JevPassSettled(key:, results:) ->
+      actor.continue(perform_due(jev_settled(host, key, results)))
     VerdictProgress(rule:, spent:) ->
       actor.continue(progressed(host, rule, spent))
     VerdictMeasured(rule:, by:, measured:) ->
@@ -1575,6 +1631,10 @@ fn keep_record(host: Host, written: Record) -> Host {
     project_records.SourceNote(text:, ..) ->
       Host(..host, watcher: project_watcher.Watcher(..host.watcher, note: text))
     project_records.Retention(..) -> host
+
+    // A fallback is evidence for a reader, not state: nothing in the actor
+    // depends on it, so replay has nothing to rebuild.
+    project_records.JevFallback(..) -> host
     project_records.Recovered(ticket:, seq:) ->
       Host(..host, recovered: set.insert(host.recovered, #(ticket, seq)))
     project_records.TreeKept(ticket:, seq:, path:, reason:) ->
@@ -2462,7 +2522,7 @@ fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
     StartJob(ticket:, seq:, key:) -> start_worker(host, row, ticket, seq, key)
     DeliverJob(ticket:, seq:, trigger:) ->
       deliver_to_worker(host, row, ticket, seq, trigger)
-    OfferJob(triggers:) -> offer_to_router(host, row, triggers)
+    OfferJob(triggers:) -> offer(host, row, triggers)
     StopJob(ticket:, seq:) -> stop_worker(host, row, ticket, seq)
     RecoverJob(ticket:, seq:) -> recover_worker(host, row, ticket, seq)
     ReopenJob(session:) -> reopen_session(host, row, session)
@@ -2521,6 +2581,7 @@ fn start_worker(
               seq:,
               title: model.title_text(found.title),
               head: option.map(found.head, fn(commit) { commit.value }),
+              agent: agent_for(host, found),
             )
 
           // The Mandate is told to the daemon first, because the session's
@@ -4120,6 +4181,413 @@ fn delivered(
       |> settle(row)
     NotYet(_) -> defer(host, row)
   }
+}
+
+/// Performs an offer row. With `router = "model"` the batch goes straight to
+/// the router session, as it always has. With `router = "jev"` the batch is
+/// first put to Jev (docs/design-notes/project-jev-routing.md, section 4), and
+/// what Jev leaves goes to the router.
+fn offer(
+  host: Host,
+  row: project_ledger.Effect,
+  triggers: List(String),
+) -> Host {
+  case host.config.policy.router {
+    ModelRouter -> offer_to_router(host, row, triggers)
+    JevRouter -> offer_with_jev(host, row, triggers)
+  }
+}
+
+/// The Jev half of an offer row. The row runs twice: the first run starts the
+/// pass in a task and defers, and the pass's answer commits the decisions and
+/// makes the row due again, when this finds the key done and hands what is
+/// still offered to the router. A restart between the two forgets the key, so
+/// the pass reruns whole, and a decision already committed is a no-op in the
+/// engine.
+fn offer_with_jev(
+  host: Host,
+  row: project_ledger.Effect,
+  triggers: List(String),
+) -> Host {
+  // The router's turn clock is off from the moment the row runs, whatever
+  // batch last stamped it, so no tick ends a turn this row has not delivered.
+  let host = Host(..host, offered_at_ms: 0)
+
+  // A row whose pass has ended asks nothing again, and neither does one whose
+  // pass has given no answer in as many attempts as any other task is allowed,
+  // so a pass that dies cannot hold the batch and the turn clock off for good.
+  let asked = case
+    set.contains(host.jev_done, row.key) || row.attempts >= max_task_attempts
+  {
+    True -> []
+    False -> jev_candidates(host, triggers)
+  }
+
+  // Nothing to ask means nothing for Jev to settle: a trigger offered before
+  // has already had its pass, and the router is its next decider.
+  case asked {
+    [] -> hand_to_router(host, row, triggers)
+    [_, ..] -> start_pass(host, row, asked)
+  }
+}
+
+/// The candidates of a batch that Jev is asked about, each with its request.
+/// A trigger is asked about on its first offer only, since a second offer
+/// means the first pass failed to settle it. A request that cannot be built is
+/// a defect of ours and is logged, and its trigger goes to the router.
+fn jev_candidates(
+  host: Host,
+  triggers: List(String),
+) -> List(#(Candidate, jevelin.Request(jevelin.Evaluation(jev.Answers)))) {
+  let texts = list.map(host.config.policy.agents, fn(agent) { agent.use_for })
+
+  list.filter_map(triggers, fn(trigger) {
+    let id = model.TriggerId(trigger)
+    use stored <- result.try(
+      state.record(host.engine, id) |> result.replace_error(Nil),
+    )
+    use held <- result.try(dict.get(host.texts, trigger))
+    use strength <- result.try(admitted_strength(stored))
+
+    // Only a trigger on its first offer, still offered, is asked about.
+    case
+      state.offer_count(host.engine, id) == 1 && stored.fate == state.Offered
+    {
+      False -> Error(Nil)
+      True -> {
+        let shape = jev.shape(host.engine, strength, texts)
+        let message =
+          jev.Message(
+            text: held.body,
+            source: jev.source_of(stored.trigger.inputs),
+          )
+        built_candidate(host, Candidate(trigger:, shape:, message:))
+      }
+    }
+  })
+}
+
+/// The strength the gate admitted a stored trigger at, or nothing for one it
+/// did not admit, which is never offered.
+fn admitted_strength(
+  stored: state.TriggerRecord,
+) -> Result(model.Strength, Nil) {
+  // Only an admitted trigger has a strength to build a request under.
+  case stored.admission {
+    gate.Admitted(strength, _, _) -> Ok(strength)
+    gate.NotAdmitted(_) -> Error(Nil)
+  }
+}
+
+/// A candidate with its request, or nothing when the request cannot be built,
+/// which is a defect of ours and is logged.
+fn built_candidate(
+  host: Host,
+  candidate: Candidate,
+) -> Result(#(Candidate, jevelin.Request(jevelin.Evaluation(jev.Answers))), Nil) {
+  let model_name = host.config.policy.jev_model
+  let built = jev.request(candidate.shape, candidate.message, model_name)
+
+  // The reason is ours to read in the log and carries no trigger text.
+  case built {
+    Ok(request) -> Ok(#(candidate, request))
+    Error(failure) -> {
+      log.warn(host.ports.logger, "project.jev_request_unbuilt", [
+        field.text(key: "reason", value: string.inspect(failure)),
+      ])
+      Error(Nil)
+    }
+  }
+}
+
+/// Starts the pass in a task. The router's turn clock is switched off first: a
+/// pass can run longer than the turn deadline on a quiet project, and the first
+/// tick would otherwise end a turn the router was never given. The router's own
+/// delivery sets the clock as before. The row stays due until the pass ends, so
+/// an actor that stops mid-pass reruns it.
+fn start_pass(
+  host: Host,
+  row: project_ledger.Effect,
+  asked: List(#(Candidate, jevelin.Request(jevelin.Evaluation(jev.Answers)))),
+) -> Host {
+  let client = host.ports.jev
+  let key = row.key
+  in_task(host, row, transport.pass_bound_ms + pass_margin_ms, fn() {
+    JevPassSettled(
+      key:,
+      results: transport.pass(
+        client,
+        asked,
+        bootstrap.monotonic_time_ms,
+        transport.pass_bound_ms,
+      ),
+    )
+  })
+}
+
+// The time past the pass's bound that its task is given, for the one request
+// that began just inside the bound and for the message back.
+const pass_margin_ms = 10_000
+
+/// The pass's answer. Each candidate is decided in the order it was offered, so
+/// two candidates that name the same ticket meet the engine in that order. The
+/// row is then made due at once, and its next run hands the router whatever is
+/// still offered.
+fn jev_settled(
+  host: Host,
+  key: String,
+  results: List(#(Candidate, transport.Attempt(jev.Answers))),
+) -> Host {
+  // A second answer for a key already settled is a pass the row started again
+  // while the first answer waited in the mailbox. It decides nothing twice.
+  use <- bool.guard(set.contains(host.jev_done, key), host)
+
+  let bars = configured_bars(host)
+
+  let decided =
+    list.fold(results, host, fn(so_far, each) {
+      settle_candidate(so_far, bars, each.0, each.1)
+    })
+  let _due =
+    project_ledger.defer(decided.ledger, "offer", key, decided.ports.now_ms())
+  Host(..decided, jev_done: set.insert(decided.jev_done, key))
+}
+
+/// The attach bar the configured percent gives. The settings bound the percent
+/// to what `jev.bars` accepts, so the default bars answer a case the file cannot
+/// produce.
+fn configured_bars(host: Host) -> jev.Bars {
+  case jev.bars(host.config.policy.jev_min_probability) {
+    Ok(found) -> found
+    Error(Nil) -> jev.default_bars()
+  }
+}
+
+/// What one candidate's attempt comes to. A trigger Jev did not settle stays
+/// offered and is recorded with the reason; one the pass never reached is not.
+fn settle_candidate(
+  host: Host,
+  bars: jev.Bars,
+  candidate: Candidate,
+  attempt: transport.Attempt(jev.Answers),
+) -> Host {
+  case attempt {
+    transport.Skipped -> host
+    transport.Failed(why) -> fell_back(host, candidate.trigger, why)
+    transport.Answered(evaluation) ->
+      case jev.accept(evaluation) {
+        Error(why) -> fell_back(host, candidate.trigger, why)
+        Ok(accepted) -> {
+          // The pin names the model this very call reported, and it is
+          // committed before the decisions the call produced.
+          let pinned = announce_jev_pin(host, accepted.model, bars)
+          decide_candidate(pinned, bars, candidate, accepted)
+        }
+      }
+  }
+}
+
+/// Commits what Jev decided for a candidate through the engine's own checks. An
+/// agent chosen for new work is committed before the routing, as its event's
+/// contract says. A refusal at any step changes nothing for that step, and the
+/// trigger stays offered with the reason `refused`.
+fn decide_candidate(
+  host: Host,
+  bars: jev.Bars,
+  candidate: Candidate,
+  accepted: jev.Accepted,
+) -> Host {
+  let id = model.TriggerId(candidate.trigger)
+  let judgement = Some(jev.judgement(candidate.shape, bars, accepted))
+
+  // A fallback is the answers' own, and anything else is committed.
+  case jev.decide(candidate.shape, bars, accepted.answers) {
+    jev.Fallback(why) -> fell_back(host, candidate.trigger, why)
+    decision -> {
+      let events = decision_events(host, candidate, id, decision, judgement)
+      commit_decision(host, candidate, events)
+    }
+  }
+}
+
+/// Commits a decision's events. A refusal part-way keeps what committed, so an
+/// agent already chosen stays on its trigger, and records the reason.
+fn commit_decision(
+  host: Host,
+  candidate: Candidate,
+  events: List(Event),
+) -> Host {
+  // Whether the engine took every event decides if the trigger was settled.
+  case commit_each(host, events) {
+    Ok(next) -> next
+    Error(partial) -> fell_back(partial, candidate.trigger, jev.Refused)
+  }
+}
+
+/// The engine events a decision is committed as, in order.
+fn decision_events(
+  host: Host,
+  candidate: Candidate,
+  id: model.TriggerId,
+  decision: jev.Decision,
+  judgement: Option(model.Judgement),
+) -> List(Event) {
+  // Each decision is the events the router's own `route` would have written.
+  case decision {
+    jev.Attach(ticket) -> [
+      event.Routed(jev_routing(id, model.Attach(ticket)), judgement),
+    ]
+    jev.Resume(ticket) -> [
+      event.Routed(jev_routing(id, model.Resume(ticket)), judgement),
+    ]
+    jev.Decline(_) -> [event.RoutedIgnore(id, judgement)]
+    jev.New(agent:) -> {
+      let title = model.title(first_line(candidate.message.text))
+      let accept = event.Routed(jev_routing(id, model.Accept(title)), judgement)
+
+      // An agent is committed first, so a restart that finds the routing finds
+      // the agent that opened it.
+      case agent_named(host, agent) {
+        Some(name) -> [event.AgentChosen(id, name), accept]
+        None -> [accept]
+      }
+    }
+    jev.Fallback(_) -> []
+  }
+}
+
+/// A routing that holds nothing and relates nothing: Jev writes no text for a
+/// worker, so none of the router's optional fields is set.
+fn jev_routing(id: model.TriggerId, kind: model.RouteKind) -> model.Routing {
+  model.Routing(
+    trigger: id,
+    kind:,
+    holds: [],
+    related: [],
+    prior_hand_back: None,
+  )
+}
+
+/// The first non-empty line of a trigger's text, which is the ticket's title
+/// before `model.title` caps it. The title is text a stranger may have written
+/// and is handled as the router's titles are.
+fn first_line(text: String) -> String {
+  string.split(text, "\n")
+  |> list.map(string.trim)
+  |> list.find(fn(line) { line != "" })
+  |> result.unwrap("")
+}
+
+/// The catalogue entry's name for the index Jev's request numbered.
+fn agent_named(host: Host, index: Option(Int)) -> Option(String) {
+  use position <- option.then(index)
+  list.drop(host.config.policy.agents, position)
+  |> list.first
+  |> option.from_result
+  |> option.map(fn(agent) { agent.name })
+}
+
+/// Commits events in order and stops at the first the engine or the ledger
+/// refuses. The host after the events that did commit comes back either way,
+/// since an agent that committed stays on its trigger.
+fn commit_each(host: Host, events: List(Event)) -> Result(Host, Host) {
+  case events {
+    [] -> Ok(host)
+    [first, ..rest] ->
+      case commit(host, first) {
+        Ok(next) -> commit_each(next, rest)
+        Error(_) -> Error(host)
+      }
+  }
+}
+
+/// Records why a trigger was left to the model router. A record that cannot be
+/// written is dropped: it is evidence for a reader and no state depends on it.
+fn fell_back(host: Host, trigger: String, why: jev.Why) -> Host {
+  case record(host, project_records.JevFallback(trigger, jev.why_word(why))) {
+    Ok(next) -> next
+    Error(_) -> host
+  }
+}
+
+/// Announces the Jev form of the router pin, once Jev has reported the model it
+/// resolved to. Announcing what the engine already holds writes nothing.
+fn announce_jev_pin(host: Host, resolved: String, bars: jev.Bars) -> Host {
+  // With no pin announced there is no router half to build the Jev form from.
+  case host.router_pin {
+    None -> host
+    Some(#(revision, router_model)) -> {
+      let pin =
+        jev.pin_of(
+          host.engine.policy_version,
+          resolved,
+          revision,
+          router_model,
+          bars,
+        )
+      pin_now(host, pin.prompt_revision, pin.model)
+    }
+  }
+}
+
+/// Hands the router what the engine still holds as offered from the batch. A
+/// batch Jev settled whole ends the router's turn here, since nothing was
+/// delivered and nothing will answer.
+fn hand_to_router(
+  host: Host,
+  row: project_ledger.Effect,
+  triggers: List(String),
+) -> Host {
+  let still =
+    jev.still_offered(host.engine, list.map(triggers, model.TriggerId))
+    |> list.map(fn(id) { id.value })
+
+  // Nothing offered means Jev settled the whole batch.
+  case still {
+    [] -> settle(end_router_turn(host), row)
+    [_, ..] -> offer_to_router(host, row, still)
+  }
+}
+
+/// Ends the router's turn when one is out, which returns it to idle.
+fn end_router_turn(host: Host) -> Host {
+  // An idle router has no turn to end.
+  case host.engine.router {
+    state.RouterBusy -> committed_or_same(host, event.RouterTurnEnded)
+    state.RouterIdle -> host
+  }
+}
+
+/// Announces the router's pin as the daemon computed it. In `model` mode that
+/// is the pin. In `jev` mode the pin is the Jev form, which names the model
+/// Jev reports, so the router's half is held until the first call.
+fn router_pinned(
+  host: Host,
+  prompt_revision: String,
+  router_model: String,
+) -> Host {
+  // In `jev` mode the Jev form is announced at once with the configured model,
+  // so a changed router model demotes at boot even when Jev never answers.
+  case host.config.policy.router {
+    ModelRouter -> pin_now(host, prompt_revision, router_model)
+    JevRouter -> {
+      let held =
+        Host(..host, router_pin: Some(#(prompt_revision, router_model)))
+      announce_jev_pin(
+        held,
+        host.config.policy.jev_model,
+        configured_bars(held),
+      )
+    }
+  }
+}
+
+/// The catalogue agent chosen for a ticket's origin trigger, or none for the
+/// `[roles]` default.
+fn agent_for(host: Host, found: Ticket) -> Option(Agent) {
+  use name <- option.then(state.agent_of(host.engine, found))
+  list.find(host.config.policy.agents, fn(agent) { agent.name == name })
+  |> option.from_result
 }
 
 /// Delivers a batch of candidate triggers to the router. The row settles only

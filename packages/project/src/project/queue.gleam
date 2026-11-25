@@ -369,7 +369,14 @@ pub fn turn_ended(current: State) -> #(State, List(Effect)) {
 /// ```
 pub fn requeue(current: State, id: TriggerId) -> state.Step {
   use stored <- result.try(state.record(current, id))
-  let fresh = state.State(..current, offers: dict.delete(current.offers, id))
+
+  // A requeued trigger is decided afresh, so the agent an earlier pass chose
+  // for it goes with its offers.
+  let fresh =
+    state.clear_agent(
+      state.State(..current, offers: dict.delete(current.offers, id)),
+      id,
+    )
 
   // Only a trigger that was ignored, shed, held, left unrouted or merely
   // recorded as would-accept can be evaluated again.
