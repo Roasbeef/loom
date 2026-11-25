@@ -2283,6 +2283,10 @@ fn ask_turns(driver) -> Result(Nil, String) {
     ux_await(driver, "the ask card", fn(sample) {
       string.contains(sample.frame, "Ask · waiting since")
       && string.contains(sample.frame, "Alt+A answers")
+    })
+    |> result.map_error(fn(reason) {
+      let held = tui_driver.play(driver, [])
+      reason <> "\nasks: " <> string.inspect(held.model.view.asks.phase)
     }),
   )
   use Nil <- result.try(

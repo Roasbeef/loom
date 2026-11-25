@@ -286,7 +286,7 @@ fn question(offer: Offer(message)) -> Element(message) {
     None ->
       html.p([attribute.class("inbox-meta")], [html.text("No open question.")])
     Some(asked) ->
-      parts.section("Question " <> int.to_string(asked.seq), [
+      parts.section("The worker's question", [
         parts.quote("The worker asks, untrusted text", asked.text),
         case asked.options {
           [] -> element.none()
