@@ -331,6 +331,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
 }
 import web_view/signins.{type Signin}
+import web_view/span_feed
 import web_view/thread_send
 import web_view/thread_words
 import web_view/ticket_rule
@@ -872,6 +873,19 @@ pub type Attention {
       Int,
       fn(Result(timeline_feed.Feed, String)) -> Nil,
     ) -> Nil,
+    /// Starts the read of one timeline span's lines (protocol-change/134) and
+    /// returns at once: the session, the id of the span's last record, the
+    /// sequences of its first and last records and the function the daemon's
+    /// answer goes to. The answer is its lines or its fixed words and arrives as
+    /// `SpanRead`. It reads and never writes, and the daemon spends the
+    /// credential's brief allowance for it.
+    span: fn(
+      String,
+      String,
+      Int,
+      Int,
+      fn(Result(span_feed.Feed, String)) -> Nil,
+    ) -> Nil,
     /// Starts the read of a running session's worktree as a review
     /// (protocol-change/123) and returns at once. The answer is the daemon's
     /// review or its fixed words for why there is none, and arrives as
@@ -1069,6 +1083,12 @@ pub opaque type Model {
     /// it wanted, so a thread draws them only under a label they fit
     /// (`brief_rule.shown`).
     brief_since: Dict(String, Int),
+    /// The last timeline read the page started of each session, which
+    /// `brief_rule.due` counts the next newest-page read from.
+    timeline_reads: Dict(String, brief_rule.Read),
+    /// The sessions whose "Earlier cards" read is out, so a second press before
+    /// the answer asks nothing.
+    timeline_older_out: Set(String),
     /// The timeline cards the page has read of each session whose thread was
     /// shown, by session (protocol-change/134).
     timelines: Dict(String, timeline_rule.Held),
@@ -1077,6 +1097,8 @@ pub opaque type Model {
     timeline_density: timeline_rule.Density,
     /// The cards whose detail the person opened, by session and `from_seq`.
     timeline_open: Set(#(String, Int)),
+    /// The lines of each span the person opened, by session and `from_seq`.
+    spans: Dict(#(String, Int), span_feed.Seen),
     /// The open item thread and what is staged in it.
     item: item_pane.State,
     /// How many item threads have been opened, which keys their forms so each
@@ -1366,6 +1388,9 @@ pub type Msg {
     before: Option(Int),
     read: Result(timeline_feed.Feed, String),
   )
+
+  /// The daemon's answer to the read of one span's lines.
+  SpanRead(session: String, from_seq: Int, read: Result(span_feed.Feed, String))
 
   /// A density was chosen for every timeline.
   TimelineDensityChosen(density: timeline_rule.Density)
@@ -1978,9 +2003,12 @@ pub fn new(start: Start) -> Model {
     briefs: dict.new(),
     brief_reads: dict.new(),
     brief_since: dict.new(),
+    timeline_reads: dict.new(),
+    timeline_older_out: set.new(),
     timelines: dict.new(),
     timeline_density: timeline_rule.starting_density,
     timeline_open: set.new(),
+    spans: dict.new(),
     item: item_pane.closed(),
     item_presses: 0,
     reviews: dict.new(),
@@ -2494,6 +2522,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Connecting | Connected -> #(
           Model(
             ..model,
+            timeline_older_out: case before {
+              Some(_) -> set.delete(model.timeline_older_out, session)
+              None -> model.timeline_older_out
+            },
             timelines: dict.insert(
               model.timelines,
               session,
@@ -2515,34 +2547,66 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     )
 
     // A card's detail opens and closes on its head's press, and no read follows.
-    TimelineCardToggled(session:, from_seq:) -> #(
-      Model(
-        ..model,
-        timeline_open: case
-          set.contains(model.timeline_open, #(session, from_seq))
-        {
-          True -> set.delete(model.timeline_open, #(session, from_seq))
-          False -> set.insert(model.timeline_open, #(session, from_seq))
-        },
-      ),
-      effect.none(),
-    )
+    TimelineCardToggled(session:, from_seq:) -> {
+      let key = #(session, from_seq)
+      let opening = !set.contains(model.timeline_open, key)
+      let toggled =
+        Model(..model, timeline_open: case opening {
+          True -> set.insert(model.timeline_open, key)
+          False -> set.delete(model.timeline_open, key)
+        })
+
+      // Opening a card asks for its lines once, and again only after a refusal.
+      case opening {
+        True -> spanning(toggled, session, from_seq)
+        False -> #(toggled, effect.none())
+      }
+    }
+
+    // The lines replace what the page held for that span, kept for each span the
+    // person opened. A refusal says its words and the next opening asks again.
+    SpanRead(session:, from_seq:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(
+            ..model,
+            spans: dict.insert(model.spans, #(session, from_seq), case read {
+              Ok(feed) -> span_feed.Read(feed)
+              Error(words) -> span_feed.Refused(words)
+            }),
+          ),
+          effect.none(),
+        )
+      }
 
     // "Earlier cards" reads the page before the oldest card held, for a page
     // that reads the feed and has a cursor to ask from.
     TimelineOlderAsked(session:) ->
       case model.start.attention, dict.get(model.timelines, session) {
-        Some(reads), Ok(timeline_rule.Held(older: Some(before), ..)) -> #(
-          model,
-          effect.from(fn(dispatch) {
-            reads.timeline(
-              session,
-              Some(before),
-              timeline_feed.default_limit,
-              fn(read) { dispatch(TimelineRead(session, Some(before), read)) },
+        Some(reads), Ok(timeline_rule.Held(older: Some(before), ..)) ->
+          case set.contains(model.timeline_older_out, session) {
+            True -> #(model, effect.none())
+            False -> #(
+              Model(
+                ..model,
+                timeline_older_out: set.insert(
+                  model.timeline_older_out,
+                  session,
+                ),
+              ),
+              effect.from(fn(dispatch) {
+                reads.timeline(
+                  session,
+                  Some(before),
+                  timeline_feed.default_limit,
+                  fn(read) {
+                    dispatch(TimelineRead(session, Some(before), read))
+                  },
+                )
+              }),
             )
-          }),
-        )
+          }
         Some(_), Ok(timeline_rule.Held(older: None, ..))
         | Some(_), Error(Nil)
         | None, _
@@ -6450,6 +6514,84 @@ fn evidence_awaited(model: Model, session: String) -> Bool {
   }
 }
 
+/// Starts the reads an open thread draws from, and returns at once: its brief and
+/// its timeline, each paced by `brief_rule.due` on its own last read.
+fn briefing(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  let #(model, brief) = brief_reading(model, trigger)
+  let #(model, timeline) = timeline_reading(model, trigger)
+
+  #(model, effect.batch([brief, timeline]))
+}
+
+/// Starts the read of the newest page of the open thread's session's timeline.
+/// Unlike the brief, a timeline is drawn for every kind of session thread, a
+/// failed or settled one included, since what a finished run did is what the
+/// owner opens it to see. A ticket's pane draws none, and no thread that is not
+/// open is read.
+fn timeline_reading(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  // Only a connected page that reads the feed, with a session thread open, reads.
+  case model.start.attention, model.status, timeline_session(model) {
+    Some(reads), Connected, Some(session) -> {
+      let now = model.start.now()
+      let last = option.from_result(dict.get(model.timeline_reads, session))
+
+      // A thread read a moment ago is not read again.
+      case brief_rule.due(last, now, 0, trigger) {
+        True -> #(
+          Model(
+            ..model,
+            timeline_reads: dict.insert(
+              model.timeline_reads,
+              session,
+              brief_rule.Read(started: now, since: 0),
+            ),
+          ),
+          effect.from(fn(dispatch) {
+            reads.timeline(session, None, timeline_feed.default_limit, fn(read) {
+              dispatch(TimelineRead(session, None, read))
+            })
+          }),
+        )
+        False -> #(model, effect.none())
+      }
+    }
+    Some(_), Connected, _
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// The session whose timeline the open thread draws: an ask's session, or the
+/// session thread the list shows whatever its state. Nothing for a ticket, a
+/// stuck strand or a find, or when no thread is open.
+fn timeline_session(model: Model) -> Option(String) {
+  // An open item thread decides first, then an open ticket, then the session
+  // thread the list shows.
+  case model.item.key, model.ticket {
+    Some(key), _ ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.AskItem(session:, ..)) -> Some(session)
+        Some(attention_rule.FindItem(..))
+        | Some(attention_rule.StuckItem(..))
+        | None -> None
+      }
+    None, Some(_) -> None
+    None, None ->
+      inbox_rule.selection(
+        model_groups(model),
+        selected_session(model.selected),
+      )
+  }
+}
+
 /// Starts the read of the open thread's session's brief and returns at once; the
 /// answer arrives later as `BriefRead`. The time after which peer messages are
 /// wanted is the raise time of the session's oldest pending approval, so a
@@ -6458,7 +6600,7 @@ fn evidence_awaited(model: Model, session: String) -> Bool {
 /// that reads no feed, one that has not connected or has ended, and a thread
 /// that has no brief to draw ask nothing, and so does a thread whose last read
 /// is too recent (`brief_rule.due`).
-fn briefing(
+fn brief_reading(
   model: Model,
   trigger: brief_rule.Trigger,
 ) -> #(Model, Effect(Msg)) {
@@ -6484,21 +6626,11 @@ fn briefing(
               brief_rule.Read(started: now, since:),
             ),
           ),
-          effect.batch([
-            effect.from(fn(dispatch) {
-              reads.brief(session, since, fn(read) {
-                dispatch(BriefRead(session, since, read))
-              })
-            }),
-            effect.from(fn(dispatch) {
-              reads.timeline(
-                session,
-                None,
-                timeline_feed.default_limit,
-                fn(read) { dispatch(TimelineRead(session, None, read)) },
-              )
-            }),
-          ]),
+          effect.from(fn(dispatch) {
+            reads.brief(session, since, fn(read) {
+              dispatch(BriefRead(session, since, read))
+            })
+          }),
         )
         True, _ | False, False -> #(model, effect.none())
       }
@@ -7049,6 +7181,48 @@ fn inbox_page(model: Model) -> Element(Msg) {
   )
 }
 
+/// Starts the read of the span a card names, when the page has not read it and
+/// the card is one the page holds, and marks it as being read. A page that reads
+/// no feed, or a card the page does not hold, asks nothing.
+fn spanning(
+  model: Model,
+  session: String,
+  from_seq: Int,
+) -> #(Model, Effect(Msg)) {
+  // The card is one of the cards the page holds for the session.
+  let held = case dict.get(model.timelines, session) {
+    Ok(timeline_rule.Held(cards:, ..)) ->
+      list.find(cards, fn(card) { card.from_seq == from_seq })
+    Error(Nil) -> Error(Nil)
+  }
+
+  // A card the page holds, on a page that reads the feed, and a span not read.
+  case
+    model.start.attention,
+    held,
+    dict.get(model.spans, #(session, from_seq))
+  {
+    Some(reads), Ok(card), Error(Nil)
+    | Some(reads), Ok(card), Ok(span_feed.Refused(_))
+    -> #(
+      Model(
+        ..model,
+        spans: dict.insert(model.spans, #(session, from_seq), span_feed.Loading),
+      ),
+      effect.from(fn(dispatch) {
+        reads.span(session, card.last, card.from_seq, card.to_seq, fn(read) {
+          dispatch(SpanRead(session, from_seq, read))
+        })
+      }),
+    )
+    Some(_), Ok(_), Ok(span_feed.Loading)
+    | Some(_), Ok(_), Ok(span_feed.Read(_))
+    | Some(_), Error(Nil), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
 /// A session's timeline section for its thread: the cards the page holds, at the
 /// density the person chose, with the controls only a page that reads the feed
 /// has. Nothing before a read answers.
@@ -7064,6 +7238,12 @@ fn timeline_section(model: Model, session: String) -> Element(Msg) {
         }
       }),
       now: model.start.now(),
+      spans: dict.fold(model.spans, dict.new(), fn(found, key, seen) {
+        case key.0 == session {
+          True -> dict.insert(found, key.1, seen)
+          False -> found
+        }
+      }),
       handlers: case model.start.attention {
         Some(_) ->
           Some(timeline_view.Handlers(

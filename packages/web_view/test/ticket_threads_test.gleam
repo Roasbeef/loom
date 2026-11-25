@@ -696,6 +696,7 @@ fn with_summary(
         act: None,
         brief: fn(_, _, _) { Nil },
         timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
   )

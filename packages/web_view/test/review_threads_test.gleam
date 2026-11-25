@@ -15,6 +15,7 @@ import gleam/string
 import lustre/effect
 import lustre/element
 import session_view/diff_view
+import session_view/span_lines
 import session_view/timeline
 import web_view/approval_evidence
 import web_view/attention_feed.{Find, Row, Section}
@@ -26,6 +27,7 @@ import web_view/review_stage_rule
 import web_view/session_brief
 import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
+import web_view/span_feed
 import web_view/thread_send
 import web_view/timeline_feed
 import web_view/timeline_rule
@@ -243,6 +245,7 @@ fn start_for(
       act:,
       brief: fn(_, _, _) { Nil },
       timeline: timeline_reader,
+      span: span_reader,
     )),
     create: None,
     folders: None,
@@ -963,10 +966,21 @@ fn timeline_reader(
           now: None,
         )),
       )
-    "A", Some(_) ->
+    "A", Some(10) ->
       deliver(
         Ok(timeline_feed.Feed(
           cards: [timeline_card(1, timeline.Prompted, "an older prompt")],
+          older: None,
+          now: None,
+        )),
+      )
+    "A", Some(_) -> deliver(Error("a cursor the page never held"))
+    "C", None ->
+      deliver(
+        Ok(timeline_feed.Feed(
+          cards: [
+            timeline_card(5, timeline.Prompted, "what the failed run was asked"),
+          ],
           older: None,
           now: None,
         )),
@@ -1017,4 +1031,130 @@ pub fn earlier_cards_read_the_page_before_the_oldest_held_test() {
   assert string.contains(drawn(model), "Earlier cards")
   assert string.contains(html, "an older prompt")
   assert !string.contains(html, "Earlier cards")
+}
+
+fn newest_page() -> timeline_feed.Feed {
+  timeline_feed.Feed(
+    cards: [
+      timeline_card(10, timeline.Prompted, "fix the replay"),
+      timeline_card(13, timeline.Worked, "work"),
+      timeline_feed.Card(..timeline_card(16, timeline.Ran, "ran"), failed: 1),
+    ],
+    older: Some(10),
+    now: None,
+  )
+}
+
+fn older_page() -> timeline_feed.Feed {
+  timeline_feed.Feed(
+    cards: [timeline_card(1, timeline.Prompted, "an older prompt")],
+    older: None,
+    now: None,
+  )
+}
+
+fn occurrences(html: String, needle: String) -> Int {
+  list.length(string.split(html, needle)) - 1
+}
+
+// The refresh re-reads the newest page, and the cards the person loaded with
+// Earlier cards stay in front of it.
+pub fn a_refresh_keeps_the_older_pages_the_person_loaded_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let older = run(model, home.TimelineOlderAsked("A"))
+  let refreshed = run(older, home.TimelineRead("A", None, Ok(newest_page())))
+  let html = drawn(refreshed)
+
+  assert string.contains(html, "an older prompt")
+  assert string.contains(html, "fix the replay")
+  assert !string.contains(html, "Earlier cards")
+}
+
+// A second press before the answer asks nothing, a duplicate reply is not
+// prepended twice, and a reply to a cursor the page does not hold is ignored.
+pub fn an_older_page_is_taken_once_and_only_for_its_cursor_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let first = run(model, home.TimelineRead("A", Some(10), Ok(older_page())))
+  let twice = run(first, home.TimelineRead("A", Some(10), Ok(older_page())))
+  let stale = run(model, home.TimelineRead("A", Some(5), Ok(older_page())))
+
+  assert occurrences(drawn(twice), "an older prompt") == 1
+  assert !string.contains(drawn(stale), "an older prompt")
+  assert string.contains(drawn(stale), "Earlier cards")
+}
+
+// A failed run's thread draws its timeline too: what it did is what the owner
+// opens it to see.
+pub fn a_failed_thread_draws_its_timeline_test() {
+  let listed = [entry("A", "web ui"), entry("B", "lint"), entry("C", "broken")]
+  let answered = [
+    #("C", Report(sessions.Failed, None, [], None, None, 0)),
+    ..reports()
+  ]
+  let model =
+    opened(start_for(
+      listed,
+      answered,
+      Some(reader(process.new_subject())),
+      None,
+    ))
+    |> run(home.InboxOpened("C"))
+
+  assert string.contains(drawn(model), "what the failed run was asked")
+}
+
+// The span a card names: asked with the card's last record and sequences, and
+// refused for any other card.
+fn span_reader(
+  session: String,
+  last: String,
+  from_seq: Int,
+  to_seq: Int,
+  deliver: fn(Result(span_feed.Feed, String)) -> Nil,
+) -> Nil {
+  case session, last, from_seq, to_seq {
+    "A", "entry", 13, 15 ->
+      deliver(
+        Ok(span_feed.Feed(
+          lines: [
+            span_feed.Line(
+              14,
+              1000,
+              span_lines.Step,
+              session_brief.untrusted("Ran make check-storage"),
+              span_lines.Failed,
+            ),
+          ],
+          omitted: 0,
+        )),
+      )
+    _, _, _, _ -> deliver(Error("not the span the card names"))
+  }
+}
+
+// Opening a card asks for the span it names once, draws its lines, and closing
+// and opening again does not ask a second time.
+pub fn opening_a_card_reads_its_span_once_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let standard = run(model, home.TimelineDensityChosen(timeline_rule.Standard))
+  let opened = run(standard, home.TimelineCardToggled("A", 13))
+
+  assert string.contains(drawn(opened), "Ran make check-storage")
+  assert !string.contains(drawn(standard), "Ran make check-storage")
+
+  let reopened =
+    opened
+    |> run(home.TimelineCardToggled("A", 13))
+    |> run(home.TimelineCardToggled("A", 13))
+
+  assert string.contains(drawn(reopened), "Ran make check-storage")
+}
+
+// A card the span reader refuses says its words, and opening it again asks again.
+pub fn a_refused_span_says_so_and_is_asked_again_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let standard = run(model, home.TimelineDensityChosen(timeline_rule.Standard))
+  let refused = run(standard, home.TimelineCardToggled("A", 16))
+
+  assert string.contains(drawn(refused), "not the span the card names")
 }

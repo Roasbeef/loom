@@ -256,6 +256,7 @@ fn start(
         act:,
         brief: fn(_, _, _) { Nil },
         timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
     create: None,
@@ -1039,6 +1040,7 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
             },
             brief: fn(_, _, _) { Nil },
             timeline: fn(_, _, _, _) { Nil },
+            span: fn(_, _, _, _, _) { Nil },
           ),
         ),
       ),
@@ -1145,6 +1147,7 @@ fn composing(
         act: None,
         brief: fn(_, _, _) { Nil },
         timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
   )

@@ -45,9 +45,6 @@ pub const default_limit = 10
 /// oldest cards until it fits.
 pub const feed_bytes = 32_000
 
-/// The longest path, in bytes.
-pub const path_bytes = 400
-
 /// A file a card names, with the lines its edits added and removed.
 pub type File {
   File(path: Untrusted, added: Int, removed: Int)
@@ -435,15 +432,4 @@ fn command_json(command: Command) -> JsonValue {
     #("text", json.String(session_brief.untrusted_text(command.text))),
     #("exit", json.Int(command.exit)),
   ])
-}
-
-/// The size of a card on the wire, in bytes, for the resident's shedding.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // timeline_feed.size(card) < 1_500
-/// ```
-pub fn size(card: Card) -> Int {
-  string.byte_size(json.to_string(card_json(card)))
 }

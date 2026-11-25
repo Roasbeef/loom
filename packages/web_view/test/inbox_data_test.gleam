@@ -227,6 +227,7 @@ fn start(
           deliver(Ok(the_brief()))
         },
         timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
     create: None,

@@ -27,6 +27,7 @@
 //// the command meant: an exit status is not a verdict, so none is coloured as a
 //// pass, and a failure is tinted.
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -35,8 +36,10 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import session_view/span_lines
 import session_view/timeline
 import web_view/session_brief
+import web_view/span_feed
 import web_view/thread_words
 import web_view/timeline_feed.{type Card}
 import web_view/timeline_rule.{type Density, type Held}
@@ -68,6 +71,8 @@ pub type Offer(message) {
     opened: Set(Int),
     /// The wall-clock time in Unix milliseconds, which "since" is counted from.
     now: Int,
+    /// What the page holds of each opened card's span, by the card's `from_seq`.
+    spans: Dict(Int, span_feed.Seen),
     handlers: Option(Handlers(message)),
   )
 }
@@ -93,8 +98,8 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
         now(held, offer.now),
         parts.section("Timeline", [
           bar(offer),
-          list_of(held, offer),
           older(held, offer),
+          list_of(held, offer),
         ]),
       ])
   }
@@ -108,9 +113,10 @@ fn notice(words: String) -> Element(message) {
 /// Where the session is: the open span, in the harness's figures. Nothing when no
 /// span is open.
 fn now(held: Held, at: Int) -> Element(message) {
-  // The open span is the cards since the last one closed.
+  // The open span is the records since the last card closed, and a span with no
+  // step has nothing to say.
   case held.now {
-    Some(card) ->
+    Some(card) if card.steps > 0 ->
       parts.section("Where it is", [
         html.div([attribute.class("timeline-now")], [
           html.text(
@@ -121,7 +127,7 @@ fn now(held: Held, at: Int) -> Element(message) {
           ),
         ]),
       ])
-    None -> element.none()
+    Some(_) | None -> element.none()
   }
 }
 
@@ -394,6 +400,7 @@ fn detail(each: Card, offer: Offer(message)) -> Element(message) {
           }),
         )
     },
+    span(each, offer),
     case offer.handlers {
       Some(handlers) ->
         html.button(
@@ -407,6 +414,81 @@ fn detail(each: Card, offer: Offer(message)) -> Element(message) {
       None -> element.none()
     },
   ])
+}
+
+/// The span's own lines under a card: what was said and each call with how it
+/// ended, as short rows. Their words are session text and text nodes, the outcome
+/// is what the result reported, and a failed call is tinted.
+fn span(each: Card, offer: Offer(message)) -> Element(message) {
+  // The page holds nothing for a span it has not asked for.
+  case dict.get(offer.spans, each.from_seq) {
+    Error(Nil) -> element.none()
+    Ok(span_feed.Loading) -> notice("Reading the span…")
+    Ok(span_feed.Refused(words)) -> notice(words)
+    Ok(span_feed.Read(feed)) ->
+      html.div([attribute.class("timeline-span")], [
+        case feed.omitted {
+          0 -> element.none()
+          left ->
+            html.p([attribute.class("timeline-more")], [
+              html.text(
+                int.to_string(left)
+                <> plural(left, " earlier line", " earlier lines")
+                <> " not shown",
+              ),
+            ])
+        },
+        html.ol(
+          [attribute.class("timeline-lines")],
+          list.map(feed.lines, fn(each) { html.li([], [line(each)]) }),
+        ),
+      ])
+  }
+}
+
+/// One line of a span: a mark for what it is, the time, and its words.
+fn line(each: span_feed.Line) -> Element(message) {
+  html.div(
+    [
+      attribute.class("timeline-line"),
+      attribute.class(case each.outcome {
+        span_lines.Failed -> "timeline-line-failed"
+        span_lines.NoOutcome | span_lines.Running | span_lines.Succeeded ->
+          "timeline-line-plain"
+      }),
+    ],
+    [
+      html.span([attribute.class("timeline-mark")], [html.text(mark(each.kind))]),
+      html.span([attribute.class("timeline-time")], [phrase.clock(each.at)]),
+      html.span([attribute.class("timeline-line-words")], [
+        html.text(session_brief.untrusted_text(each.words)),
+      ]),
+      html.span([attribute.class("timeline-outcome")], [
+        html.text(outcome_word(each.outcome)),
+      ]),
+    ],
+  )
+}
+
+/// The page's own mark for a kind of line.
+fn mark(kind: span_lines.Kind) -> String {
+  // A message is a pilcrow, a call a prompt sign, a compaction a tilde.
+  case kind {
+    span_lines.Prompted | span_lines.Said -> "¶"
+    span_lines.Step -> "$"
+    span_lines.Compacted -> "~"
+  }
+}
+
+/// What a result reported, in the page's words, or nothing for a line with none.
+fn outcome_word(outcome: span_lines.Outcome) -> String {
+  // A call that has no result yet says so, and a message says nothing.
+  case outcome {
+    span_lines.NoOutcome -> ""
+    span_lines.Running -> "running"
+    span_lines.Succeeded -> "succeeded"
+    span_lines.Failed -> "failed"
+  }
 }
 
 /// The press that asks for the cards before the first held, when the daemon has
