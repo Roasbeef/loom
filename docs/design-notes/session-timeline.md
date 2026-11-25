@@ -24,7 +24,7 @@ order to build it. Paths are relative to `packages/` and the tree is
    command with its exit status, a sub-agent's name, a compaction) come from
    records with no model.
 2. A model writes only a title of at most 64 bytes and a detail line of at most
-   200, on the `summarize` or `subagent` route, once per closed card. The text
+   200, on the `summarize` route only, once per closed card. The text
    is untrusted and drawn as a text node beside a chip that says a model wrote
    it. No count, order, verdict or group depends on it.
 3. The live read computes cards from the resident session. What cannot be
@@ -187,13 +187,13 @@ reduces arguments: executable and subcommand only, no argv tail, env or token
 …"` becomes `curl`. The same reduced text is what is stored. The protocol change
 states this exposure, as insight-triage does.
 
-**Route.** `summarize`, then `subagent`, as the glance resolves them. A catalogue
-routing only `main` gets no titles (owner ruling 1): cards show plain record
-words and the page says once "Titles are off: route `summarize` to a cheap
-model". The `subagent` fallback sends transcript text to a provider the owner may
-not have chosen for this purpose; insight-triage's provisional ruling 3 refused
-that for its role (`docs/design-notes/insight-triage.md:660`), while the glance
-already does it. That tension is the owner's call and is left open.
+**Route.** `summarize` only (owner ruling, 2026-11-24). Titles never fall back to
+`subagent` or `main`, as the glance does. A catalogue with no explicit
+`summarize` route gets no titles: cards show plain record words and the page says
+once "Titles are off: route `summarize` to a cheap model". The reason is that a
+fallback would send transcript text to a provider the owner did not choose for
+this purpose, which insight-triage's provisional ruling 3 also refused for its
+role (`docs/design-notes/insight-triage.md:660`).
 
 **Storage.** Slice 3 adds a catalogue table `catalogue_session_timeline`, version
 25, keyed `(session_id, strand, from_seq)` with `to_seq`, `title`, `detail`,
@@ -363,9 +363,8 @@ files" for the first group and "and 6 others" for the second.
 - **Owner rulings (2026-11-24):** a catalogue routing only `main` gets no titles;
   observers see the same cards as the owner, titles included, under the strand
   grant when other strands get cards; the span size is 40 steps, with slice 0
-  printing the distribution for 20, 40 and 80.
-- **Open:** whether the `subagent` fallback should send transcript text to a
-  provider not chosen for this (section 4).
+  printing the distribution for 20, 40 and 80; titles use the `summarize` route
+  only, with no fallback to `subagent` or `main`.
 - **Left out:** a search over cards; editing a title; cards for strands other than
   `main` on the first release (the request takes a `strand`, and the write set
   already covers every strand); a whole-session summary; any claim that a run
