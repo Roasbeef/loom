@@ -268,14 +268,45 @@ fn stored_json(stored: TriggerRecord) -> Json {
     #("trigger", codec.trigger_json(stored.trigger)),
     #("admission", admission_json(stored.admission)),
     #("fate", fate_json(stored.fate)),
+    ..stored_extras(stored)
   ])
 }
 
+/// The fields of a stored trigger that most records lack, written only when
+/// present so a snapshot of model-router decisions is unchanged.
+fn stored_extras(stored: TriggerRecord) -> List(#(String, Json)) {
+  // The judgement, when Jev decided the trigger.
+  let judged = case stored.judgement {
+    Some(found) -> [#("judgement", codec.judgement_json(found))]
+    None -> []
+  }
+
+  // The catalogue agent chosen for the work it opens.
+  let chosen = case stored.agent {
+    Some(name) -> [#("agent", json.string(name))]
+    None -> []
+  }
+
+  list.append(judged, chosen)
+}
+
+/// Read a stored trigger. The judgement and the agent are optional, so a
+/// document written before them reads back with neither.
 fn stored_decoder() -> Decoder(TriggerRecord) {
   use trigger <- decode.field("trigger", codec.trigger_decoder())
   use admission <- decode.field("admission", admission_decoder())
   use fate <- decode.field("fate", fate_decoder())
-  decode.success(TriggerRecord(trigger:, admission:, fate:))
+  use judgement <- decode.optional_field(
+    "judgement",
+    None,
+    decode.map(codec.judgement_decoder(), Some),
+  )
+  use agent <- decode.optional_field(
+    "agent",
+    None,
+    decode.map(decode.string, Some),
+  )
+  decode.success(TriggerRecord(trigger:, admission:, fate:, judgement:, agent:))
 }
 
 /// The gate's verdict under a `t` tag. The verdict is stored and not asked

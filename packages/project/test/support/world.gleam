@@ -90,24 +90,30 @@ pub fn arrival(trigger: Trigger) -> Event {
 
 /// Accept a trigger as a ticket titled `t`.
 pub fn accept(id: String) -> Event {
-  event.Routed(model.Routing(
-    trigger: TriggerId(id),
-    kind: model.Accept(model.title("t")),
-    holds: [],
-    related: [],
-    prior_hand_back: None,
-  ))
+  event.Routed(
+    model.Routing(
+      trigger: TriggerId(id),
+      kind: model.Accept(model.title("t")),
+      holds: [],
+      related: [],
+      prior_hand_back: None,
+    ),
+    None,
+  )
 }
 
 /// Attach a trigger to a ticket.
 pub fn attach(id: String, ticket: model.TicketId) -> Event {
-  event.Routed(model.Routing(
-    trigger: TriggerId(id),
-    kind: model.Attach(ticket),
-    holds: [],
-    related: [],
-    prior_hand_back: None,
-  ))
+  event.Routed(
+    model.Routing(
+      trigger: TriggerId(id),
+      kind: model.Attach(ticket),
+      holds: [],
+      related: [],
+      prior_hand_back: None,
+    ),
+    None,
+  )
 }
 
 /// Apply an event and insist the engine accepts it.

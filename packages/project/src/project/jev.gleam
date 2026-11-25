@@ -860,6 +860,102 @@ fn model_character(character: String) -> Bool {
   }
 }
 
+// --- keeping the answers -----------------------------------------------------
+
+/// The most `which_ticket` probabilities a judgement keeps.
+const kept_tickets = 5
+
+/// The most `agent` probabilities a judgement keeps.
+const kept_agents = 3
+
+/// What the ledger keeps of a response: the model, the Noul values, the
+/// largest Choice probabilities under the labels a reader can use without the
+/// request, the tickets offered, the bar in force and the tokens.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jev.judgement(shape, bars, accepted).offered == the listed ticket ids
+/// ```
+pub fn judgement(
+  shape: Shape,
+  bars: Bars,
+  accepted: Accepted,
+) -> model.Judgement {
+  let answers = accepted.answers
+  model.Judgement(
+    model: accepted.model,
+    shape_version: request_shape_version,
+    asks_for_work: answers.asks_for_work,
+    clear_alone: answers.clear_alone,
+    continues: answers.continues,
+    which: shares(answers.which_ticket, kept_tickets, fn(ticket) {
+      ticket.value
+    }),
+    decline: shares(answers.decline_reason, 2, fn(reason) {
+      case reason {
+        OffTopic -> "off_topic"
+        NothingToDo -> "nothing_to_do"
+      }
+    }),
+    agent: shares(answers.agent, kept_agents, agent_label),
+    offered: list.map(shape.tickets, fn(entry) { entry.ticket }),
+    attach_bar: bars.attach,
+    input_tokens: accepted.input_tokens,
+    output_tokens: accepted.output_tokens,
+  )
+}
+
+/// The largest `keep` probabilities of a Choice answer, largest first, under
+/// the label `name` gives each option.
+fn shares(
+  answered: Option(Ranked(a)),
+  keep: Int,
+  name: fn(a) -> String,
+) -> List(model.Share) {
+  case answered {
+    None -> []
+    Some(ranked) ->
+      ranked.shares
+      |> list.sort(fn(left, right) { int.compare(right.1, left.1) })
+      |> list.take(keep)
+      |> list.map(fn(entry) { model.Share(name(entry.0), entry.1) })
+  }
+}
+
+/// The pin a verdict is measured under when Jev decides first.
+///
+/// The pin's two free fields carry the Jev form: the request-shape version and
+/// the attach bar, then the router's own prompt revision, and the resolved Jev
+/// model, then the router's model key. The router's parts stay because the
+/// model router still decides every fallback, so a change to either decider
+/// makes a verdict stale. Switching the setting changes both fields too.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jev.pin_of("v1", "jev-1.14.0", "rev", "model", bars).model
+/// //   == "jev/jev-1.14.0/model"
+/// ```
+pub fn pin_of(
+  policy_version: String,
+  resolved_model: String,
+  router_prompt_revision: String,
+  router_model: String,
+  bars: Bars,
+) -> model.Pin {
+  model.Pin(
+    policy_version:,
+    prompt_revision: "jev/"
+      <> int.to_string(request_shape_version)
+      <> "/"
+      <> int.to_string(bars.attach)
+      <> "/"
+      <> router_prompt_revision,
+    model: "jev/" <> resolved_model <> "/" <> router_model,
+  )
+}
+
 // --- the decision ------------------------------------------------------------
 
 /// Turn the answers to one request into a decision.

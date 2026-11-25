@@ -80,7 +80,7 @@ pub fn the_wire_form_of_one_event_is_pinned_test() {
     ))
   assert text
     == "{\"t\":\"reported\",\"ticket\":\"t-c1\",\"seq\":2,\"report\":{\"kind\":\"waiting\",\"question\":3},\"head\":{\"commit\":\"abc\",\"paths\":\"touched\"}}"
-  assert codec.encode(event.RoutedIgnore(TriggerId("x")))
+  assert codec.encode(event.RoutedIgnore(TriggerId("x"), None))
     == "{\"t\":\"routed_ignore\",\"trigger\":\"x\"}"
   assert codec.encode(event.WorkerFailed(TicketId("t-c1"), 1, "no clone"))
     == "{\"t\":\"worker_failed\",\"ticket\":\"t-c1\",\"seq\":1,\"why\":\"no clone\"}"
@@ -143,13 +143,14 @@ pub fn a_title_longer_than_the_cap_is_cut_on_the_way_in_test() {
     <> long
     <> "\"},\"holds\":[],\"related\":[],\"prior_hand_back\":null}}"
   assert codec.decode(text)
-    == Ok(
-      event.Routed(model.Routing(
+    == Ok(event.Routed(
+      model.Routing(
         trigger: TriggerId("x"),
         kind: model.Accept(model.title(string.repeat("a", 80))),
         holds: [],
         related: [],
         prior_hand_back: None,
-      )),
-    )
+      ),
+      None,
+    ))
 }

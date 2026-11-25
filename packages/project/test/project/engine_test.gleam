@@ -429,13 +429,16 @@ pub fn a_persons_stop_withdraws_the_mandate_and_the_ticket_never_resumes_test() 
 }
 
 fn step_resume(id: String) -> event.Event {
-  event.Routed(model.Routing(
-    trigger: TriggerId(id),
-    kind: model.Resume(ticket_of("c1")),
-    holds: [],
-    related: [],
-    prior_hand_back: None,
-  ))
+  event.Routed(
+    model.Routing(
+      trigger: TriggerId(id),
+      kind: model.Resume(ticket_of("c1")),
+      holds: [],
+      related: [],
+      prior_hand_back: None,
+    ),
+    None,
+  )
 }
 
 fn world_principal() -> model.PrincipalId {
@@ -964,13 +967,16 @@ pub fn a_closed_ticket_can_be_resumed_and_a_stopped_one_cannot_test() {
   let closed =
     run(rested, [close("c1"), event.RouterTurnEnded, arrival(owner("c2"))])
   let resume =
-    event.Routed(model.Routing(
-      TriggerId("c2"),
-      model.Resume(ticket_of("c1")),
-      [],
-      [],
+    event.Routed(
+      model.Routing(
+        TriggerId("c2"),
+        model.Resume(ticket_of("c1")),
+        [],
+        [],
+        None,
+      ),
       None,
-    ))
+    )
   let #(reopened, effects) = step(closed, resume)
   assert ticket(reopened, ticket_of("c1")).outcome == None
   assert list.any(effects, fn(effect) {
@@ -1492,13 +1498,16 @@ fn turns_ended(current: state.State, turns: Int) -> state.State {
 }
 
 fn resume_c1(trigger: String) -> event.Event {
-  event.Routed(model.Routing(
-    TriggerId(trigger),
-    model.Resume(ticket_of("c1")),
-    [],
-    [],
+  event.Routed(
+    model.Routing(
+      TriggerId(trigger),
+      model.Resume(ticket_of("c1")),
+      [],
+      [],
+      None,
+    ),
     None,
-  ))
+  )
 }
 
 // A router that resumes a stopped ticket is refused, and the refused candidate

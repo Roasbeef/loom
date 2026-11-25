@@ -196,7 +196,7 @@ fn routed(current: State) -> Generator(Event) {
           #(3, qcheck.return(route(trigger, model.Attach(ticket)))),
           #(2, qcheck.return(route(trigger, model.Resume(ticket)))),
           #(3, qcheck.return(event.RoutedStop(trigger, ticket))),
-          #(2, qcheck.return(event.RoutedIgnore(trigger))),
+          #(2, qcheck.return(event.RoutedIgnore(trigger, None))),
         ],
       )
     })
@@ -204,7 +204,7 @@ fn routed(current: State) -> Generator(Event) {
 }
 
 fn route(trigger: TriggerId, kind: model.RouteKind) -> Event {
-  event.Routed(model.Routing(trigger, kind, [], [], None))
+  event.Routed(model.Routing(trigger, kind, [], [], None), None)
 }
 
 // Project-level controls, leaning towards getting a pair into `Auto` so that
@@ -618,7 +618,7 @@ fn shadow(
           )
         False -> logged
       }
-    event.Routed(routing) ->
+    event.Routed(routing, _) ->
       case explicit_in(next, routing.trigger) {
         True ->
           Sut(..logged, reached: [routed_ticket(routing), ..logged.reached])
@@ -888,7 +888,7 @@ fn check_routing(
   next: State,
 ) -> Result(Nil, statem.Violation) {
   case incoming {
-    event.Routed(routing) ->
+    event.Routed(routing, _) ->
       case
         strength_in(sut.state, routing.trigger),
         decided_work(next, routing.trigger)

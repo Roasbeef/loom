@@ -15,12 +15,15 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import jevelin
+import project/codec
+import project/engine
 import project/event
 import project/jev.{
   type Answers, type Bars, type Decision, type Ranked, type Shape, Answers,
   Message, Ranked,
 }
 import project/model.{Explicit, Inferred, TicketId, TriggerId}
+import project/snapshot
 import project/state.{type State}
 import qcheck.{type Generator}
 import support/gen
@@ -906,4 +909,181 @@ pub fn the_request_is_valid_json_for_every_shape_test() {
   let assert Ok(_) = json.parse(body, decode.dynamic)
     as "the request body is JSON"
   Nil
+}
+
+// --- the ledger --------------------------------------------------------------
+
+/// A judgement for the fixtures below.
+fn kept() -> model.Judgement {
+  model.Judgement(
+    model: "jev-1.14.0",
+    shape_version: jev.request_shape_version,
+    asks_for_work: Some(9000),
+    clear_alone: 9500,
+    continues: Some(500),
+    which: [],
+    decline: [],
+    agent: [model.Share("agent_2", 7000)],
+    offered: [],
+    attach_bar: 8000,
+    input_tokens: 410,
+    output_tokens: 30,
+  )
+}
+
+fn accept_routing(id: String) -> model.Routing {
+  model.Routing(
+    trigger: TriggerId(id),
+    kind: model.Accept(model.title("t")),
+    holds: [],
+    related: [],
+    prior_hand_back: None,
+  )
+}
+
+pub fn a_judgement_stays_with_the_trigger_it_settled_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let settled =
+    run(offered, [
+      event.AgentChosen(TriggerId("c1"), "small fixes"),
+      event.Routed(accept_routing("c1"), Some(kept())),
+    ])
+  let assert Ok(record) = state.record(settled, TriggerId("c1"))
+  assert record.judgement == Some(kept())
+  assert record.agent == Some("small fixes")
+  assert state.agent_of(settled, world.ticket(settled, ticket_of("c1")))
+    == Some("small fixes")
+}
+
+pub fn a_repeated_routing_does_not_replace_the_first_judgement_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let first = run(offered, [event.Routed(accept_routing("c1"), Some(kept()))])
+  let again =
+    run(first, [
+      event.Routed(
+        accept_routing("c1"),
+        Some(model.Judgement(..kept(), clear_alone: 1)),
+      ),
+    ])
+  assert again == first
+}
+
+pub fn a_decision_by_the_model_router_has_no_judgement_or_agent_test() {
+  let settled = run(fresh(), [arrival(owner("c1")), accept("c1")])
+  let assert Ok(record) = state.record(settled, TriggerId("c1"))
+  assert record.judgement == None
+  assert state.agent_of(settled, world.ticket(settled, ticket_of("c1"))) == None
+}
+
+pub fn an_ignored_trigger_keeps_the_judgement_that_declined_it_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let settled =
+    run(offered, [event.RoutedIgnore(TriggerId("c1"), Some(kept()))])
+  let assert Ok(record) = state.record(settled, TriggerId("c1"))
+  assert record.fate == state.Decided(state.Ignored)
+  assert record.judgement == Some(kept())
+}
+
+pub fn an_agent_can_only_be_chosen_for_an_offered_trigger_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  assert engine.apply(offered, event.AgentChosen(TriggerId("nope"), "a"))
+    == Error(event.UnknownTrigger(TriggerId("nope")))
+  let accepted = run(offered, [accept("c1")])
+  assert engine.apply(accepted, event.AgentChosen(TriggerId("c1"), "a"))
+    == Error(event.NotOffered(TriggerId("c1")))
+}
+
+pub fn a_snapshot_keeps_the_judgement_and_the_agent_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let settled =
+    run(offered, [
+      event.AgentChosen(TriggerId("c1"), "small fixes"),
+      event.Routed(accept_routing("c1"), Some(kept())),
+    ])
+  assert snapshot.decode(world.config(), snapshot.encode(settled))
+    == Ok(settled)
+}
+
+pub fn the_ledger_reads_an_event_written_without_a_judgement_test() {
+  let old = "{\"t\":\"routed_ignore\",\"trigger\":\"c1\"}"
+  assert codec.decode(old) == Ok(event.RoutedIgnore(TriggerId("c1"), None))
+  assert codec.encode(event.RoutedIgnore(TriggerId("c1"), None)) == old
+}
+
+pub fn a_judgement_with_a_probability_out_of_range_does_not_decode_test() {
+  let line = codec.encode(event.RoutedIgnore(TriggerId("c1"), Some(kept())))
+  let forged = string.replace(line, "\"clear\":9500", "\"clear\":10001")
+  assert forged != line
+  let assert Error(_) = codec.decode(forged)
+  Nil
+}
+
+pub fn an_agent_chosen_event_is_a_new_tag_an_older_reader_would_refuse_test() {
+  let line = codec.encode(event.AgentChosen(TriggerId("c1"), "small fixes"))
+  assert string.contains(line, "\"t\":\"agent_chosen\"")
+  assert codec.decode(line)
+    == Ok(event.AgentChosen(TriggerId("c1"), "small fixes"))
+}
+
+pub fn a_judgement_keeps_the_largest_shares_under_ticket_ids_test() {
+  let found =
+    shape_of(list.repeat(ExplicitOpen, 7), Explicit, ["a", "b", "c", "d"])
+  let entries = ids(found)
+  let which =
+    Ranked(
+      list.first(entries) |> result_or(ticket_of("k6")),
+      5000,
+      list.index_map(entries, fn(id, i) { #(id, 1000 + i * 100) }),
+    )
+  let agent = Ranked(1, 9000, [#(0, 100), #(1, 7000), #(2, 1900), #(3, 1000)])
+  let said =
+    Answers(
+      ..said(None, 9000, Some(9000)),
+      which_ticket: Some(which),
+      agent: Some(agent),
+    )
+  let accepted =
+    jev.Accepted(
+      model: "jev-1.14.0",
+      answers: said,
+      input_tokens: 5,
+      output_tokens: 6,
+    )
+  let kept_answers = jev.judgement(found, a_bar(), accepted)
+
+  // Five shares of the tickets, largest first and labelled by id, and three of
+  // the agents, labelled as the request numbered them.
+  assert list.length(kept_answers.which) == 5
+  assert list.map(kept_answers.which, fn(share) { share.points })
+    == [1600, 1500, 1400, 1300, 1200]
+  assert list.all(kept_answers.which, fn(share) {
+    string.starts_with(share.label, "t-")
+  })
+  assert kept_answers.agent
+    == [
+      model.Share("agent_2", 7000),
+      model.Share("agent_3", 1900),
+      model.Share("agent_4", 1000),
+    ]
+  assert kept_answers.offered == entries
+  assert kept_answers.attach_bar == 8000
+  assert kept_answers.input_tokens == 5
+}
+
+fn result_or(found: Result(a, Nil), default: a) -> a {
+  case found {
+    Ok(value) -> value
+    Error(Nil) -> default
+  }
+}
+
+pub fn the_jev_pin_changes_with_either_decider_test() {
+  let bar = a_bar()
+  let base = jev.pin_of("v1", "jev-1.14.0", "rev-a", "model-a", bar)
+  assert base != jev.pin_of("v1", "jev-1.15.0", "rev-a", "model-a", bar)
+  assert base != jev.pin_of("v1", "jev-1.14.0", "rev-b", "model-a", bar)
+  assert base != jev.pin_of("v1", "jev-1.14.0", "rev-a", "model-b", bar)
+  let assert Ok(other_bar) = jev.bars(85)
+  assert base != jev.pin_of("v1", "jev-1.14.0", "rev-a", "model-a", other_bar)
+  assert base != world.pin("v1")
 }

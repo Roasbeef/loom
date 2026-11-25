@@ -28,7 +28,7 @@ import gleam/result
 import project/event.{type Event, type Refusal}
 import project/gate
 import project/intake
-import project/model.{type Mode, Auto, CeilingClear, Observe}
+import project/model.{type Mode, type TriggerId, Auto, CeilingClear, Observe}
 import project/queue
 import project/route
 import project/schedule
@@ -45,6 +45,27 @@ pub type ReplayFailure {
   )
 }
 
+/// Keep what Jev answered with the trigger it settled. Only a trigger that was
+/// offered before the event takes it, so a repeated routing, which the engine
+/// accepts as a no-op, does not overwrite the first judgement.
+fn keep_judgement(
+  step: Step,
+  before: State,
+  trigger: TriggerId,
+  judgement: option.Option(model.Judgement),
+) -> Step {
+  use #(settled, effects) <- result.map(step)
+
+  // Only a trigger that was offered before the event takes the judgement.
+  case state.record(before, trigger) {
+    Ok(state.TriggerRecord(fate: state.Offered, ..)) -> #(
+      state.set_judgement(settled, trigger, judgement),
+      effects,
+    )
+    _ -> #(settled, effects)
+  }
+}
+
 /// Apply one event. On `Ok` the caller persists the event and performs the
 /// effects; on `Error` it persists nothing and the state is as it was.
 ///
@@ -57,9 +78,15 @@ pub type ReplayFailure {
 pub fn apply(current: State, incoming: Event) -> Step {
   case incoming {
     event.TriggerArrived(trigger, bot) -> intake.arrive(current, trigger, bot)
-    event.Routed(routing) -> route.route(current, routing)
+    event.Routed(routing, judgement) ->
+      route.route(current, routing)
+      |> keep_judgement(current, routing.trigger, judgement)
     event.RoutedStop(trigger, ticket) -> route.stop(current, trigger, ticket)
-    event.RoutedIgnore(trigger) -> route.ignore(current, trigger)
+    event.RoutedIgnore(trigger, judgement) ->
+      route.ignore(current, trigger)
+      |> keep_judgement(current, trigger, judgement)
+    event.AgentChosen(trigger, agent) ->
+      route.choose_agent(current, trigger, agent)
     event.RouterTurnEnded -> Ok(queue.turn_ended(current))
     event.Requeued(trigger, _) -> queue.requeue(current, trigger)
     event.ModeSet(source, rule, mode) -> set_mode(current, source, rule, mode)
