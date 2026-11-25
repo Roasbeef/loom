@@ -991,8 +991,17 @@ pub fn archiving_frees_a_place_and_a_resent_capped_create_is_not_made_twice_test
 pub fn a_session_that_moved_away_is_archived_and_frees_its_place_test() {
   let rig = rig("archive-moved-away")
   let first = made(rig, 1)
-  let _second = made(rig, 2)
-  let _third = made(rig, 3)
+  let second = made(rig, 2)
+  let third = made(rig, 3)
+
+  // The registry answers a create before it has opened the session's slot and
+  // domain, and it goes on reading the catalogue in its own process while it
+  // does. The test below writes through the same SQLite connection from this
+  // process, and one connection is not safe to drive from two processes at once:
+  // a collision surfaces as `SqlightError(GenericError, "not an error")`. A
+  // resident status is the registry's own statement that it has finished, so the
+  // test waits for each session before it touches the store directly.
+  list.each([first, second, third], fn(session) { resident(rig, session) })
 
   // The session was handed to another orchestrator, so this catalogue keeps
   // only the stub and its tombstone.
