@@ -371,3 +371,41 @@ files" for the first group and "and 6 others" for the second.
   succeeded; hiding a card on a model's opinion; rewriting a title when the model
   improves; cards before a transcript's first record; an owner-pressed "title
   this session" on a `main`-only catalogue, which can be added later.
+
+## 10. Slice 0, as built (2026-11-24)
+
+The cut is `session_view/src/session_view/timeline.gleam`, with its examples and
+five properties in `session_view/test/timeline_test.gleam`: every record is in
+exactly one span, a prefix's cards are a prefix of the whole's, an unknown record
+changes no card, a command or result card holds at least three steps, and a
+strand stops closing landmark cards at 400. It differs from the note in four
+places, each because the records do not hold what the note assumed.
+
+- **No `failure` kind.** A failed call counts in the card's `failed` fact, and a
+  failed command closes a `command` card. A failed turn has no record of its own.
+- **No approval card.** Approvals are register cells, not entries, so the cut
+  cannot see them. Slice 1 reads the pending approvals into the now card.
+- **No `commit` kind yet.** It waits on the review board's commits (section 3),
+  which slice 1 reads; until then a commit is a `command` card.
+- **`turn_seq` is the seq of the prompt that began the turn**, not the divider's
+  fold number. The page maps it to the held turn whose input has that seq.
+
+`gleam run -m timeline_census -- <dir>` (in `packages/client/dev`) cuts copies of
+stores and prints the card count at limits of 20, 40 and 80 steps. Over 174
+sessions copied from the owner's drive stores (never the live daemon's), each
+with a mean of 659 records and 334 steps:
+
+| limit | min | median | p90 | max |
+|---|---|---|---|---|
+| 20 | 3 | 54 | 286 | 615 |
+| 40 | 3 | 51 | 270 | 615 |
+| 80 | 3 | 49 | 270 | 615 |
+
+The limit barely moves the count: landmarks (a prompt, an answer, a command
+after edits, a failed command) close most spans before any limit is reached, as
+the review of this note predicted. A session yields about one card for every
+three steps, which is too many to read as a list of milestones. The page needs a
+density control that shows only the landmark kinds by default, and the 40-step
+ruling stands because nothing here argues for another. Slice 0's last exit
+criterion, that the owner reads the cards of three sessions and says whether they
+could tell what the agent did, is the owner's to give and is not yet.
