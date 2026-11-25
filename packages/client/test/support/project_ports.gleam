@@ -11,6 +11,7 @@
 import client/daemon/project_host
 import client/goalstate
 import client/internal/ffi_os
+import client/jev as transport
 import client/peer_mail
 import client/project_template
 import core/json
@@ -49,6 +50,7 @@ pub fn inert() -> project_host.Ports {
     publish: fn(_) { project_host.Unavailable("this test has no remote") },
     gh_runner: fn() { None },
     remote_url: fn() { None },
+    jev: transport.client_with(None, 3000, fn(_, _, _) { Error("no network") }),
     logger: log.discard(),
   )
 }

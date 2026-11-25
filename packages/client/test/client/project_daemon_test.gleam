@@ -32,6 +32,7 @@ import client/history
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/internal/shared_history
+import client/jev as transport
 import client/owned_assembly_test
 import client/peer_mail
 import client/project_records
@@ -569,6 +570,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       now_ms: ffi_os.system_time_ms,
       max_workers: 2,
       policy: project_host.idle_policy,
+      jev: transport.client_with(None, 3000, fn(_, _, _) { Error("no network") }),
       logger: log.discard(),
     )
   let control =
