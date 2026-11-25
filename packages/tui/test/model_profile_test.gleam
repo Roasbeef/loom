@@ -3,6 +3,7 @@
 //// consumes for BEAM profiling before the application starts.
 
 import core/agency_limits
+import gleam/option
 import gleam/string
 import tui
 import tui/daemon/protocol
@@ -57,6 +58,7 @@ pub fn creation_sends_the_profile_only_when_one_was_asked_for_test() {
           "",
           "",
           agency_limits.empty,
+          option.None,
         ),
         protocol.Epoch("current"),
       )
@@ -79,6 +81,7 @@ pub fn an_over_long_profile_name_is_refused_before_it_is_sent_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       ),
       protocol.Epoch("current"),
     )

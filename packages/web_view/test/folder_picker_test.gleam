@@ -2,7 +2,7 @@
 //// `web_view/composer` and its page in `view/new_session`, driven through the
 //// home component.
 ////
-//// What these tests pin: "Choose a folder…" opens the picker and asks for the
+//// What these tests pin: "Open folder…" opens the picker and asks for the
 //// home; a press names an index into the listing the page holds, and an index it
 //// did not draw changes nothing; an answer for a trail the page is no longer
 //// waiting on is dropped; a refusal keeps the listing and says why; the home
@@ -61,6 +61,8 @@ fn offers(typing: composer.Typing) -> composer.Offers {
     here: "laptop",
     agents: [],
     typing:,
+    projects: [],
+    now: 0,
   )
 }
 
@@ -80,7 +82,7 @@ fn at(trail: List(String)) -> composer.State {
   )
 }
 
-// "Choose a folder…" opens the picker at the home and asks for it, and only a page
+// "Open folder…" opens the picker at the home and asks for it, and only a page
 // that may type a path, which is where the daemon serving the page is the agent.
 pub fn the_picker_opens_at_the_home_test() {
   let #(state, intent) = step(composer.new(), composer.OpenedBrowser)
@@ -177,7 +179,7 @@ pub fn the_directory_on_screen_is_chosen_test() {
 
   assert composer.place(composer.Picked(["code", "app"]), composer.Nothing)
     == Ok(creations.Typed("~/code/app"))
-  assert composer.target_words(composer.Picked(["code", "app"])) == "~/code/app"
+  assert composer.target_words(composer.Picked(["code", "app"])) == "app"
 
   let #(unchanged, _) = step(at([]), composer.ChosePicked)
   assert unchanged == at([])
@@ -232,7 +234,7 @@ fn owner(asked: Subject(creations.Place), browsed: Subject(List(String))) {
     manage: None,
     thread_send: None,
     attention: None,
-    create: Some(fn(place, _, _, _, _: agency_limits.AgencyLimits, _, _) {
+    create: Some(fn(place, _, _, _, _: agency_limits.AgencyLimits, _, _, _) {
       process.send(asked, place)
     }),
     folders: Some(
@@ -243,6 +245,7 @@ fn owner(asked: Subject(creations.Place), browsed: Subject(List(String))) {
           process.send(browsed, trail)
           deliver(tree(trail))
         },
+        index: fn(_, _) { Nil },
       ),
     ),
     elsewhere: None,
@@ -309,7 +312,7 @@ fn pressing(model: home.Model, messages: List(composer.Msg)) -> home.Model {
   list.fold(messages, model, compose)
 }
 
-// The Code list offers "Choose a folder…", which opens the picker: a breadcrumb at
+// The Code list offers "Open folder…", which opens the picker: a breadcrumb at
 // the home, the recent folders first, then the home's folders, and no "Use this
 // folder", since a session may not start in the home itself.
 pub fn the_picker_opens_in_the_code_list_test() {
@@ -317,7 +320,7 @@ pub fn the_picker_opens_in_the_code_list_test() {
   let browsed = process.new_subject()
   let model = opened(owner(asked, browsed))
   let listed = compose(model, composer.Toggled(composer.CodeChip))
-  assert string.contains(drawn(listed), "Choose a folder…")
+  assert string.contains(drawn(listed), "Open folder…")
   assert string.contains(drawn(listed), "Browse your folders")
 
   let html = drawn(compose(listed, composer.OpenedBrowser))

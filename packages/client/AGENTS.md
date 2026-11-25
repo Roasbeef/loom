@@ -1621,6 +1621,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   caps at `shown_limit` and stops at `depth_limit`; every refusal is a
   `folder_browse.Refusal`. `ui_socket.browse_for` runs it after `authorized_owner`
   and is the `browse` of the `home.Folders` the owner's page is handed.
+  The folder index (the addendum on searching): `folder_listing.index_in(home, seeds,
+  limits, now)` builds one `folder_browse.Index` of folder names: breadth first from
+  the seeds' parents (the remembered folders, each component checked as a real
+  visible directory) and then the home, following no symbolic link (`lstat`), skipping
+  hidden names and `Library`, listing below a Git checkout only folders that hold a
+  `.git`, not entering `node_modules`, `_build`, `build` or `target`, and stopping at
+  `folder_browse.index_depth`, `index_visit_limit`, `index_entry_limit` or `index_ms`.
+  `ui_socket.index_for` runs it after `authorized_owner`, under the same deadline as
+  `browse_within` (`within_deadline`), and it is the `index` of `home.Folders`.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential
@@ -8997,6 +9006,29 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   Tests: `worktrees_test` (the lifecycle against a real repository, the
   reconciliation matrix, the operator sweep), `executor_worktree_test` (the plane,
   the jail and the close through the host), `daemon_executor_cli_test`.
+- **A session's own worktree on a local folder** (protocol-change/133). A session
+  created with `worktree` (`manager.Creation.worktree`, the control member
+  `{"base"}`, `loom --worktree`) works in a linked worktree of its folder.
+  `client/local_trees` is a registry process started with the daemon
+  (`main.start_local_trees`) that starts one `worktrees.start` service for each
+  folder, named `local-<sixteen hex of the SHA-256 of the folder>` and built the
+  way `project_env.worktrees_for` builds one, so the folder's sessions share one
+  gate. `main.placed_in_worktree` runs in the session builder before
+  `serve.resolve_managed`: it reads `manager.worktree_base`, opens the tree and
+  hands `resolve_managed` a registration whose `workspace` is the tree, so the
+  settings, the jail's roots and the Git widening are the tree's. The
+  registration the rest of the build sees keeps the folder (domain key, memory,
+  grouping). `assemble_in` files `Settings.released` as the session's `Workspace`
+  custody part (the part a local session otherwise lacks), which custody runs
+  after `Helpers`, so a tree is judged only once its helpers are confirmed gone
+  and an uncertain retirement never reaches it. It is filed before the workspace
+  half starts, so a half that fails to start still settles its tree. `server.create_session` refuses a worktree of a
+  folder with no `.git` directory (`not_a_repository`) before reserving. The base
+  is a side table of the catalogue (v24) read by `manager.worktree_base` and, for
+  a listing page, `manager.worktree_bases`; `server.with_worktree` adds the
+  `{base, branch}` member to the create reply, `sessions.get` and
+  `sessions.list`. A kept tree is not covered by `executor release --worktrees`.
+  Tests: `local_trees_test`, `daemon_server_test` (the wire and its refusals).
   The CLI fixtures check both enforcement postures: a missing delegated cgroup
   must refuse without changing either tree, even for a forced removal; the
   delegated Linux jail lane runs the same module and requires success.

@@ -18,6 +18,7 @@ fn session(id: String, status: control_protocol.Lifecycle, name: String) {
     status:,
     subtitle: option.None,
     executor: option.None,
+    worktree: option.None,
   )
 }
 

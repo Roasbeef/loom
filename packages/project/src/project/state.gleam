@@ -160,6 +160,13 @@ pub type TriggerRecord {
     admission: gate.Admission,
     /// Where it is now.
     fate: Fate,
+    /// What Jev answered when it decided this trigger, or `None` when the
+    /// model router did. It is data for display and evaluation.
+    judgement: Option(model.Judgement),
+    /// The catalogue agent chosen for the work this trigger opens, by name, or
+    /// `None` for the `[roles]` default. A ticket's agent is its origin
+    /// trigger's.
+    agent: Option(String),
   )
 }
 
@@ -438,6 +445,91 @@ pub fn put_ticket(state: State, ticket: Ticket) -> State {
   }
 
   State(..state, tickets: dict.insert(state.tickets, ticket.id, ticket), order:)
+}
+
+/// Keep what Jev answered with a stored trigger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the same state with the trigger's judgement replaced
+/// ```
+pub fn set_judgement(
+  state: State,
+  id: TriggerId,
+  judgement: Option(model.Judgement),
+) -> State {
+  case dict.get(state.triggers, id) {
+    Ok(found) ->
+      State(
+        ..state,
+        triggers: dict.insert(
+          state.triggers,
+          id,
+          TriggerRecord(..found, judgement:),
+        ),
+      )
+    Error(Nil) -> state
+  }
+}
+
+/// Keep the agent chosen for the work a stored trigger opens.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the same state with the trigger's agent replaced
+/// ```
+pub fn set_agent(state: State, id: TriggerId, agent: String) -> State {
+  case dict.get(state.triggers, id) {
+    Ok(found) ->
+      State(
+        ..state,
+        triggers: dict.insert(
+          state.triggers,
+          id,
+          TriggerRecord(..found, agent: Some(agent)),
+        ),
+      )
+    Error(Nil) -> state
+  }
+}
+
+/// Forget the agent chosen for a stored trigger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the same state with the trigger's agent set to None
+/// ```
+pub fn clear_agent(state: State, id: TriggerId) -> State {
+  case dict.get(state.triggers, id) {
+    Ok(found) ->
+      State(
+        ..state,
+        triggers: dict.insert(
+          state.triggers,
+          id,
+          TriggerRecord(..found, agent: None),
+        ),
+      )
+    Error(Nil) -> state
+  }
+}
+
+/// The agent a ticket's worker is to use: the one chosen for the trigger that
+/// opened it, or `None` for the `[roles]` default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> option.None for a ticket whose origin chose no agent
+/// ```
+pub fn agent_of(state: State, ticket: Ticket) -> Option(String) {
+  case dict.get(state.triggers, ticket.origin) {
+    Ok(found) -> found.agent
+    Error(Nil) -> None
+  }
 }
 
 /// Set a stored trigger's fate.

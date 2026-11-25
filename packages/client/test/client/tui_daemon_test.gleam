@@ -218,6 +218,7 @@ pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       )
     let assert Ok(protocol.SessionReply(created)) =
       daemon.request(control, creation, 1000)
@@ -379,6 +380,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       ),
       server_protocol.CreateSession(
         "key",
@@ -391,6 +393,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
         None,
         domain.WorkspacePrivate,
         agency_limits.empty,
+        None,
       ),
     ),
     #(protocol.OpenSession(id), server_protocol.OpenSession(id, "epoch")),
@@ -670,6 +673,7 @@ pub fn tui_daemon_disconnect_leaves_mutation_outcome_unknown_test() {
               "",
               "",
               agency_limits.empty,
+              option.None,
             ),
             1000,
           ),

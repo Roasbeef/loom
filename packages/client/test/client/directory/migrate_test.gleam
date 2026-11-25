@@ -331,6 +331,7 @@ pub fn a_cover_during_local_assembly_is_retried_after_confirmation_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory:,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 12),

@@ -364,6 +364,40 @@ pub fn create_named_with_agency(
   pool: String,
   agency: agency_limits.AgencyLimits,
 ) -> Result(Target, String) {
+  create_named_in(
+    host,
+    key,
+    workspace,
+    name,
+    configuration,
+    profile,
+    executor,
+    pool,
+    agency,
+    None,
+  )
+}
+
+/// `create_named_with_agency`, in a new Git worktree of the workspace when
+/// `worktree` names the commit-ish its branch starts from (protocol-change/133).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.create_named_in(host, key, project.path, name, config, "", "", "", agency_limits.empty, Some("HEAD"))
+/// ```
+pub fn create_named_in(
+  host: Host,
+  key: String,
+  workspace: String,
+  name: String,
+  configuration: String,
+  profile: String,
+  executor: String,
+  pool: String,
+  agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
+) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
@@ -376,6 +410,7 @@ pub fn create_named_with_agency(
         executor,
         pool,
         agency,
+        worktree,
       ),
       10_000,
     )
@@ -385,15 +420,21 @@ pub fn create_named_with_agency(
   // Verify creation reply produced a session record.
   case reply {
     protocol.SessionReply(row) ->
-      target(
-        host,
-        row.session_id,
-        row.workspace,
-        row.executor,
-        row.name,
-        Some(key),
-        row.status,
-      )
+      confirm_worktree(row, worktree, fn(command, within) {
+        daemon.request(host.control, command, within)
+        |> result.map_error(failure)
+      })
+      |> result.try(fn(_) {
+        target(
+          host,
+          row.session_id,
+          row.workspace,
+          row.executor,
+          row.name,
+          Some(key),
+          row.status,
+        )
+      })
     protocol.StatusReply(_)
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
@@ -571,6 +612,35 @@ pub fn restore(host: Host, session: String) -> Result(String, String) {
   case reply {
     protocol.SessionReply(row) if row.session_id == session -> Ok(session)
     _ -> Error("restore returned an unexpected control reply")
+  }
+}
+
+/// Checks that a daemon asked for a worktree made one. An older daemon ignores
+/// the `worktree` member and creates the session in the folder, where its edits
+/// would land in the owner's own files, so the reply's own `worktree` member is
+/// the proof, and a session without it is stopped and refused
+/// (protocol-change/133). `request` is how the stop is sent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.confirm_worktree(row, Some("HEAD"), request)
+/// ```
+@internal
+pub fn confirm_worktree(
+  row: protocol.Session,
+  asked: Option(String),
+  request: fn(protocol.Command, Int) -> Result(protocol.Reply, String),
+) -> Result(Nil, String) {
+  // Only a creation that asked for a worktree has anything to confirm.
+  case asked, row.worktree {
+    None, _ | Some(_), Some(_) -> Ok(Nil)
+    Some(_), None -> {
+      let _stopped = request(protocol.StopSession(row.session_id), 10_000)
+      Error(
+        "the daemon did not create the session in a worktree (an older daemon ignores the request), so it was stopped before it could edit the folder; update the daemon or start without --worktree",
+      )
+    }
   }
 }
 

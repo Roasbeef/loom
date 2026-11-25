@@ -48,6 +48,7 @@ pub fn unicode_names_fit_the_create_wire_limit_test() {
             "",
             "",
             agency_limits.empty,
+            None,
           ),
           protocol.Epoch("epoch"),
         )

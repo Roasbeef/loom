@@ -252,6 +252,7 @@ fn remote(ready: root.Ready(String), key: String) -> String {
         "build-box",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids_for(key),
@@ -276,6 +277,7 @@ fn local(ready: root.Ready(String), key: String) -> String {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids_for(key),
@@ -706,6 +708,7 @@ fn working_in(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids_for(key),
@@ -1076,6 +1079,47 @@ pub fn a_move_the_receiver_refuses_is_answered_as_a_refusal_with_its_cause_test(
       // A move that finished is answered with its identity, as it always was.
       let accepted = move(socket, 2, finished, "desk", ready.epoch)
       assert field(accepted, "event") == json.String("sessions.move")
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
+// A move carries the session's directory, which is the folder, and not the tree
+// a session in its own worktree works in, so it is refused (protocol-change/133).
+pub fn a_session_in_its_own_worktree_is_not_moved_test() {
+  moving_listing(
+    origin(),
+    [laptop_carrying("build-box") |> rename("carrier")],
+    fn(ready, port, credential, recorder) {
+      let primary = checkout_directory(ready, "primary", "primary")
+      let assert Ok(view) =
+        manager.create(
+          ready.registry,
+          manager.Creation(
+            "in-tree",
+            primary,
+            "Tree",
+            "",
+            None,
+            None,
+            "",
+            "",
+            agency_limits.empty,
+            Some("HEAD"),
+          ),
+          directory: ready.sessions_directory,
+          generator: ids_for("in-tree"),
+        )
+        as "the owner creates a session in a worktree"
+      let session = view.registration.id
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+
+      assert code(move(socket, 1, session, "carrier", ready.epoch))
+        == json.String("not_movable")
+      assert told(recorder) == []
+      assert manager.custody(ready.registry, session) == Ok(catalogue.Resident)
       let _ = ffi_ws.tcp_close(socket)
       Nil
     },

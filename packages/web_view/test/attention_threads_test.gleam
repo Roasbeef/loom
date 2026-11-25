@@ -25,6 +25,7 @@ import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
 import web_view/thread_send
 import web_view/view/attention_thread
+import web_view/view/inbox as inbox_view
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: element.Element(message)) -> List(String)
@@ -1134,7 +1135,7 @@ fn composing(
 
   home.Start(
     ..base,
-    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
     activity: fn(_, deliver) { activity(deliver) },
     attention: Some(
       home.Attention(
@@ -1344,4 +1345,15 @@ pub fn a_crashed_read_is_released_by_the_next_list_test() {
   assert string.contains(html, "<h1>New session</h1>")
   assert !string.contains(html, "<h1>Inbox</h1>")
   assert string.contains(html, "class=\"folder need\"")
+}
+
+// The "Watch all" board is one view of the reading pane, so pressing an ask, a find
+// or a stuck strand takes it away: the thread opens instead of staying hidden
+// behind the board.
+pub fn pressing_an_item_thread_takes_the_board_away_test() {
+  let model = run(owner(), home.WatchAllToggled)
+  assert home.board_asked(model) == inbox_view.WatchAll
+
+  let model = run(model, home.ItemPicked(ask_key()))
+  assert home.board_asked(model) == inbox_view.WatchOne
 }

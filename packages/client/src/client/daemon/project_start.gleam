@@ -270,6 +270,7 @@ fn make_project(
         executor: "",
         pool: "",
         agency: agency_limits.empty,
+        worktree: None,
       ),
       directory: env.sessions,
       generator: env.generator(),
@@ -389,6 +390,7 @@ fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
       executor: "",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     ),
     directory: env.sessions,
     generator: env.generator(),
@@ -795,6 +797,7 @@ fn start_worker(
       executor: "",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     )
   use registration <- result.try(
     manager.reserve(

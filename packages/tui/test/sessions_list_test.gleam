@@ -24,6 +24,7 @@ fn session(
     status:,
     subtitle: option.None,
     executor: option.None,
+    worktree: option.None,
   )
 }
 

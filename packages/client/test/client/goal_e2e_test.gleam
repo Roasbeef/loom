@@ -1207,6 +1207,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
       block_cooldown_reviews: 2,
     )),
     go_caches: None,
+    released: None,
   )
 }
 

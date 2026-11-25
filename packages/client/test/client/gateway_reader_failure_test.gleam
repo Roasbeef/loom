@@ -97,6 +97,7 @@ fn resident(epoch: String) -> Resident {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), 414),

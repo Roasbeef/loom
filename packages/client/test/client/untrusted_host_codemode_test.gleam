@@ -162,7 +162,8 @@ fn drive(seed: String) -> Nil {
   // The executor: the real factory, its host, and the gateway in front of it.
   let machine = machine(state, seed)
   let served = [workspaces.shared("proj", checkout)]
-  let assert Ok(trees) = executor_plane.worktrees_of(machine, served)
+  let assert Ok(trees) =
+    executor_plane.worktrees_with(machine, served, fn() { Error(Nil) })
     as "the worktrees start"
   let assert Ok(started) =
     host.start(host.Config(

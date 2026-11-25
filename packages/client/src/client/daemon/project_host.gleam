@@ -1948,11 +1948,14 @@ fn route_now(
 /// and the only text is the capped title of an accept.
 fn routed_event(item: tools.Item) -> Event {
   case item.action {
-    tools.Accept(title:) -> event.Routed(routing(item, model.Accept(title)))
-    tools.Attach(ticket:) -> event.Routed(routing(item, model.Attach(ticket)))
-    tools.Resume(ticket:) -> event.Routed(routing(item, model.Resume(ticket)))
+    tools.Accept(title:) ->
+      event.Routed(routing(item, model.Accept(title)), None)
+    tools.Attach(ticket:) ->
+      event.Routed(routing(item, model.Attach(ticket)), None)
+    tools.Resume(ticket:) ->
+      event.Routed(routing(item, model.Resume(ticket)), None)
     tools.Stop(ticket:) -> event.RoutedStop(item.trigger, ticket)
-    tools.Ignore -> event.RoutedIgnore(item.trigger)
+    tools.Ignore -> event.RoutedIgnore(item.trigger, None)
   }
 }
 
@@ -6461,6 +6464,7 @@ fn compacted(
   use lines <- result.try(surviving_lines(marked))
   let document =
     project_retention.Document(
+      layout: project_retention.layout_of(kept),
       state: snapshot.encode(kept),
       records: project_retention.select_records(lines, kept),
       arrivals: dict.to_list(

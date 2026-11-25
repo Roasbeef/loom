@@ -141,6 +141,7 @@ pub fn creation_sends_the_executor_only_for_a_registered_workspace_test() {
           executor,
           "",
           agency_limits.empty,
+          None,
         ),
         protocol.Epoch("current"),
       )
@@ -165,6 +166,7 @@ pub fn an_over_long_executor_name_is_refused_before_it_is_sent_test() {
         string.repeat("a", 65),
         "",
         agency_limits.empty,
+        None,
       ),
       protocol.Epoch("current"),
     )
@@ -252,6 +254,7 @@ pub fn a_creation_carries_the_launch_executor_test() {
         "build-box",
         "",
         agency_limits.empty,
+        None,
       ),
       90_000,
     )
@@ -262,7 +265,16 @@ fn row(
   workspace: String,
   executor: option.Option(String),
 ) -> protocol.Session {
-  protocol.Session(id, workspace, "work", 0, protocol.Saved, None, executor)
+  protocol.Session(
+    id,
+    workspace,
+    "work",
+    0,
+    protocol.Saved,
+    None,
+    executor,
+    None,
+  )
 }
 
 // A registered name is no path, so a listing says which executor it is on, and
@@ -385,6 +397,7 @@ pub fn creation_sends_the_pool_only_for_a_pooled_workspace_test() {
           "",
           pool,
           agency_limits.empty,
+          None,
         ),
         protocol.Epoch("current"),
       )
@@ -410,6 +423,7 @@ pub fn an_over_long_pool_name_is_refused_before_it_is_sent_test() {
         "",
         string.repeat("a", 65),
         agency_limits.empty,
+        None,
       ),
       protocol.Epoch("current"),
     )
@@ -454,6 +468,7 @@ pub fn a_creation_carries_the_launch_pool_test() {
         "",
         "builders",
         agency_limits.empty,
+        None,
       ),
       90_000,
     )

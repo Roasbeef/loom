@@ -2062,6 +2062,36 @@ pub fn delete_session_agency_limits(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type SessionWorktreeBase {
+  SessionWorktreeBase(base: String)
+}
+
+pub fn session_worktree_base(session_id session_id: String) {
+  let sql = "SELECT base FROM catalogue_session_worktrees WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_worktree_base_decoder())
+}
+
+pub fn session_worktree_base_decoder() -> decode.Decoder(SessionWorktreeBase) {
+  use base <- decode.field(0, decode.string)
+  decode.success(SessionWorktreeBase(base:))
+}
+
+pub fn set_session_worktree_base(
+  session_id session_id: String,
+  base base: String,
+) {
+  let sql =
+    "INSERT INTO catalogue_session_worktrees (session_id, base)
+VALUES (?, ?)
+ON CONFLICT(session_id) DO UPDATE SET base = excluded.base"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(base)])
+}
+
+pub fn delete_session_worktree_base(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_worktrees WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type SessionAttention {
   SessionAttention(
     pending_approvals: Int,

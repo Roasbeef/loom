@@ -200,6 +200,9 @@ pub type Page(message) {
     /// The "New session" button's message, or `None` where the page may not
     /// create sessions or draws the button elsewhere.
     starting: Option(message),
+    /// The "Get started" entry's message, or `None` on a page that has no
+    /// checklist or whose checklist is finished.
+    getting_started: Option(message),
     /// The foot's "Admin" button's message, or `None` on a page that has no
     /// admin to open.
     administering: Option(message),
@@ -448,6 +451,7 @@ fn column(
     ],
     [
       html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
+      getting_started(page),
       folders_nav(folders),
       html.h3([attribute.class("rail-heading")], [html.text("Watch live")]),
       pills(all, page),
@@ -596,6 +600,30 @@ fn activity_of(suffix: Suffix) -> Dict(String, Activity) {
   }
 }
 
+/// The "Get started" entry above the inbox's folders, or nothing on a page that
+/// has no checklist or whose checklist is finished. It is one line in the rail's
+/// folder style, so a new person finds setup where they look for everything else.
+fn getting_started(page: Page(message)) -> Element(message) {
+  case page.getting_started {
+    None -> element.none()
+    Some(press) ->
+      html.nav(
+        [attribute.class("rail-folders"), attribute.aria_label("Setup")],
+        [
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("folder setup-entry"),
+              attribute.title("What is set up and what is left"),
+              event.on_click(press),
+            ],
+            [html.span([attribute.class("nm")], [html.text("Get started")])],
+          ),
+        ],
+      )
+  }
+}
+
 /// The inbox's folders: a button for each, its name at the left and its count at
 /// the right. The count of "Needs you" is a filled pill in the signal colour,
 /// since it is the one that asks something of the person, and the folder the
@@ -612,13 +640,16 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
         // nothing, so it is not offered, and it is still listed so that the rail's
         // shape does not move as work comes and goes.
         folder_element(
-          case count {
-            Some(0) ->
+          case count, folder {
+            // The Projects folder is where a project is made, so an empty one
+            // stays a button: its page holds the "New project" button.
+            Some(0), inbox_rule.Projecting -> folders.way
+            Some(0), _ ->
               case folders.way {
                 Pick(_) -> Text
                 Return | Text -> folders.way
               }
-            Some(_) | None -> folders.way
+            Some(_), _ | None, _ -> folders.way
           },
           folder,
           count,

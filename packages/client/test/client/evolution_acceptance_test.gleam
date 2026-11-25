@@ -634,6 +634,7 @@ pub fn settings(root: String, url: String) -> serve.Settings {
     memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: None,
+    released: None,
   )
 }
 

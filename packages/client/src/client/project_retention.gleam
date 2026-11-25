@@ -87,9 +87,42 @@ pub type Gone {
   )
 }
 
+/// Which layout of the engine's state a document holds. A state whose stored
+/// triggers carry a catalogue agent is `WithAgents`: a build that predates the
+/// agent would load it, drop the agent without a sound and start the work on
+/// the wrong one, so the document's version is bumped and that build refuses
+/// it. Every other state is `Original` and reads on every build.
+pub type Layout {
+  Original
+  WithAgents
+}
+
+/// The layout a state needs: `WithAgents` when any stored trigger carries an
+/// agent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_retention.layout_of(state.start(config)) == project_retention.Original
+/// ```
+pub fn layout_of(current: State) -> Layout {
+  let chosen =
+    list.any(dict.values(current.triggers), fn(stored) {
+      option.is_some(stored.agent)
+    })
+
+  // One stored agent is enough to need the newer layout.
+  case chosen {
+    True -> WithAgents
+    False -> Original
+  }
+}
+
 /// What a snapshot holds besides the engine's state.
 pub type Document {
   Document(
+    /// The layout of the state, which sets the document's version.
+    layout: Layout,
     /// The engine's state as `project/snapshot.encode` wrote it.
     state: String,
     /// The host records that still matter, as the ledger lines they were
@@ -334,12 +367,12 @@ fn keep_newest(entries: List(Gone), count: Int) -> List(Gone) {
 /// ## Examples
 ///
 /// ```gleam
-/// let document = project_retention.Document("{}", [], [], [])
+/// let document = project_retention.Document(Original, "{}", [], [], [])
 /// assert project_retention.decode(project_retention.encode(document)) == Ok(document)
 /// ```
 pub fn encode(document: Document) -> String {
   json.object([
-    #("v", json.int(1)),
+    #("v", json.int(version_of(document.layout))),
     #("state", json.string(document.state)),
     #("records", json.array(document.records, json.string)),
     #(
@@ -354,6 +387,14 @@ pub fn encode(document: Document) -> String {
     #("gone", json.array(document.gone, gone_json)),
   ])
   |> json.to_string
+}
+
+/// The version a layout is written under.
+fn version_of(layout: Layout) -> Int {
+  case layout {
+    Original -> 1
+    WithAgents -> 2
+  }
 }
 
 /// One kept decision, with the ticket it names or `null`.
@@ -380,8 +421,8 @@ pub fn decode(text: String) -> Result(Document, String) {
   |> result.replace_error("the snapshot is not a project snapshot")
 }
 
-/// The document's decoder. Every field is required, and only version 1 is
-/// read.
+/// The document's decoder. Every field is required, and only versions 1 and 2
+/// are read.
 fn document_decoder() -> decode.Decoder(Document) {
   use version <- decode.field("v", decode.int)
   use state <- decode.field("state", decode.string)
@@ -392,8 +433,14 @@ fn document_decoder() -> decode.Decoder(Document) {
   // A document of a version this build does not know fails the decode, so a
   // downgrade cannot misread a newer layout.
   case version {
-    1 -> decode.success(Document(state:, records:, arrivals:, gone:))
-    _ -> decode.failure(Document("", [], [], []), "a version 1 snapshot")
+    1 -> decode.success(Document(Original, state:, records:, arrivals:, gone:))
+    2 ->
+      decode.success(Document(WithAgents, state:, records:, arrivals:, gone:))
+    _ ->
+      decode.failure(
+        Document(Original, "", [], [], []),
+        "a version 1 or 2 snapshot",
+      )
   }
 }
 

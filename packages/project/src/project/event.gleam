@@ -8,14 +8,16 @@
 //// caller passes in. An `Effect` is a request the actor performs; the engine
 //// never performs one. A `Refusal` leaves the state untouched.
 
+import gleam/option.{type Option}
 import project/gate
 import project/host.{type CheckPassed}
 import project/model.{
   type ActorId, type Ceiling, type CommandDigest, type CommitId, type Covers,
-  type Head, type Label, type Mandate, type Mode, type Outcome, type Pin,
-  type PrincipalId, type PullRequestRef, type Report, type ReviewReason,
-  type Routing, type RuleId, type SessionEnd, type SessionId, type SourceId,
-  type TicketId, type Trigger, type TriggerId, type VerdictOutcome,
+  type Head, type Judgement, type Label, type Mandate, type Mode, type Outcome,
+  type Pin, type PrincipalId, type PullRequestRef, type Report,
+  type ReviewReason, type Routing, type RuleId, type SessionEnd, type SessionId,
+  type SourceId, type TicketId, type Trigger, type TriggerId,
+  type VerdictOutcome,
 }
 
 /// The result of the host's check command.
@@ -53,6 +55,9 @@ pub type Event {
   Routed(
     /// The decision.
     routing: Routing,
+    /// What Jev answered, when Jev made the decision, and `None` for the
+    /// model router's. Nothing in the engine reads it.
+    judgement: Option(Judgement),
   )
 
   /// The router stopped a ticket on a person's explicit message.
@@ -67,6 +72,19 @@ pub type Event {
   RoutedIgnore(
     /// The ignored candidate.
     trigger: TriggerId,
+    /// What Jev answered, when Jev declined it.
+    judgement: Option(Judgement),
+  )
+
+  /// Jev chose the catalogue agent for the work an offered candidate may open.
+  /// It is its own event, committed before the routing, because the agent
+  /// decides which models a worker uses and a build that did not know it must
+  /// refuse the ledger and not start a ticket on the wrong one.
+  AgentChosen(
+    /// The offered candidate.
+    trigger: TriggerId,
+    /// The catalogue entry's name.
+    agent: String,
   )
 
   /// The router's turn ended. Candidates it left unrouted go back to the queue.

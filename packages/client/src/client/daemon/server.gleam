@@ -3794,7 +3794,19 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, model, _, _, _, _) ->
+    protocol.CreateSession(
+      _,
+      _,
+      _,
+      configuration,
+      profile,
+      model,
+      _,
+      _,
+      _,
+      _,
+      _,
+    ) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
         choice_refusal(config, configuration, profile, model, code)
@@ -5049,6 +5061,13 @@ fn choice_refusal(
     "pool_unknown" ->
       Refused(code, "no pool with that name is configured on this daemon", [])
 
+    "not_a_repository" ->
+      Refused(
+        code,
+        "a worktree needs a folder that is the top of a Git repository's main checkout, with a .git directory",
+        [],
+      )
+
     _ -> control_refusal(code)
   }
 }
@@ -5495,7 +5514,13 @@ fn dispatch_class(
           state.registry,
           list.map(views, fn(view) { view.registration.id }),
         )
-      let encode = listed_json(custodies, standings)
+      let worktrees =
+        manager.worktree_bases(
+          state.registry,
+          list.map(views, fn(view) { view.registration.id }),
+        )
+        |> result.unwrap([])
+      let encode = listed_json(custodies, standings, worktrees)
       use bounded <- result.try(page_prefix(views, 60_000, [], encode))
       Ok(#("sessions.list", page_body(bounded, current, encode)))
     }
@@ -5602,6 +5627,7 @@ fn dispatch_class(
       pool,
       scope,
       agency,
+      worktree,
     ) ->
       create_session(
         config,
@@ -5618,10 +5644,13 @@ fn dispatch_class(
           option.unwrap(executor, ""),
           option.unwrap(pool, ""),
           agency,
+          worktree,
         ),
         scope,
       )
-      |> result.map(fn(view) { #("sessions.create", view_json(view)) })
+      |> result.map(fn(view) {
+        #("sessions.create", created_json(view, worktree))
+      })
     protocol.OpenSession(id, supplied) -> {
       use Nil <- result.try(epoch(state, supplied))
       use #(_, authority) <- result.try(authorized(state, digest, id))
@@ -6154,6 +6183,7 @@ fn departure_for(
         )),
       )
     True, None -> {
+      use Nil <- result.try(no_worktree(registry, id))
       use target <- result.try(checkout_place(destination))
       use Nil <- result.try(checkout_executor_listed(
         config,
@@ -6201,6 +6231,27 @@ fn checkout_executor_listed(
           <> "`, which this daemon does not list",
         )),
       )
+  }
+}
+
+/// Refuses a session that works in its own worktree. A move carries the
+/// session's directory, which is the folder, and not the tree it works in or
+/// its branch, so the session would resume on the other machine in the folder
+/// with its changes left behind (protocol-change/133).
+fn no_worktree(
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Nil, MoveRefusal) {
+  // A session with a base works in a tree; a read that fails is no answer.
+  case manager.worktree_base(registry, id) {
+    Ok(None) -> Ok(Nil)
+    Ok(Some(_)) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "the session works in its own worktree, which a move does not carry",
+        )),
+      )
+    Error(error) -> Error(Unreadable(error))
   }
 }
 
@@ -6566,6 +6617,12 @@ pub fn create_session(
     _, _ -> Error("bad_request")
   })
 
+  // A worktree is made of the folder, so the folder has to be the top of a
+  // primary checkout, which is the shape `client/worktrees` writes through
+  // (protocol-change/095). Refusing here, before an identity is reserved, means
+  // a session never exists whose first open could only fail for this reason.
+  use Nil <- result.try(worktree_folder(request.worktree, workspace))
+
   use configuration <- result.try(
     // This branch resolves request configuration before the operation continues.
     case request.configuration {
@@ -6631,6 +6688,29 @@ pub fn create_session(
   }
 
   created
+}
+
+/// The code `sessions.create` answers when a worktree is asked of a folder that
+/// is not the top of a Git repository's main checkout (protocol-change/133).
+pub const not_a_repository_code = "not_a_repository"
+
+// A session in its own worktree needs a repository whose `.git` is a directory
+// beside the folder: that is a primary checkout, and the common directory the
+// session's jail must write is `<folder>/.git`. A subdirectory of a repository
+// has no `.git` of its own, and a linked worktree's `.git` is a file.
+/// Checks the folder of a creation that asks for a worktree.
+fn worktree_folder(
+  worktree: Option(String),
+  folder: String,
+) -> Result(Nil, String) {
+  case worktree {
+    None -> Ok(Nil)
+    Some(_) ->
+      case simplifile.is_directory(folder <> "/.git") {
+        Ok(True) -> Ok(Nil)
+        Ok(False) | Error(_) -> Error(not_a_repository_code)
+      }
+  }
 }
 
 /// A remote session created on a directory member is recorded before it can be
@@ -6859,12 +6939,20 @@ fn custody_members(custody: catalogue.Custody) -> List(#(String, JsonValue)) {
 fn listed_json(
   custodies: List(#(String, catalogue.Custody)),
   standings: List(#(String, project_standing.Standing)),
+  worktrees: List(#(String, String)),
 ) -> fn(manager.View) -> JsonValue {
   fn(view: manager.View) {
     // This branch resolves list key_find custodies view registration id before the operation continues.
-    let plain = case list.key_find(custodies, view.registration.id) {
+    let moved = case list.key_find(custodies, view.registration.id) {
       Ok(custody) -> with_custody_members(view_json(view), custody)
       Error(Nil) -> view_json(view)
+    }
+
+    // A session in its own worktree says where, and an ordinary session's
+    // record is byte for byte what it was.
+    let plain = case list.key_find(worktrees, view.registration.id) {
+      Ok(base) -> with_worktree(moved, view.registration.id, base)
+      Error(Nil) -> moved
     }
 
     // A session that belongs to a project says so, and an ordinary session's
@@ -6874,6 +6962,52 @@ fn listed_json(
         json.Object(list.append(fields, [#("standing", standing_json(held))]))
       Ok(_), _ | Error(Nil), _ -> plain
     }
+  }
+}
+
+/// The record `sessions.create` answers: the session's view, and for a creation
+/// that asked for a worktree the `worktree` member that says the daemon
+/// honoured it.
+fn created_json(view: manager.View, worktree: Option(String)) -> JsonValue {
+  let record = view_json(view)
+
+  // Only a creation that asked for a tree has a base to report.
+  case worktree {
+    Some(base) -> with_worktree(record, view.registration.id, base)
+    None -> record
+  }
+}
+
+/// A session record with its `worktree` member: `{"base", "branch"}`, where
+/// `base` is the commit-ish the branch started from and `branch` is the branch
+/// the session works on, `loom/<session id>` (protocol-change/133). The
+/// session's `workspace` stays the folder it was created in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.with_worktree(server.view_json(view), session_id, "HEAD")
+/// ```
+@internal
+pub fn with_worktree(
+  record: JsonValue,
+  session_id: String,
+  base: String,
+) -> JsonValue {
+  case record {
+    json.Object(fields) ->
+      json.Object(
+        list.append(fields, [
+          #(
+            "worktree",
+            json.Object([
+              #("base", json.String(base)),
+              #("branch", json.String("loom/" <> session_id)),
+            ]),
+          ),
+        ]),
+      )
+    other -> other
   }
 }
 
@@ -6912,7 +7046,7 @@ fn owner_view(
         manager.session_domain(state.registry, view.registration.id)
         |> result.map_error(error_code),
       )
-      Ok(
+      let record =
         json.Object([
           #("session_id", json.String(view.registration.id)),
           #("workspace", json.String(view.registration.workspace)),
@@ -6921,8 +7055,13 @@ fn owner_view(
           #("status", status_json(view.status)),
           #("domain_scope", json.String(scope_text(selected.scope))),
           ..placement_fields(view.registration)
-        ]),
-      )
+        ])
+
+      // A session in its own worktree says where it works.
+      case manager.worktree_base(state.registry, view.registration.id) {
+        Ok(Some(base)) -> Ok(with_worktree(record, view.registration.id, base))
+        Ok(None) | Error(_) -> Ok(record)
+      }
     }
   }
 }

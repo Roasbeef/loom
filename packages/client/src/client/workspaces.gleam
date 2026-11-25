@@ -265,16 +265,19 @@ fn mode_of(
   }
 }
 
-/// Establishes usable base for the caller, keeping its validation and result policy at this boundary.
-fn usable_base(text: String) -> Result(String, String) {
-  let printable =
-    list.all(string.to_utf_codepoints(text), fn(point) {
-      let code = string.utf_codepoint_to_int(point)
-      code > 32 && code != 127
-    })
-
-  // Decide how to handle text != "" && !string.starts_with(text, "-") && printable {.
-  case text != "" && !string.starts_with(text, "-") && printable {
+/// A commit-ish Git can resolve from a command line: not empty, not starting
+/// with `-` (which Git would read as an option), and free of control characters
+/// and spaces. The same rule judges a session's own worktree base
+/// (`catalogue.is_worktree_base`), so the two cannot drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspaces.usable_base("origin/main") == Ok("origin/main")
+/// let assert Error(_) = workspaces.usable_base("--detach")
+/// ```
+pub fn usable_base(text: String) -> Result(String, String) {
+  case catalogue.is_worktree_base(text) {
     True -> Ok(text)
     False ->
       Error(

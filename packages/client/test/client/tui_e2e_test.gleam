@@ -1017,6 +1017,7 @@ fn boot_with(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
@@ -1150,6 +1151,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
+    released: None,
   )
 }
 

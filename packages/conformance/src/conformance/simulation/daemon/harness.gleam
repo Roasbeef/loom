@@ -425,6 +425,7 @@ pub fn reserve(
       "",
       "",
       agency_limits.empty,
+      None,
     )
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   manager.create(
@@ -810,6 +811,7 @@ pub fn create_isolated(
       "",
       "",
       agency_limits.empty,
+      None,
     )
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   let outcome =

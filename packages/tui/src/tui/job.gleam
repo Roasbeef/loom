@@ -491,6 +491,9 @@ pub type AttachRoute {
     pool: String,
     /// Optional per-session subagent limits (`protocol-change/113`).
     agency: agency_limits.AgencyLimits,
+    /// The commit-ish a worktree of `workspace` branches from, or `None` for a
+    /// session that works in the directory itself (protocol-change/133).
+    worktree: Option(String),
   )
 }
 

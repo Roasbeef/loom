@@ -232,6 +232,7 @@ pub fn creation_for(
     executor:,
     pool:,
     agency: agency_limits.empty,
+    worktree: None,
   )
 }
 

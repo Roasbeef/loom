@@ -252,6 +252,7 @@ pub fn a_session_this_daemon_holds_never_asks_the_directory_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 700),

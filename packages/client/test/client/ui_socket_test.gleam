@@ -1223,7 +1223,16 @@ pub fn a_card_needs_no_new_event_class_test() {
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
 pub fn only_an_owners_operating_home_may_create_test() {
-  let ask = fn(_place, _name, _sharing, _profile, _agency, _prompt, _deliver) {
+  let ask = fn(
+    _place,
+    _name,
+    _sharing,
+    _profile,
+    _agency,
+    _worktree,
+    _prompt,
+    _deliver,
+  ) {
     Nil
   }
   let owner = home_principal(access.OwnerPrincipal)
@@ -1469,6 +1478,7 @@ pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
       recent: fn(_) { Nil },
       forget: fn(_, _) { Nil },
       browse: fn(_, _) { Nil },
+      index: fn(_, _) { Nil },
     )
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
