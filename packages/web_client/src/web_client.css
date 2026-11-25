@@ -805,6 +805,49 @@
   .inbox-pill{padding:0 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font-size:12px;line-height:20px;}
   .inbox-pill-ok{color:var(--color-added-text);}
   .inbox-pill-bad{color:var(--color-danger-text);}
+  /* The timeline: a tinted band for where the session is, a density control, and
+     cards that are a tinted ground with a hairline border. A failed card tints,
+     and no card has an accent bar or a shadow. Session text sits in text nodes
+     that wrap and never widen the card. */
+  .timeline-now{padding:8px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-sunk);color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .timeline-notice{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
+  .timeline-density{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px 0;}
+  .timeline-density-button{padding:0 10px;border:1px solid var(--color-divider);border-radius:10px;background:transparent;color:var(--color-fg-quiet);font:12px/20px var(--font-sans);cursor:pointer;}
+  .timeline-density-button[aria-pressed="true"]{background:var(--color-bg-raised);color:var(--color-fg);}
+  .timeline-list{list-style:none;margin:0;padding:0;}
+  .timeline-list > li + li{margin-top:6px;}
+  .timeline-card{box-sizing:border-box;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-sunk);overflow:hidden;}
+  .timeline-card-failed{background:var(--color-pill-bad-bg);}
+  .timeline-head{display:flex;gap:8px;align-items:baseline;width:100%;box-sizing:border-box;padding:8px 12px 0 12px;border:0;background:transparent;color:var(--color-fg);font:13px/1.5 var(--font-sans);text-align:left;cursor:pointer;}
+  div.timeline-head{cursor:default;}
+  .timeline-kind{flex:0 0 auto;padding:0 6px;border:1px solid var(--color-divider);border-radius:6px;color:var(--color-fg-quiet);font:11px/18px var(--font-mono);}
+  .timeline-time{flex:0 0 auto;color:var(--color-fg-quiet);font-size:12px;}
+  .timeline-words{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}
+  .timeline-words code{font:12px/1.5 var(--font-mono);}
+  .timeline-chips{display:flex;gap:6px;flex-wrap:wrap;padding:6px 12px 8px 12px;}
+  .timeline-detail{padding:0 12px 10px 12px;border-top:1px solid var(--color-divider);font:12.5px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
+  .timeline-files,.timeline-children{list-style:none;margin:8px 0 0 0;padding:0;}
+  .timeline-files li{overflow-wrap:anywhere;}
+  .timeline-files code{font:12px/1.5 var(--font-mono);color:var(--color-fg);}
+  .timeline-added{color:var(--color-added-text);}
+  .timeline-removed{color:var(--color-danger-text);}
+  .timeline-more{margin:4px 0 0 0;}
+  .timeline-span{margin-top:8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);}
+  .timeline-lines{list-style:none;margin:0;padding:0;}
+  .timeline-lines > li + li{border-top:1px solid var(--color-divider);}
+  .timeline-line{display:flex;gap:8px;align-items:baseline;padding:3px 8px;font:12px/1.5 var(--font-mono);color:var(--color-fg);}
+  .timeline-line-failed{background:var(--color-pill-bad-bg);}
+  .timeline-mark{flex:0 0 auto;width:1.2em;color:var(--color-fg-quiet);}
+  .timeline-line-words{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}
+  .timeline-outcome{flex:0 0 auto;color:var(--color-fg-quiet);font-size:11px;}
+  .timeline-line-failed .timeline-outcome{color:var(--color-danger-text);}
+  .timeline-open,.timeline-older{margin-top:8px;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12.5px/1.5 var(--font-sans);cursor:pointer;}
+  .timeline-older{display:block;margin:0 0 8px 0;}
+  .timeline-hidden{display:block;margin:0 0 8px 0;padding:3px 10px;border:1px dashed var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12.5px/1.5 var(--font-sans);cursor:pointer;}
+  @media (max-width:640px){
+    .timeline-head{flex-wrap:wrap;}
+    .timeline-open{display:block;width:100%;padding:8px;text-align:center;}
+  }
   .review-body{display:flex;flex-direction:column;}
   .review-notice{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .inbox-card.review-files-card{padding:0;overflow:hidden;}

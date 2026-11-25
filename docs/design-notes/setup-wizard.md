@@ -34,7 +34,7 @@ The zero-config rule is that a new person gets a working baseline with no config
 
 Three things follow. Steps 2, 8 and 9 are file-only on both clients, and step 1 can be read but not set. Step 6 differs by client, so the same project is more editable on desktop than on the web. Step 7 has no check anywhere: a person turns publishing on, and the first sign of a missing `gh` login is a ticket that waits for a person with a reason.
 
-The wizard assumes a running, configured daemon (the owner's ruling, 2026-11-24), so steps 1, 2 and 9's key handling are not wizard work. Whoever started the daemon has already set its model and key, and the wizard neither tests a model nor takes a key. What the clients can already read is thin: the control socket's `hello` carries the daemon's build version (`client/daemon/server.gleam:3091`), and the web page holds the model keys the file lists. Neither reports which model the `main` role uses. `models.list` (protocol-change/109, an open PR) is the read that would.
+The wizard assumes a running, configured daemon (the owner's ruling, 2026-11-24), so steps 1, 2 and 9's key handling are not wizard work. Whoever started the daemon has already set its model and key, and the wizard neither tests a model nor takes a key. What the clients can already read is thin: the control socket's `hello` carries the daemon's build version (`client/daemon/server.gleam:3107`), and the web page holds the model keys the file lists. Neither reports which model the `main` role uses. `models.list` (protocol-change/109, an open PR) is the read that would.
 
 ## 3. The wizard
 

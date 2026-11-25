@@ -1311,6 +1311,8 @@ pub fn only_an_owners_operating_home_may_act_on_attention_test() {
       review_pause_ms: 0,
       act: None,
       brief: fn(_, _, _) { Nil },
+      timeline: fn(_, _, _, _) { Nil },
+      span: fn(_, _, _, _, _) { Nil },
     )
   let act =
     home.Act(
@@ -2338,6 +2340,8 @@ pub fn only_an_operating_page_is_handed_the_review_read_test() {
       review_pause_ms: 0,
       act: None,
       brief: fn(_, _, _) { Nil },
+      timeline: fn(_, _, _, _) { Nil },
+      span: fn(_, _, _, _, _) { Nil },
     )
   let act =
     home.Act(

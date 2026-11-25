@@ -581,9 +581,9 @@ pub fn a_card_is_bounded_in_what_it_names_test() {
     place(
       list.flatten([
         [prompt(long)],
+        edit_step(20, string.repeat("d/", 400) <> "end.gleam"),
         many_files,
         children,
-        edit_step(20, string.repeat("d/", 400) <> "end.gleam"),
         bash_step(21, "make", 1),
       ]),
     )
@@ -596,8 +596,11 @@ pub fn a_card_is_bounded_in_what_it_names_test() {
   assert work.facts.files_total == 10
   assert list.length(work.facts.spawned) == 3
 
-  let assert Ok(path) = list.find(work.facts.files, fn(_) { True })
+  let assert Ok(path) =
+    list.find(work.facts.files, fn(file) { string.byte_size(file.path) > 100 })
   assert string.byte_size(path.path) <= 400
+  assert string.starts_with(path.path, "…")
+  assert string.ends_with(path.path, "end.gleam")
 }
 
 // Reduced commands keep the executable and a subcommand, and nothing that could

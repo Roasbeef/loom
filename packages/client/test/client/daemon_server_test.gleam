@@ -1703,6 +1703,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.OutboxClaim(..)
           | peer_mail.OutboxSettle(..)
           | peer_mail.OutboxDue
+          | peer_mail.SessionTimeline(..)
+          | peer_mail.SessionSpan(..)
           | peer_mail.OutboxReceipt(..) -> Ok(json.Null)
         }
       }),

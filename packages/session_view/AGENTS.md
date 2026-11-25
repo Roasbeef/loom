@@ -1275,3 +1275,10 @@ with the output made safe as several lines; `check_words` and `check_words_untim
 sentence, and `person/check` and the `recheck` action are known words. `command.Surface`
 has a `Project` variant for `/project`; the terminal opens its board screen for
 it.
+
+`span_lines.of_records(records)` turns one timeline span's records into at most
+100 lines (`Line`: sequence, time, `Kind` (`Prompted`, `Said`, `Step`,
+`Compacted`), words of at most 200 bytes, `Outcome`): a person's words, the
+agent's words, each tool call worded by `step_words` with the outcome its result
+reported, and a compaction. Harness and peer messages make no line. Pure and
+portable, like `timeline`.

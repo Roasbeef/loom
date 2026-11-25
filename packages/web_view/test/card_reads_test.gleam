@@ -102,6 +102,8 @@ fn start(clock: Subject(Int), calls: Calls, count: Int) -> home.Start {
           process.send(calls, #(session, since))
           deliver(Ok(empty_brief()))
         },
+        timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
     create: None,
