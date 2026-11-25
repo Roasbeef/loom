@@ -117,12 +117,20 @@ fn now(held: Held, at: Int) -> Element(message) {
             int.to_string(card.steps)
             <> plural(card.steps, " step", " steps")
             <> " since the last card, last record "
-            <> thread_words.short_age(int.max(0, at - card.ended_at))
-            <> " ago",
+            <> since(int.max(0, at - card.ended_at)),
           ),
         ]),
       ])
     None -> element.none()
+  }
+}
+
+/// How long ago the last record was, as a phrase that ends the sentence.
+fn since(wait: Int) -> String {
+  // Under a minute the age word is `now`, which reads badly before `ago`.
+  case thread_words.short_age(wait) {
+    "now" -> "just now"
+    age -> age <> " ago"
   }
 }
 
@@ -267,9 +275,11 @@ fn words(each: Card) -> List(Element(message)) {
       },
     ]
     timeline.Worked -> [
-      html.text(
-        int.to_string(each.steps) <> plural(each.steps, " step", " steps"),
-      ),
+      html.text(case each.files_total {
+        0 -> int.to_string(each.steps) <> plural(each.steps, " step", " steps")
+        total ->
+          "Wrote " <> int.to_string(total) <> plural(total, " file", " files")
+      }),
     ]
     timeline.Reported -> [html.text("A sub-agent returned")]
     timeline.Asked -> [html.text("Asked a question")]

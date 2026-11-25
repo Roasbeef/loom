@@ -983,14 +983,14 @@ pub fn the_timeline_draws_above_the_diff_at_landmarks_test() {
 
   assert string.contains(html, "fix the replay")
   assert string.contains(html, "make check · exit 2")
-  assert !string.contains(html, "<span class=\"timeline-words\">5 steps")
+  assert !string.contains(html, "<span class=\"timeline-words\">Wrote 1 file")
   assert index_of(html, "timeline-list") < index_of(html, "review-files")
 
   let standard = run(model, home.TimelineDensityChosen(timeline_rule.Standard))
 
   assert string.contains(
     drawn(standard),
-    "<span class=\"timeline-words\">5 steps",
+    "<span class=\"timeline-words\">Wrote 1 file",
   )
 }
 
