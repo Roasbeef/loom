@@ -948,10 +948,7 @@ fn render_cut(
     todo_asked:,
     summaries:,
     records: branch.records,
-    newest_ask_seq: int.max(
-      shared.newest_ask_seq,
-      newest_ask_seq(cut.window.items),
-    ),
+    newest_ask_seq: newest_ask_seq(cut.window.items),
     scrollback: history,
     parked_scrollback:,
     activity_started_ms: case same_operation {

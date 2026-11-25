@@ -95,8 +95,9 @@ fn poll(model: Model, host: job.Daemon) -> Model {
 
   // A committed `ask` result cuts the rest short, because the tool creates the
   // ask before its result is committed and the owner should not wait out the
-  // rest to see the question. The count is the session's, so it holds however
-  // the entry reached the terminal and however short the run was.
+  // rest to see the question. The board compares the capture's newest ask
+  // sequence for inequality, so a value that fell, as it does after a change
+  // of session, wakes it as well, and the run's speed does not matter.
   let board =
     ask_board.ask_committed(model.view.asks, model.shared.newest_ask_seq)
 

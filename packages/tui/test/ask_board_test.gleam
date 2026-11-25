@@ -317,12 +317,12 @@ pub fn a_committed_ask_result_cuts_a_rest_short_and_waits_for_a_request_in_fligh
   assert cut.phase == ask_board.ReadDue
   assert cut.ask_seen == 1
 
-  // The same count again changes nothing, so a read that rests afterwards is
-  // not cut short a second time for the one result.
+  // The same sequence again changes nothing, so a read that rests afterwards
+  // is not cut short a second time for the one result.
   let rested = ask_board.read_failed(cut, 0)
   assert ask_board.ask_committed(rested, 1) == rested
 
-  // A read in flight or an answer being sent keeps the count it had, so the
+  // A read in flight or an answer being sent keeps the value it had, so the
   // result is acted on once the request settles.
   let reading = ask_board.reading(resting, a_read())
   assert ask_board.ask_committed(reading, 1) == reading
@@ -330,6 +330,13 @@ pub fn a_committed_ask_result_cuts_a_rest_short_and_waits_for_a_request_in_fligh
   assert ask_board.ask_committed(sending, 1) == sending
   let settled = ask_board.read_failed(reading, 0)
   assert ask_board.ask_committed(settled, 1).phase == ask_board.ReadDue
+
+  // A lower value is a different one: sequences belong to a session, so a
+  // fall wakes the board once and then rests like any other change.
+  let fell = ask_board.ask_committed(rested, 0)
+  assert fell.phase == ask_board.ReadDue
+  assert ask_board.ask_committed(ask_board.read_failed(fell, 0), 0).phase
+    == ask_board.Resting(ask_board.failure_rest_ms)
 }
 
 // The keyboard follows an ask, not a position: when an earlier ask is answered

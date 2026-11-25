@@ -505,7 +505,7 @@ pub type Shared(socket, recorder, source, replay_source) {
     activity_revision: Int,
     /// The sequence number of the newest `ask` tool result any strand has
     /// committed, as the latest capture's window shows it, or zero before
-    /// any. It only rises. The tool creates the ask before its result is
+    /// any. It is replaced by each capture and may fall, because sequence numbers belong to one session and the window to one cut. The tool creates the ask before its result is
     /// committed, so a value that moved means an ask may now be open. A
     /// reader keeps the value it last acted on and compares. It is read from
     /// the capture's window, which covers every strand and does not follow

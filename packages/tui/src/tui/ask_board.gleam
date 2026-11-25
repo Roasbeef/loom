@@ -62,9 +62,8 @@ pub const rest_ms = 4000
 /// has nothing to ask. A committed `ask` tool result cuts the rest short
 /// (`ask_committed`), on any strand, so a plain ask is read at once. Three kinds
 /// of ask still wait out the rest: one a `code_mode` program raises, since no
-/// `ask` result is committed, and one a peer or another client raised. A
-/// terminal that is not attached to a session channel also never sees a
-/// result, so every ask waits for it. Fifteen seconds bounds that wait, and an
+/// `ask` result is committed, one a peer or another client raised, and any ask
+/// on a terminal with no session channel, which never receives a capture. Fifteen seconds bounds that wait, and an
 /// idle terminal reconnects four times a minute instead of fifteen.
 pub const idle_rest_ms = 15_000
 
