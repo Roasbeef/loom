@@ -94,6 +94,7 @@ pub fn wait_ms(command: peer_mail.Command) -> Int {
     | peer_mail.AttentionRead(..)
     | peer_mail.ApprovalRead
     | peer_mail.SessionBrief(..)
+    | peer_mail.SessionTimeline(..)
     | peer_mail.AttentionSettle(..)
     | peer_mail.StuckDismiss(..)
     | peer_mail.OutboxClaim(..)

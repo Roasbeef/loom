@@ -44,6 +44,7 @@ import client/internal/message_inspection
 import client/internal/peer_outbox_store
 import client/peer_outbox
 import client/session_brief
+import client/timeline_read
 import core/attention as records
 import core/clock
 import core/entry
@@ -252,6 +253,12 @@ pub type Command {
   /// recorded after `since` (Unix milliseconds) and the last shell command
   /// (`protocol-change/125`). It reads and never writes.
   SessionBrief(since: Int)
+
+  /// Reports one page of the session's timeline cards, the newest `limit` older
+  /// than the span `before` begins at (or the newest when it is none), the
+  /// cursor for the older ones and the span still open
+  /// (`protocol-change/134`). It reads and never writes.
+  SessionTimeline(before: Option(Int), limit: Int)
 
   /// Settles an open record as answered or closed, expecting its cell to be at
   /// `revision` (`protocol-change/120`). The daemon has already decided who may
@@ -684,6 +691,7 @@ pub fn handle_reporting(
     AttentionRead(id) -> attention_read(runtime, id)
     ApprovalRead -> approval_evidence.read(runtime, None)
     SessionBrief(since) -> session_brief.read(runtime, since)
+    SessionTimeline(before, limit) -> timeline_read.read(runtime, before, limit)
     AttentionSettle(id, revision, settlement) -> {
       let answer = attention_settle(runtime, clock, id, revision, settlement)
 

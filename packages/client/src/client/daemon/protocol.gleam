@@ -38,6 +38,7 @@ import gleam/string
 import storage/access
 import storage/catalogue
 import storage/domain
+import web_view/timeline_feed
 
 /// The only control envelope version accepted by this module.
 pub const version = 2
@@ -362,6 +363,18 @@ pub type Command {
     /// Unix milliseconds; peer messages recorded after it are listed. Zero when
     /// the request names none.
     since: Int,
+    epoch: String,
+  )
+
+  /// Reads one page of a running session's timeline cards: the newest `limit`
+  /// cards older than the span `before` begins at, or the newest when it is
+  /// none, the cursor for the older ones and the span still open
+  /// (`protocol-change/134`). The owner, or a member that holds the session at
+  /// any role, as `SessionBrief` is. It reads and never writes.
+  SessionTimeline(
+    session: String,
+    before: Option(Int),
+    limit: Int,
     epoch: String,
   )
 
@@ -978,6 +991,29 @@ fn decode_fields(
 
       use epoch <- result.map(text_field(fields, "epoch", 256))
       SessionBrief(session, since, epoch)
+    }
+    "sessions.timeline" -> {
+      use session <- result.try(attention_session(fields))
+
+      // An absent `before` asks for the newest page, and a negative or mistyped
+      // one is refused.
+      use before <- result.try(case list.key_find(fields, "before") {
+        Error(Nil) -> Ok(None)
+        Ok(json.Int(before)) if before >= 0 -> Ok(Some(before))
+        Ok(_) -> Error("expected a nonnegative before")
+      })
+
+      // An absent `limit` asks for the default page, and one outside the bound
+      // is refused rather than clamped, so a caller learns its own mistake.
+      use limit <- result.try(case list.key_find(fields, "limit") {
+        Error(Nil) -> Ok(timeline_feed.default_limit)
+        Ok(json.Int(limit)) if limit >= 1 && limit <= timeline_feed.max_cards ->
+          Ok(limit)
+        Ok(_) -> Error("expected a limit of one to twenty")
+      })
+
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionTimeline(session, before, limit, epoch)
     }
     "sessions.review" -> {
       use session <- result.try(attention_session(fields))

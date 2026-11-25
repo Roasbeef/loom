@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:607-187`).
+Source: `handle` (`client/daemon/server.gleam:615-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:3128`).
+`hello_view` (`client/daemon/server.gleam:3137`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:5457`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:5487`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1080,9 +1080,9 @@ it (section 3.27).
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `sessions.saved_attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.review`,
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `sessions.saved_attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.timeline`, `sessions.review`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:3500-1130`).
+`control_use` (`client/daemon/server.gleam:3509-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1258,7 +1258,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1829`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1866`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -2227,6 +2227,16 @@ which is decided on the session's own page.
 `approval.read` are reads and remain available during a drain. `attention.answer`,
 `attention.close_find` and `attention.dismiss_stuck` write one record and are
 refused during a drain.
+
+`sessions.timeline` takes `session`, an optional `before` (a card's `from_seq`), an
+optional `limit` (1 to 20, default 10) and the current `epoch`, and answers
+`{"timeline": {"cards", "older", "now"}}`: the newest page of the session's timeline
+cards for Home ([Protocol 134](../protocol-change/134-session-timeline.md)). A card
+holds a `kind`, its `turn_seq`, `from_seq`, `to_seq` and `last`, its times, its
+counts, up to six files, a reduced command with its exit status, and an excerpt of a
+prompt or an answer; every string in it is session text. `older` is the `before` for
+the next page, and `now` is the open span. It spends the brief allowance and is
+refused for a session that is not running.
 
 `session.brief` takes `session`, an optional `since` (Unix milliseconds, default
 0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
@@ -4972,7 +4982,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:740`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:753`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one
