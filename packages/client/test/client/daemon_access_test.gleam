@@ -74,6 +74,7 @@ fn shared_session(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),

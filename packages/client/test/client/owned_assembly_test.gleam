@@ -138,6 +138,7 @@ pub fn settings() -> serve.Settings {
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
+    released: None,
   )
 }
 

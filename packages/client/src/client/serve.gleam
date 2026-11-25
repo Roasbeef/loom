@@ -743,6 +743,13 @@ pub type Settings {
     /// when the daemon has no per-user cache directory to hold them. Go
     /// then keeps writing under the tool `HOME`, as it did before.
     go_caches: Option(gocache.GoCaches),
+    /// Run once, as the session's `Workspace` custody part, after its helpers
+    /// have stopped for good, to settle what the daemon made for the session
+    /// outside its workspace. The daemon sets it for a session that works in
+    /// its own Git worktree, where it removes the tree if it holds no changes
+    /// (protocol-change/133). `None` for every other session, which leaves
+    /// nothing behind.
+    released: Option(fn() -> Nil),
   )
 }
 
@@ -1674,85 +1681,84 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
     )
     |> provider_gateway.with_attempt_timeout(request_timeout_ms)
 
-  Ok(
-    Settings(
-      session_path:,
-      bind_host:,
-      bind_port:,
-      token_path: option.lazy_unwrap(flags.token_file, fn() {
-        session_path <> ".token"
-      }),
-      workspace:,
-      domain_paths: None,
-      peer_directory: None,
-      peer_defaults: None,
-      remote_reach: None,
-      deadline_tick_ms: None,
-      agency_limits: agency_limits.empty,
-      metering: None,
-      spawner: None,
-      laptop: None,
-      first_prompt: None,
-      attention_report: None,
-      profile_desk: None,
-      codemode_sockets: None,
-      base_policy: workspace_policy.admitting_config_mounts(
-        workspace_policy.base_policy_for(
-          workspace,
-          option.unwrap(flags.read_scope, workspace_config.read_scope),
-        ),
-        workspace_config.mounts,
+  Ok(Settings(
+    session_path:,
+    bind_host:,
+    bind_port:,
+    token_path: option.lazy_unwrap(flags.token_file, fn() {
+      session_path <> ".token"
+    }),
+    workspace:,
+    domain_paths: None,
+    peer_directory: None,
+    peer_defaults: None,
+    remote_reach: None,
+    deadline_tick_ms: None,
+    agency_limits: agency_limits.empty,
+    metering: None,
+    spawner: None,
+    laptop: None,
+    first_prompt: None,
+    attention_report: None,
+    profile_desk: None,
+    codemode_sockets: None,
+    base_policy: workspace_policy.admitting_config_mounts(
+      workspace_policy.base_policy_for(
+        workspace,
+        option.unwrap(flags.read_scope, workspace_config.read_scope),
       ),
-      helper_path:,
-      helper_pool_size:,
-      session_id: session_id_of(session_path),
-      demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
-      gateway:,
-      evolution_role: Source,
-      pack: None,
-      project: None,
-      catalog: catalogue,
-      secrets: secret_store,
-      secret_failures:,
-      system: option.from_result(workspace_policy.env_text(
-        system_prompt.override_variable,
-      )),
-      home: workspace_policy.home_directory(),
-      model: machine_strand.ModelIdentity(
-        provider: main_entry.name,
-        model_id: main_entry.model_id,
-      ),
-      context_window: main_entry.context_window,
-      max_output_tokens: main_entry.max_output_tokens,
-      api: adapter_api(main_entry.dialect),
-      compaction: compaction_settings(main_entry.context_window),
-      codemode_seed: seed_root(flags.codemode_seed, workspace),
-      codemode_seams:,
-      code_mode_host: None,
-      rules: rule_list,
-      schedules: schedule_list,
-      schedule_policy:,
-      jobs_policy:,
-      retry_policy:,
-      deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
-      memory:,
-      tools: catalog.ToolsConfig(
-        ..tools,
-        network: option.unwrap(flags.network, tools.network),
-      ),
-      advisor: advisor_settings(gateway, advisor_config),
-      go_caches: case placement {
-        LocalWorkspace ->
-          gocache.locate(
-            workspace_policy.lsp_places().cache,
-            workspace,
-            workspace_config.go_module_mirror,
-            workspace_config.go_cache_limit_mib,
-          )
-        RegisteredWorkspace -> None
-      },
+      workspace_config.mounts,
     ),
-  )
+    helper_path:,
+    helper_pool_size:,
+    session_id: session_id_of(session_path),
+    demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
+    gateway:,
+    evolution_role: Source,
+    pack: None,
+    project: None,
+    catalog: catalogue,
+    secrets: secret_store,
+    secret_failures:,
+    system: option.from_result(workspace_policy.env_text(
+      system_prompt.override_variable,
+    )),
+    home: workspace_policy.home_directory(),
+    model: machine_strand.ModelIdentity(
+      provider: main_entry.name,
+      model_id: main_entry.model_id,
+    ),
+    context_window: main_entry.context_window,
+    max_output_tokens: main_entry.max_output_tokens,
+    api: adapter_api(main_entry.dialect),
+    compaction: compaction_settings(main_entry.context_window),
+    codemode_seed: seed_root(flags.codemode_seed, workspace),
+    codemode_seams:,
+    code_mode_host: None,
+    rules: rule_list,
+    schedules: schedule_list,
+    schedule_policy:,
+    jobs_policy:,
+    retry_policy:,
+    deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
+    memory:,
+    tools: catalog.ToolsConfig(
+      ..tools,
+      network: option.unwrap(flags.network, tools.network),
+    ),
+    advisor: advisor_settings(gateway, advisor_config),
+    go_caches: case placement {
+      LocalWorkspace ->
+        gocache.locate(
+          workspace_policy.lsp_places().cache,
+          workspace,
+          workspace_config.go_module_mirror,
+          workspace_config.go_cache_limit_mib,
+        )
+      RegisteredWorkspace -> None
+    },
+    released: None,
+  ))
 }
 
 // The advisor strand's identity and policy, or `None` when the catalogue
@@ -4404,6 +4410,30 @@ fn assemble_in(
       },
       holds: agency_seam.holds,
     )
+
+  // A session in its own worktree files the settling of that tree under the
+  // custody part that retires after the helpers (`Workspace`, which a local
+  // session otherwise has none of). Custody runs the parts in dependency
+  // order, not in the order they were published, so the tree is judged clean
+  // only once the helpers are confirmed gone: a tool still running in it could
+  // write a file between the check and the removal, and the removal would
+  // discard it (protocol-change/133). It is filed before the workspace half
+  // starts so that a half that fails to start still settles the tree it was
+  // given, and a retirement that could not prove its helpers gone never
+  // reaches it.
+  use Nil <- result.try(case home, settings.released {
+    Here(_), Some(release) ->
+      retain(
+        owner,
+        custody.Workspace,
+        fn() {
+          release()
+          Ok(Nil)
+        },
+        fn() { Nil },
+      )
+    Here(_), None | There(_), _ -> Ok(Nil)
+  })
 
   // The workspace half starts: the helper pool, the executor and the
   // broker are published to custody, the session base is recomputed now
@@ -9062,6 +9092,7 @@ pub fn trial_settings(
     // The source workspace's Go caches are writable roots of its own jail;
     // a trial builds in its fresh fixture and must not share them.
     go_caches: None,
+    released: None,
   )
 }
 

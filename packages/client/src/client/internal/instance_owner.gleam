@@ -50,7 +50,9 @@ pub type Part {
 
   /// A workspace on an executor: its scope closed and its owner port ended,
   /// after every call that could reach it has drained. A session with a
-  /// local workspace has no such part; it has `Broker` and `Helpers`.
+  /// local workspace has no such part, except one that works in its own Git
+  /// worktree, whose tree is settled here once the helpers are gone
+  /// (protocol-change/133); otherwise it has `Broker` and `Helpers`.
   Workspace
 
   /// External MCP clients, after runtime calls have drained.

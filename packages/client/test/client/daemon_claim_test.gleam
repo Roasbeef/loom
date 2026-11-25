@@ -62,6 +62,7 @@ fn shared_session(ready: root.Ready(String), seed: Int) -> String {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),

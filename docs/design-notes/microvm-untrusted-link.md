@@ -153,15 +153,15 @@ census the link sets to `Uncompiled`.
 | Background jobs and their notices | works | works: `NotifyCall`, `WakeCall`, `StrandActivityCall` need only the binding; `live_jobs` reads the orchestrator's own store | nothing |
 | MCP, orchestrator-run servers | works | works: `McpPlanCall`, then capability callbacks during a program | nothing |
 | MCP, the guest's own `[mcp.<name>]` | works | works (the census's `mcp` statuses cross) | nothing |
-| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4438` (`There`)) | same | same as today |
+| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4435` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
 | Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused`; still refused after the tunnel (protocol-change/117, "Hooks stay refused") | a later change, after 117's preconditions |
-| Goal checks | works (`client/serve.gleam:7036` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
-| Changes tab (worktree diff) | works (`client/serve.gleam:4824` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
-| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4813` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
+| Goal checks | works (`client/serve.gleam:7066` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
+| Changes tab (worktree diff) | works (`client/serve.gleam:4857` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
+| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4846` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
 | Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
 | Agent spawn, `fresh` or `my_conversation` | works (orchestrator side) | works | nothing |
-| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3539` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
+| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3549` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
@@ -296,8 +296,8 @@ release that changes `up`.
 ### (a) A running daemon learning about a new guest
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
-rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4895` (`start_untrusted`)). No daemon-wide
+rereads them (`client/daemon/main.gleam:284` (`untrusted`)); links start only
+there (`client/daemon/main.gleam:5055` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
@@ -305,7 +305,7 @@ mechanism ledger mode uses for rows that change while the daemon runs, a
 `Roster` read at each use (`client/roster.gleam:51` (`reading`)), and the
 precedent of an owner-only control command that changes rows without a
 restart, `ledger.append`, whose owner check is in
-`ledger_command` (`client/daemon/server.gleam:3956`).
+`ledger_command` (`client/daemon/server.gleam:3968`).
 
 Three options:
 

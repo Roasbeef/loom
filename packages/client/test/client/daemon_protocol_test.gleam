@@ -62,6 +62,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         None,
         domain.WorkspacePrivate,
         agency_limits.empty,
+        None,
       ),
     ))
   let assert Error(_) = protocol.decode(envelope(1, "sessions.create", fields))
@@ -188,6 +189,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         None,
         domain.WorkspacePrivate,
         agency_limits.empty,
+        None,
       ),
     ),
     #("sessions.open", [session, epoch], protocol.OpenSession(id, "epoch")),
@@ -680,6 +682,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         None,
         domain.WorkspacePrivate,
         agency_limits.empty,
+        None,
       ),
     ))
 
@@ -733,6 +736,7 @@ pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
         None,
         domain.SessionOnly,
         agency_limits.empty,
+        None,
       ),
     ))
   let assert Ok(protocol.Request(
@@ -821,6 +825,7 @@ pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_worksp
         Some("builders"),
         domain.SessionOnly,
         agency_limits.empty,
+        None,
       ),
     ))
 
@@ -884,6 +889,7 @@ pub fn session_creation_decodes_an_optional_model_key_test() {
         None,
         domain.WorkspacePrivate,
         agency_limits.empty,
+        None,
       ),
     ))
 
@@ -948,6 +954,7 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
         None,
         domain.SessionOnly,
         agency_limits.empty,
+        None,
       ),
     ))
   assert create([#("pool", json.String("builders"))])
@@ -964,6 +971,7 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
         Some("builders"),
         domain.SessionOnly,
         agency_limits.empty,
+        None,
       ),
     ))
 
@@ -1031,6 +1039,7 @@ pub fn creation_agency_limits_decode_valid_and_reject_invalid_test() {
           session_strands: Some(512),
           depth_cap: Some(agency_limits.UnlimitedDepth),
         ),
+        None,
       ),
     ))
   assert decode_with(json.Object([#("depth_cap", json.Int(4))]))
@@ -1051,6 +1060,7 @@ pub fn creation_agency_limits_decode_valid_and_reject_invalid_test() {
           session_strands: None,
           depth_cap: Some(agency_limits.BoundedDepth(4)),
         ),
+        None,
       ),
     ))
   list.each(

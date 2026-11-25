@@ -161,6 +161,7 @@ fn fixture_serving(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 981),

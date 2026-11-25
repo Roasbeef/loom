@@ -239,6 +239,7 @@ pub fn settings_under(root: String) -> serve.Settings {
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
+    released: None,
   )
 }
 
@@ -465,6 +466,7 @@ fn with_daemon_instance(run) {
               "",
               "",
               agency_limits.empty,
+              None,
             ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1000), 887),

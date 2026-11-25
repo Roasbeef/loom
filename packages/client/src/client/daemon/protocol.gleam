@@ -24,6 +24,7 @@
 //// 4. `event` encodes a reply or a push and refuses one past the outbound bound.
 
 import client/peer_mail
+import client/workspaces
 import core/agency_limits.{
   type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
 }
@@ -435,6 +436,10 @@ pub type Command {
     domain_scope: domain.Scope,
     /// Optional per-session subagent limits (protocol-change/113).
     agency: AgencyLimits,
+    /// The commit-ish a worktree of `workspace` branches from, or `None` for a
+    /// session that works in the folder itself. Present only beside a path on
+    /// this host (protocol-change/133).
+    worktree: Option(String),
   )
 
   /// Explicitly requests execution in the named daemon epoch.
@@ -1031,7 +1036,8 @@ fn decode_fields(
       use profile <- result.try(profile_field(fields))
       use model <- result.try(model_field(fields))
       use scope <- result.try(domain_scope(fields, placed))
-      use agency <- result.map(agency_field(fields))
+      use agency <- result.try(agency_field(fields))
+      use worktree <- result.map(worktree_field(fields, placed))
       CreateSession(
         key,
         workspace,
@@ -1043,6 +1049,7 @@ fn decode_fields(
         pool,
         scope,
         agency,
+        worktree,
       )
     }
     "sessions.open" -> {
@@ -1555,6 +1562,51 @@ fn optional_depth_cap(
     Ok(json.Int(value)) -> Ok(Some(BoundedDepth(value)))
     Ok(json.String("unlimited")) -> Ok(Some(UnlimitedDepth))
     Ok(_) -> Error("agency.depth_cap must be an integer or \"unlimited\"")
+  }
+}
+
+// The optional `worktree` object of a creation: `{"base": "<commit-ish>"}`,
+// where `base` defaults to `HEAD`. Its presence is the choice, so `{}` asks for
+// a worktree from `HEAD`. A worktree is made of a folder on this host, so it is
+// refused beside an executor or a pool, whose workspaces choose their own mode
+// in the executor's `[workspaces]` table (protocol-change/095). An unknown key
+// is refused so that a typo fails closed instead of silently choosing the
+// folder.
+/// Decodes the optional `worktree` creation object into its base.
+fn worktree_field(
+  fields: List(#(String, JsonValue)),
+  placed: Option(String),
+) -> Result(Option(String), String) {
+  // Absence is the folder itself; presence is the choice, judged by what it
+  // is placed beside and then by its own members.
+  case list.key_find(fields, "worktree"), placed {
+    Error(Nil), _ -> Ok(None)
+    Ok(_), Some(_) ->
+      Error(
+        "worktree is for a folder on this host, not a registered workspace: drop executor or pool",
+      )
+    Ok(json.Object(nested)), None -> {
+      use Nil <- result.try(
+        list.try_each(nested, fn(pair) {
+          case pair.0 {
+            "base" -> Ok(Nil)
+            other -> Error("unknown worktree field: " <> other)
+          }
+        }),
+      )
+
+      // A base is optional and defaults to `HEAD`; one that is present is held
+      // to the rule that keeps Git from reading it as an option.
+      case list.key_find(nested, "base") {
+        Error(Nil) -> Ok(Some(workspaces.default_base))
+        Ok(json.String(text)) ->
+          workspaces.usable_base(text)
+          |> result.map(Some)
+          |> result.map_error(fn(reason) { "worktree.base " <> reason })
+        Ok(_) -> Error("worktree.base must be a string")
+      }
+    }
+    Ok(_), None -> Error("worktree must be an object")
   }
 }
 

@@ -1092,6 +1092,6 @@ pub fn settings(root: String) -> serve.Settings {
     tools: catalog.default_tools(),
     advisor: None,
     project: None,
-    go_caches: None,
+    go_caches: None, released: None,
   )
 }

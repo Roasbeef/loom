@@ -995,6 +995,41 @@ the linked worktree's Git directory and `root`'s `.git` are writable from the
 tree, as `root` and its `.git` are writable in shared mode, so a session could
 rewrite another session's refs or set a hook.
 
+### A worktree for one session
+
+A session in a folder on the daemon's own machine can ask for a worktree of its
+own, whatever `loom.toml` says: this is a choice made when the session is
+created, not a table. `loom --worktree [--base REF]` creates new sessions in a
+linked worktree of `--workspace` (default the current directory), on a branch
+`loom/<session id>` that starts from `REF` (default `HEAD`), and `loom run -p ...
+--worktree [--base REF]` does the same for a headless run. The web view's new
+session form has a Worktree checkbox beside the folder, off unless ticked.
+
+The folder must be the top of a repository's main checkout: a directory with a
+`.git` directory. A subdirectory of a repository, a linked worktree and a folder
+that is not a repository are refused when the session is created
+(`not_a_repository`), before anything is reserved. `--worktree` cannot be
+combined with `--session` (an existing session keeps where it works), `--executor`
+or `--pool` (an executor's workspace chooses its mode in its own `[workspaces]`
+table above) or `--vm`.
+
+The session's tools see the tree as their working directory, and its jail can
+write the tree and the repository's Git directories, not the folder's files. The
+session keeps the folder for display and grouping, and its record names the
+branch. The tree is `<state directory>/worktrees/local-<digest of the
+folder>/<session id>`. It follows the rules above: it is made when the session
+first opens, kept across a stop and a reopen, removed when the session stops with
+nothing uncommitted, and kept with its files untouched when it holds changes. The
+branch is never deleted.
+
+A kept tree is an ordinary linked worktree of your folder: `git worktree list`
+shows it, and the daemon's log names the session (`daemon.session_worktree_kept`).
+Reopen the session and close it clean to have it removed, or run `git worktree
+remove <path>` yourself, and `git branch -d loom/<session id>` once the work is
+merged. `loom executor release --worktrees` does not touch these trees, because it
+settles only the workspaces an executor's `loom.toml` serves
+([protocol-change 133](../protocol-change/133-session-worktree.md)).
+
 ## `[orchestrators.<name>]`
 
 (From protocol-change 078.) Optional, read once when the daemon starts, like

@@ -886,6 +886,7 @@ pub fn a_create_resent_after_the_transaction_and_before_the_store_finishes_it_te
       executor: "exec",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     )
   let assert Ok(manager.Relaying(session_id:, state:)) =
     manager.reserve_relayed(
@@ -1315,6 +1316,7 @@ fn owner_session(rig: Rig) -> String {
         executor: "exec",
         pool: "",
         agency: agency_limits.empty,
+        worktree: None,
       ),
       directory: rig.directory,
       generator: ids.generator(clock.fixed(at: 9), 9),
@@ -1336,6 +1338,7 @@ fn other_spawner_session(rig: Rig) -> String {
       executor: "exec",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     )
   let assert Ok(manager.Relaying(session_id:, ..)) =
     manager.reserve_relayed(

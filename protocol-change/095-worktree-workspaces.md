@@ -330,3 +330,15 @@ differences are these.
   of trees, or none for a read.
 - **Failure types.** A factory reports `host.PlaneFailure` (`NoPlaneBuilt` or
   `WorktreeNotMade`) so the host can answer `NoPlane` or `WorktreeFailed`.
+
+## Addendum: a session's own worktree on a local folder (2026-11-24)
+
+[133](133-session-worktree.md) lets a session created in a folder on the
+daemon's own machine ask for a worktree of that folder, with a base of its own.
+It reuses this proposal's lifecycle unchanged: `client/local_trees` starts a
+`client/worktrees` service for each folder, named `local-<digest of the folder>`,
+and the daemon's session builder and instance retirement call `open` and `close`.
+Nothing here changes. The two differences are that the base belongs to the session
+and not to a table, and that a kept tree is found with `git worktree list` in the
+folder, because `loomd executor release --worktrees` settles only the workspaces an
+executor's `loom.toml` serves.

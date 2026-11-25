@@ -618,6 +618,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
+    released: None,
   )
 }
 
