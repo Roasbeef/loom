@@ -7,8 +7,8 @@
 <!--
   A sketch for docs/design-notes/session-timeline.md, section 6. Static: the
   session, times and files are invented, and the cards open with <details>, so
-  there is no script. The kind word, time, chips and step words are the page's
-  own words from records. The violet "summary" chip and the text after it are a
+  there is no script. The kind word, times and numbers are the page's own words
+  from records; command text, paths and names in chips are session text, drawn as text nodes. The violet "summary" chip and the text after it are a
   model's title and detail line: untrusted text, drawn as a text node. Red chips
   are failed calls; an exit status is never coloured green, since it is not a
   verdict. Diff lines are red (removed) and green (added). No accent bars, no
@@ -95,7 +95,7 @@ details.others .file{padding:6px 12px}
 <div class="pane">
   <div class="state">Review · finished 14 min ago · session <b>fix-hashline-replay</b></div>
   <h1>Replay hashline edits after a restart</h1>
-  <div class="stat"><b>+312 −8</b> in <b>11 files</b> written through this session's edit tools, and <b>6 others</b> · 9 steps failed once</div>
+  <div class="stat"><b>+312 −8</b> in <b>11 files</b> written through this session's edit tools, and <b>6 others</b> · 1 failed call</div>
 
   <h3>Where it is</h3>
   <div class="now">
@@ -166,7 +166,7 @@ details.others .file{padding:6px 12px}
       <summary>
         <div class="l1"><span class="kind">Commit</span><span class="tm">13:41</span></div>
         <div class="title"><span class="sum">summary</span>Committed the replay fix</div>
-        <div class="chips"><span class="chip"><code>git commit</code> · exit 0</span><span class="chip">6 files</span></div>
+        <div class="chips"><span class="chip"><code>git commit</code> · exit 0</span><span class="chip">6 files</span><span class="chip">in this review's commits</span></div>
       </summary>
       <div class="body"><a class="open">Open in transcript</a></div>
     </details></li>
@@ -208,7 +208,7 @@ details.others .file{padding:6px 12px}
       <div class="title"><span class="sum">summary</span>The package check failed on one test</div>
       <div class="chips"><span class="chip bad"><code>make check-storage</code> · exit 2</span></div>
     </summary>
-    <div class="body"><p class="detail">The new replay test expected the old ordering.</p><a class="open">Open in transcript</a></div>
+    <div class="body"><p class="detail"><span class="sum">summary</span>The new replay test expected the old ordering.</p><a class="open">Open in transcript</a></div>
   </details>
   <details class="card"><summary>
       <div class="l1"><span class="kind">Commit</span><span class="tm">13:41</span></div>
