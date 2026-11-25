@@ -1948,11 +1948,14 @@ fn route_now(
 /// and the only text is the capped title of an accept.
 fn routed_event(item: tools.Item) -> Event {
   case item.action {
-    tools.Accept(title:) -> event.Routed(routing(item, model.Accept(title)))
-    tools.Attach(ticket:) -> event.Routed(routing(item, model.Attach(ticket)))
-    tools.Resume(ticket:) -> event.Routed(routing(item, model.Resume(ticket)))
+    tools.Accept(title:) ->
+      event.Routed(routing(item, model.Accept(title)), None)
+    tools.Attach(ticket:) ->
+      event.Routed(routing(item, model.Attach(ticket)), None)
+    tools.Resume(ticket:) ->
+      event.Routed(routing(item, model.Resume(ticket)), None)
     tools.Stop(ticket:) -> event.RoutedStop(item.trigger, ticket)
-    tools.Ignore -> event.RoutedIgnore(item.trigger)
+    tools.Ignore -> event.RoutedIgnore(item.trigger, None)
   }
 }
 

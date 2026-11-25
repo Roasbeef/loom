@@ -630,13 +630,16 @@ fn arrival(trigger: String) -> event.Event {
 }
 
 fn routed(trigger: String) -> event.Event {
-  event.Routed(model.Routing(
-    trigger: model.TriggerId(trigger),
-    kind: model.Accept(model.title("work on " <> trigger)),
-    holds: [],
-    related: [],
-    prior_hand_back: None,
-  ))
+  event.Routed(
+    model.Routing(
+      trigger: model.TriggerId(trigger),
+      kind: model.Accept(model.title("work on " <> trigger)),
+      holds: [],
+      related: [],
+      prior_hand_back: None,
+    ),
+    None,
+  )
 }
 
 // One line of the hand-written ledger: an event with the rows its effects
