@@ -233,10 +233,12 @@ renders again just for it:
 - `<loom-picklist>` wraps the new-session composer's Code list (the light child,
   drawn through one slot) and is on the page exactly while that list is open. It
   keeps no state but one capture-phase `keydown` listener on the document. On
-  connect it focuses the list's `.search-field`. The arrow keys move the focus along
+  connect it focuses the list's `.search-field`, and a mutation observer on its text
+  focuses a search field that is not the one it last focused (the list returning from the
+  folder picker). The arrow keys move the focus along
   the column `.search-field, button.opt` while the focus is already inside the list
   (`picklist_rule.after_key`, which holds at both ends and ignores a focus outside),
-  and Escape presses the `.pop-scrim` button of the enclosing `.place-chips`, which
+  and Escape (unless the key belongs to an input method's composition) presses the `.pop-scrim` button of the enclosing `.place-chips`, which
   is the ordinary click that closes the list, and is consumed so the shell's own
   Escape does not also run. Enter needs no code: in the field it submits the
   field's form and on a row it presses the button. It reads no attribute, sends the
