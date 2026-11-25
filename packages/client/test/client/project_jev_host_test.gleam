@@ -23,10 +23,12 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import project/model
 import provider/http
 import simplifile
 import storage/project_ledger
 import support/project_ports
+import tools/project as tools
 
 type Seen {
   Started(request: project_host.StartRequest)
@@ -275,6 +277,38 @@ pub fn a_second_batch_reaches_jev_once_the_first_is_settled_test() {
   assert to_router(seen) == []
 }
 
+pub fn the_board_names_who_decided_and_why_jev_left_a_trigger_test() {
+  let settled = rig("board-jev", Answers(clear_body), [])
+  let handle = start(settled)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let _ = drain(settled.seen)
+  let assert Ok(shown) = project_host.board(handle, 0)
+  let text = json.to_string(json.Array(shown.decisions))
+  assert string.contains(text, "\"decider\":\"jev\"")
+  assert string.contains(text, "\"model\":\"jev-1.14.0\"")
+  assert string.contains(text, "\"decision\":\"accepted\"")
+
+  // The probability is the clarity of the message, since no ticket was listed
+  // to continue.
+  assert string.contains(text, "\"probability\":9500")
+
+  // A trigger the router decided after Jev failed says why Jev left it.
+  let slow = rig("board-down", Down, [])
+  let down =
+    Rig(
+      ..slow,
+      config: project_host.Config(..slow.config, router_turn_ms: 3_600_000),
+    )
+  let other = start(down)
+  let assert Ok(_) = project_host.post(other, "a", "fix a")
+  let _ = drain(down.seen)
+  let assert Ok(_) = project_host.route(other, [accept("a")])
+  let assert Ok(after) = project_host.board(other, 0)
+  let later = json.to_string(json.Array(after.decisions))
+  assert string.contains(later, "\"decider\":\"model\"")
+  assert string.contains(later, "\"fallback\":\"unavailable\"")
+}
+
 pub fn an_unavailable_service_leaves_the_trigger_to_the_router_test() {
   let rig = rig("down", Down, [])
   let handle = start(rig)
@@ -370,4 +404,14 @@ fn collected(
         Error(Nil) -> collected(seen, so_far, polls - 1, enough)
       }
   }
+}
+
+fn accept(trigger: String) -> tools.Item {
+  tools.Item(
+    trigger: model.TriggerId(trigger),
+    action: tools.Accept(model.title("work on " <> trigger)),
+    holds: [],
+    related: [],
+    prior_hand_back: None,
+  )
 }

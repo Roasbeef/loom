@@ -60,6 +60,7 @@ import client/jev as transport
 import client/notes
 import client/peer_mail
 import client/project_github
+import client/project_jev_judge
 import client/project_judge
 import client/project_overrides.{type Change, type View}
 import client/project_poller
@@ -463,6 +464,10 @@ pub type Board {
     would_have_done: List(JsonValue),
     /// How each configured source is doing, shown on the first page.
     sources: List(JsonValue),
+    /// The newest routing decisions, shown on the first page, with who made
+    /// each: the model router or Jev, and for Jev the probability that decided
+    /// it and the reason.
+    decisions: List(JsonValue),
   )
 }
 
@@ -650,6 +655,10 @@ type Host {
     /// restart reruns the pass, and a re-decision of a settled trigger is a
     /// no-op in the engine.
     jev_done: Set(String),
+    /// The reason of the newest `jev_fallback` record of each trigger, rebuilt
+    /// on replay. The board shows it beside a trigger the router decided after
+    /// Jev left it.
+    jev_why: Dict(String, String),
     /// The router's prompt revision and model that `pin_router` announced,
     /// held while Jev decides first. The pin that goes to the engine is the
     /// Jev form, which names the model Jev reported, so it waits for a call.
@@ -1106,6 +1115,7 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       revision: 0,
       building: None,
       jev_done: set.new(),
+      jev_why: dict.new(),
       router_pin: None,
     )
 
@@ -1632,9 +1642,10 @@ fn keep_record(host: Host, written: Record) -> Host {
       Host(..host, watcher: project_watcher.Watcher(..host.watcher, note: text))
     project_records.Retention(..) -> host
 
-    // A fallback is evidence for a reader, not state: nothing in the actor
-    // depends on it, so replay has nothing to rebuild.
-    project_records.JevFallback(..) -> host
+    // A fallback is evidence for a reader. Nothing the actor decides depends on
+    // it, but the board names the reason, so replay keeps the newest.
+    project_records.JevFallback(trigger:, why:) ->
+      Host(..host, jev_why: dict.insert(host.jev_why, trigger, why))
     project_records.Recovered(ticket:, seq:) ->
       Host(..host, recovered: set.insert(host.recovered, #(ticket, seq)))
     project_records.TreeKept(ticket:, seq:, path:, reason:) ->
@@ -4571,15 +4582,40 @@ fn router_pinned(
   case host.config.policy.router {
     ModelRouter -> pin_now(host, prompt_revision, router_model)
     JevRouter -> {
+      let bars = configured_bars(host)
       let held =
         Host(..host, router_pin: Some(#(prompt_revision, router_model)))
-      announce_jev_pin(
-        held,
-        host.config.policy.jev_model,
-        configured_bars(held),
-      )
+
+      // A pin already in the Jev form for this router and bar is kept: the
+      // engine holds the model Jev last reported, which a restart must not
+      // replace with the configured alias and so demote every `auto` rule.
+      case jev_pin_held(held, prompt_revision, router_model, bars) {
+        True -> held
+        False -> announce_jev_pin(held, host.config.policy.jev_model, bars)
+      }
     }
   }
+}
+
+/// Whether the engine's pin is the Jev form over this router's prompt and
+/// model and this bar, whatever model Jev resolved to.
+fn jev_pin_held(
+  host: Host,
+  prompt_revision: String,
+  router_model: String,
+  bars: jev.Bars,
+) -> Bool {
+  let wanted =
+    jev.pin_of(
+      host.engine.policy_version,
+      "x",
+      prompt_revision,
+      router_model,
+      bars,
+    )
+  string.starts_with(host.engine.router_model, "jev/")
+  && string.ends_with(host.engine.router_model, "/" <> router_model)
+  && host.engine.prompt_revision == wanted.prompt_revision
 }
 
 /// The catalogue agent chosen for a ticket's origin trigger, or none for the
@@ -4768,7 +4804,112 @@ fn board_page(host: Host, page: Int) -> Board {
       0 -> sources_json(host)
       _ -> []
     },
+    decisions: case page {
+      0 -> decisions_json(host)
+      _ -> []
+    },
   )
+}
+
+/// The most routing decisions the board lists.
+const decisions_limit = 20
+
+/// The newest routing decisions, newest first. A decision is the model router's
+/// unless the trigger carries a judgement, which only a Jev pass writes. A
+/// trigger the router decided after Jev left it names the reason Jev left it.
+fn decisions_json(host: Host) -> List(JsonValue) {
+  dict.values(host.engine.triggers)
+  |> list.filter(fn(stored) { routed_word(stored.fate) != None })
+  |> list.sort(fn(a, b) {
+    case int.compare(b.trigger.at_ms, a.trigger.at_ms) {
+      order.Eq -> string.compare(a.trigger.id.value, b.trigger.id.value)
+      other -> other
+    }
+  })
+  |> list.take(decisions_limit)
+  |> list.map(fn(stored) { decision_json(host, stored) })
+}
+
+/// The word for a fate that a router or Jev chose, or nothing for any other.
+fn routed_word(fate: state.Fate) -> Option(String) {
+  // Only a choice between the five routing outcomes is a decision of a decider.
+  case fate {
+    state.Decided(state.Accepted(_)) -> Some("accepted")
+    state.Decided(state.Attached(_)) -> Some("attached")
+    state.Decided(state.Resumed(_)) -> Some("resumed")
+    state.Decided(state.Ignored) -> Some("ignored")
+    state.Decided(state.WouldAccept) -> Some("would_accept")
+    _ -> None
+  }
+}
+
+/// One decision of the board: the trigger, what became of it, who decided and,
+/// for Jev, the model it reported, the probability that decided it and the
+/// reason. The entry carries no trigger text.
+fn decision_json(host: Host, stored: state.TriggerRecord) -> JsonValue {
+  let id = stored.trigger.id.value
+  let decided = option.unwrap(routed_word(stored.fate), "")
+  let common = [
+    #("trigger", json.String(id)),
+    #("decision", json.String(decided)),
+    #("at_ms", json.Int(stored.trigger.at_ms)),
+  ]
+  json.Object(case stored.judgement {
+    Some(found) ->
+      list.append(common, [
+        #("decider", json.String("jev")),
+        #("model", json.String(found.model)),
+        #("probability", case decisive_points(stored.fate, found) {
+          Some(points) -> json.Int(points)
+          None -> json.Null
+        }),
+        #("reason", reason_json(stored, found)),
+        #("agent", case stored.agent {
+          Some(name) -> json.String(name)
+          None -> json.Null
+        }),
+      ])
+    None ->
+      list.append(common, [
+        #("decider", json.String("model")),
+        #("fallback", case dict.get(host.jev_why, id) {
+          Ok(why) -> json.String(why)
+          Error(Nil) -> json.Null
+        }),
+      ])
+  })
+}
+
+/// The probability, in basis points, that Jev's decision rested on: that the
+/// message continues a ticket for an attach or a resume, that it does not for
+/// new work, and that it asks for no work for a decline. A Noul the request did
+/// not ask has no value, and the answer is then the clarity of the message.
+fn decisive_points(fate: state.Fate, found: model.Judgement) -> Option(Int) {
+  // Each decision rests on the question that separates it from the others.
+  case fate {
+    state.Decided(state.Attached(_)) | state.Decided(state.Resumed(_)) ->
+      found.continues
+    state.Decided(state.Ignored) ->
+      option.map(found.asks_for_work, fn(asks) { 10_000 - asks })
+    _ ->
+      case found.continues {
+        Some(continues) -> Some(10_000 - continues)
+        None -> Some(found.clear_alone)
+      }
+  }
+}
+
+/// The reason of a Jev decision: the likeliest decline reason of an ignore, and
+/// nothing for a decision that has none.
+fn reason_json(
+  stored: state.TriggerRecord,
+  found: model.Judgement,
+) -> JsonValue {
+  // Only a decline carries a reason, and its shares are largest first.
+  case stored.fate, found.decline {
+    state.Decided(state.Ignored), [top, ..] -> json.String(top.label)
+    _, _ -> json.Null
+  }
 }
 
 /// One message the router was offered and decided nothing about, with the text
@@ -6113,15 +6254,24 @@ fn conclude_run(
   plan: project_verdict.Plan,
   measured: Result(project_judge.Measured, String),
 ) -> #(Host, String, String) {
+  // A Jev run announces the model Jev reported before it is concluded, so the
+  // verdict is recorded under the Jev pin that names it.
+  let #(host, plan) = jev_resolved(host, plan, measured)
   let concluded = {
     use found <- result.try(measured)
     project_verdict.conclude(host.engine, plan, found)
   }
 
-  // A run with no samples, or whose pin moved, is a sentence and no event.
-  case concluded {
-    Error(words) -> #(host, "incomplete", words)
-    Ok(#(recorded, body)) -> {
+  // A run with no samples, or whose pin moved, is a sentence and no event, and
+  // a Jev run that has nothing to be recorded under is reported only.
+  case concluded, withheld(plan, measured) {
+    Error(words), _ -> #(host, "incomplete", words)
+    Ok(#(_, body)), Some(reason) -> #(
+      host,
+      "measured",
+      text_of(body, "words") <> " " <> reason,
+    )
+    Ok(#(recorded, body)), None -> {
       let #(next, committed) = record_verdict(host, rule, by, recorded, body)
 
       // The engine may still refuse the event, which is the last way a run
@@ -6132,6 +6282,84 @@ fn conclude_run(
       }
     }
   }
+}
+
+/// Why a Jev run's finding is reported and not recorded, if it is not. A daemon
+/// that routes with the model has no Jev pin to record under, and a run in which
+/// Jev never answered measured the router alone.
+fn withheld(
+  plan: project_verdict.Plan,
+  measured: Result(project_judge.Measured, String),
+) -> Option(String) {
+  // Only a Jev run can be withheld, and the daemon's own setting decides first.
+  case plan.jev, measured {
+    Some(planned), Ok(found) ->
+      case planned.recording, reported_model(found) {
+        project_jev_judge.MeasuresOnly, _ ->
+          Some(
+            "Not recorded: this daemon routes with the model, so a Jev verdict is reported and does not unlock auto. Set [project] router to jev to record one.",
+          )
+        project_jev_judge.Records, None ->
+          Some(
+            "Not recorded: Jev never answered, so the run measured the router alone.",
+          )
+        project_jev_judge.Records, Some(_) -> None
+      }
+    _, _ -> None
+  }
+}
+
+/// For a Jev run that measured, announces the Jev form of the router pin with
+/// the model the service reported, and moves the plan's pin to it. A run whose
+/// pin had already moved for another reason is left as it is, so `conclude`
+/// refuses it: the router's prompt or model changed while it went.
+fn jev_resolved(
+  host: Host,
+  plan: project_verdict.Plan,
+  measured: Result(project_judge.Measured, String),
+) -> #(Host, project_verdict.Plan) {
+  // Only a Jev run with samples, whose pin is still the one it began under.
+  case plan.jev, measured, state.pin_of(host.engine) == plan.pin {
+    Some(planned), Ok(found), True ->
+      announce_reported(host, plan, planned, reported_model(found))
+    _, _, _ -> #(host, plan)
+  }
+}
+
+/// Announces the Jev pin for the model the run's trials reported, and moves
+/// the plan's pin to the one that results. A run in which the service never
+/// answered reported no model and keeps its pin.
+fn announce_reported(
+  host: Host,
+  plan: project_verdict.Plan,
+  planned: project_verdict.JevPlan,
+  reported: Option(String),
+) -> #(Host, project_verdict.Plan) {
+  // The run's percent came from the settings, which bound it to a valid bar.
+  let bars = case jev.bars(planned.percent) {
+    Ok(each) -> each
+    Error(Nil) -> jev.default_bars()
+  }
+
+  // Without a reported model there is nothing to name in the pin.
+  case reported {
+    Some(resolved) -> {
+      let announced = announce_jev_pin(host, resolved, bars)
+      #(
+        announced,
+        project_verdict.Plan(..plan, pin: state.pin_of(announced.engine)),
+      )
+    }
+    None -> #(host, plan)
+  }
+}
+
+/// The first model name the service reported in a run, if it answered at all.
+fn reported_model(found: project_judge.Measured) -> Option(String) {
+  list.flatten(found.trials)
+  |> option.values
+  |> list.find_map(fn(trial) { option.to_result(trial.model, Nil) })
+  |> option.from_result
 }
 
 /// Marks a rule's run over, with how it ended and what it cost.

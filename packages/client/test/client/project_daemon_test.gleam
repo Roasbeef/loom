@@ -23,6 +23,7 @@ import client/daemon/manager
 import client/daemon/project_book
 import client/daemon/project_host
 import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
@@ -578,6 +579,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       book:,
       create: fn(workspace, name) { project_start.create(env, workspace, name) },
       judge: fn(_) { Error("not used") },
+      jev: project_verdict.jev_off(),
     )
   let config =
     server.Config(

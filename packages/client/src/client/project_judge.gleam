@@ -32,7 +32,9 @@
 import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
+import project/jev_verdict.{type Trial}
 import project/judge.{type Choice, type Sample, Sample}
 import project/model.{type Label}
 import project/tape.{type Frame}
@@ -87,6 +89,9 @@ pub type Decision {
     routing: Routing,
     /// What the trial spent.
     spend: Spend,
+    /// What a Jev trial kept for the report: how it ended, the shape and the
+    /// answers. A trial of the model router keeps nothing.
+    trial: Option(Trial),
   )
 }
 
@@ -130,6 +135,9 @@ pub type Measured {
     spend: Spend,
     /// How many trials the model left unrouted.
     unrouted: Int,
+    /// What each trial kept, in the same order as the samples and their
+    /// trials. A run that is not Jev's has only `None`.
+    trials: List(List(Option(Trial))),
   )
 }
 
@@ -314,6 +322,10 @@ fn assemble(
       )
     })
   Measured(
+    trials: list.map(
+      list.zip(work, list.sized_chunk(decided, count)),
+      fn(entry) { list.map(entry.1, fn(decision) { decision.trial }) },
+    ),
     samples:,
     spend: list.fold(decided, no_spend, fn(total, decision) {
       add(total, decision.spend)
