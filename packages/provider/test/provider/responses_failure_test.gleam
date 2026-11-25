@@ -250,6 +250,62 @@ pub fn streamed_retry_advice_survives_scrubbing_and_classification_test() {
   })
 }
 
+pub fn streamed_capacity_requires_advice_from_the_failed_event_test() {
+  list.each(["server_is_overloaded", "policy_capacity_unavailable"], fn(code) {
+    let headers = fn(value) {
+      json.Object([#("Retry-After-Ms", json.String(value))])
+    }
+    list.each(
+      [
+        #("error", json.Null, json.Null, None),
+        #("error", headers("bad"), json.Null, None),
+        #("error", headers("2000"), headers("3000"), Some(2000)),
+        #("error", headers("bad"), headers("3000"), Some(3000)),
+        #("response.failed", json.Null, headers("3000"), None),
+        #("response.failed", headers("2000"), json.Null, Some(2000)),
+      ],
+      fn(row) {
+        let #(kind, nested, envelope, expected) = row
+        let error =
+          json.Object([
+            #("code", json.String(code)),
+            #("headers", nested),
+          ])
+        let fields = case kind {
+          "response.failed" -> [#("response", json.Object([#("error", error)]))]
+          _ -> [#("error", error)]
+        }
+        let event =
+          fixture.sse_event(
+            kind,
+            json.to_string(
+              json.Object([
+                #("type", json.String(kind)),
+                #("sequence_number", json.Int(3)),
+                #("headers", envelope),
+                ..fields
+              ]),
+            ),
+          )
+        let assert [stream.Failed(error, _)] =
+          fixture.drive(machine(), 200, [#("retry-after", "60")], [
+            bit_array.from_string(event),
+          ])
+
+        let assert stream.StreamError(actual_code, _, advice) = error
+        assert actual_code == "responses." <> code
+        assert advice == expected
+        assert retry.classify(error)
+          == case expected {
+            None -> retry.Terminal
+            Some(_) ->
+              retry.RetryableWithin(backoff_hint_ms: expected, max_attempts: 6)
+          }
+      },
+    )
+  })
+}
+
 pub fn response_and_event_advice_keep_the_larger_valid_delay_test() {
   list.each([#("3000", 7000), #("9000", 9000)], fn(values) {
     let #(event_delay, expected) = values

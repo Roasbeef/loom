@@ -349,6 +349,7 @@ pub fn new(
     stamp: at,
     build_notice: [],
     activity_revision: 0,
+    newest_ask_seq: 0,
     connection_backlog: session_model.MailboxDrained,
     recorder: None,
     record_cache_epoch: 0,

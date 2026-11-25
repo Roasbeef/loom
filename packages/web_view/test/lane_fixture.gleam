@@ -505,6 +505,86 @@ pub fn asked(operation: Option(String)) -> session_channel.Update {
   capture_of([item(1, 10_000, said("go", None))], operation, [], [])
 }
 
+/// A capture of the main strand waiting for a provider retry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.waiting_for_provider_retry()
+/// ```
+pub fn waiting_for_provider_retry() -> session_channel.Update {
+  let phase =
+    json.Object([
+      #("kind", json.String("assistant")),
+      #(
+        "generation",
+        json.Object([
+          #("status", json.String("retry_wait")),
+          #("nextAttempt", json.Int(2)),
+          #("notBefore", json.Int(30_000)),
+          #("errorMessage", json.String("Selected model is at capacity")),
+          #(
+            "context",
+            json.Object([
+              #("stepId", json.String("step-1")),
+              #("triggerEntryId", json.String(ids.entry_id_to_string(id(1)))),
+              #(
+                "configuration",
+                json.Object([
+                  #(
+                    "model",
+                    json.Object([
+                      #("provider", json.String("codex")),
+                      #("modelId", json.String("fixture")),
+                    ]),
+                  ),
+                  #("thinkingLevel", json.String("off")),
+                  #("activeToolNames", json.Array([])),
+                ]),
+              ),
+              #("streamOptions", json.Null),
+              #(
+                "retryPolicy",
+                json.Object([
+                  #("maxAttempts", json.Int(6)),
+                  #("baseDelayMs", json.Int(1000)),
+                  #("maxDelayMs", json.Int(30_000)),
+                ]),
+              ),
+              #("overflowRecoveryUsed", json.Bool(False)),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+  let operation = main_op()
+  let assert session_channel.Captured(cut, view, mode) =
+    phased(asked(Some(operation)), "assistant")
+  let cells =
+    list.map(view.cells, fn(cell) {
+      case cell {
+        snapshot_view.Cell(
+          namespace: register.OpState,
+          key:,
+          value: json.Object(fields),
+          ..,
+        )
+          if key == operation
+        ->
+          snapshot_view.Cell(
+            ..cell,
+            value: json.Object(list.key_set(fields, "phase", phase)),
+          )
+        _ -> cell
+      }
+    })
+  session_channel.Captured(
+    snapshot.Captured(..cut, metadata: json.String(string.inspect(cells))),
+    snapshot_view.View(..view, cells:),
+    mode,
+  )
+}
+
 /// `update`, a capture, with the daemon's sampled preview of the answer
 /// running under `main`'s operation: what a page that attaches mid-answer
 /// is told about the text so far, before any pushed fragment.

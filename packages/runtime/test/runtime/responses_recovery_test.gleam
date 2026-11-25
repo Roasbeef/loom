@@ -3,6 +3,7 @@
 
 import core/clock
 import core/codec
+import core/ids.{type OpId}
 import core/json
 import core/message
 import core/usage_evidence
@@ -21,14 +22,16 @@ import session/session
 import support/fake
 import support/harness
 import support/recorder
+import weft/poll
 
-fn failure(hint: Option(Int)) {
+fn failure(code: String, hint: Option(Int)) {
   let target =
     model.ResolvedModel("codex", "fixture", model.ThinkingOff, 200_000, 8192)
   let machine = responses.subscription_response_machine(target, now: 0)
   let state =
     machine.on_status(machine.init, 200, [
       #("x-request-id", "req_0123456789abcdef0123456789abcdef"),
+      #("retry-after", "1"),
     ])
   let headers = case hint {
     Some(delay) -> [#("retry-after-ms", json.String(int.to_string(delay)))]
@@ -42,7 +45,7 @@ fn failure(hint: Option(Int)) {
         #(
           "error",
           json.Object([
-            #("code", json.String("unknown_backend")),
+            #("code", json.String(code)),
             #("message", json.String("canary-provider-secret")),
             #("headers", json.Object(headers)),
           ]),
@@ -57,7 +60,7 @@ fn failure(hint: Option(Int)) {
 }
 
 pub fn unclassified_failure_cap_and_context_survive_durable_codec_test() {
-  let #(error, report) = failure(Some(60_000))
+  let #(error, report) = failure("unknown_backend", Some(60_000))
   let settled =
     effects.settle_failure(error, harness.configuration(), 50, report)
   assert codec.decode_message(codec.encode_message(settled)) == Ok(settled)
@@ -81,16 +84,41 @@ pub fn unclassified_failure_cap_and_context_survive_durable_codec_test() {
   assert !string.contains(description, "canary-provider-secret")
 }
 
-fn run(budget: operation.RetryBudget, succeeds_on: Option(Int)) {
+const effects_epoch = 2_000_000
+
+const advised_delay = 250
+
+type RetryDeadlineCapture {
+  CaptureRetryDeadline
+  SkipRetryDeadline
+}
+
+fn run(
+  code: String,
+  hint: Option(Int),
+  budget: operation.RetryBudget,
+  succeeds_on: Option(Int),
+  capture_retry_deadline: RetryDeadlineCapture,
+) {
   let rec = recorder.start()
-  let #(error, report) = failure(None)
+  let #(error, report) = failure(code, hint)
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "The session opens before effects start."
+
+  // Freeze planner time for the deadline case. A stepping clock would let
+  // unrelated planner reads advance the base used to compute not_before.
+  let effects_clock = case capture_retry_deadline {
+    CaptureRetryDeadline ->
+      clock.from_function(fn() {
+        effects_epoch + recorder.read(rec, "release_retry") * advised_delay
+      })
+    SkipRetryDeadline -> clock.stepping(from: effects_epoch, by: 25)
+  }
   let eff =
     fake.effects(
       rec,
-      clock.stepping(from: 2_000_000, by: 25),
+      effects_clock,
       [],
       fn(spec) {
         let attempt = fake.attempt(spec)
@@ -113,23 +141,67 @@ fn run(budget: operation.RetryBudget, succeeds_on: Option(Int)) {
     as "The runtime uses its normal writer and strand driver."
   let assert Ok(op) = api.prompt(rt, [fake.user("recover")])
     as "One owner prompt admits the complete run."
+  let retry_deadline = case capture_retry_deadline {
+    CaptureRetryDeadline -> {
+      let deadline = observe_retry_deadline(sess, op)
+      assert recorder.read(rec, "provider") == 1
+        as "No retry dispatches while planner time is before the deadline."
+      let _ = recorder.bump(rec, "release_retry")
+      api.nudge(rt)
+      deadline
+    }
+    SkipRetryDeadline -> None
+  }
   let assert Ok(outcome) = api.await_result(rt, op, within_ms: 5000)
     as "Bounded recovery must finish without another owner prompt."
   let attempts = recorder.read(rec, "provider")
   let projection = harness.final_projection(sess)
   assert api.close(rt) == Ok(Nil)
-  #(outcome, attempts, projection)
+  #(outcome, attempts, projection, retry_deadline)
+}
+
+fn observe_retry_deadline(sess: session.Session, op: OpId) -> Option(Int) {
+  let observed =
+    poll.until(within: 1000, every: 5, attempt: fn() {
+      case session.op_state(sess, op) {
+        Ok(Some(session.Cell(
+          value: operation.RunState(
+            phase: operation.Assistant(generation: operation.GenerationRetryWait(
+              not_before:,
+              ..,
+            )),
+            ..,
+          ),
+          ..,
+        ))) -> poll.Done(Some(not_before))
+        Ok(Some(session.Cell(..))) | Ok(None) -> poll.Retry
+        Error(session.StoreFailure(..)) | Error(session.SessionCorrupt(..)) ->
+          poll.Done(None)
+      }
+    })
+  case observed {
+    poll.Answered(deadline) -> deadline
+    _ -> None
+  }
 }
 
 pub fn transient_unknown_stream_failure_recovers_without_manual_continue_test() {
-  let #(outcome, attempts, projection) = run(operation.Unbounded, Some(3))
+  let #(outcome, attempts, projection, _) =
+    run(
+      "unknown_backend",
+      None,
+      operation.Unbounded,
+      Some(3),
+      SkipRetryDeadline,
+    )
   harness.assert_completed(outcome)
   assert attempts == 3
   assert projection == ["user:recover", "assistant:stop:Recovered"]
 }
 
 pub fn persistent_unknown_stream_failure_stops_after_three_attempts_test() {
-  let #(outcome, attempts, _) = run(operation.Unbounded, None)
+  let #(outcome, attempts, _, _) =
+    run("unknown_backend", None, operation.Unbounded, None, SkipRetryDeadline)
   let assert operation.RunLastResult(outcome: operation.RunFailed(error:), ..) =
     outcome
     as "The third failed attempt terminates the run."
@@ -138,10 +210,67 @@ pub fn persistent_unknown_stream_failure_stops_after_three_attempts_test() {
   assert string.contains(error.message, "responses_error")
 }
 
-pub fn stricter_configured_retry_budget_is_preserved_test() {
-  let #(outcome, attempts, _) = run(operation.Bounded(1), Some(2))
+pub fn overloaded_stream_failure_without_server_advice_is_terminal_test() {
+  let #(outcome, attempts, _, _) =
+    run(
+      "server_is_overloaded",
+      None,
+      operation.Unbounded,
+      Some(2),
+      SkipRetryDeadline,
+    )
+  let assert operation.RunLastResult(outcome: operation.RunFailed(error:), ..) =
+    outcome
+    as "An overload without server advice is not retryable."
+  assert attempts == 1
+  assert error.code == "provider_error"
+  assert string.contains(error.message, "capacity")
+  assert string.contains(error.message, "server_is_overloaded")
+}
+
+pub fn advised_overloaded_stream_failure_retries_and_recovers_test() {
+  let #(outcome, attempts, projection, retry_deadline) =
+    run(
+      "server_is_overloaded",
+      Some(advised_delay),
+      operation.Unbounded,
+      Some(2),
+      CaptureRetryDeadline,
+    )
+  harness.assert_completed(outcome)
+  assert attempts == 2
+  assert projection == ["user:recover", "assistant:stop:Recovered"]
+  let assert Some(not_before) = retry_deadline
+    as "The runtime persisted the server-advised retry deadline."
+  assert not_before == effects_epoch + advised_delay
+}
+
+pub fn advised_overloaded_stream_failure_stops_after_six_attempts_test() {
+  let #(outcome, attempts, _, _) =
+    run(
+      "server_is_overloaded",
+      Some(1),
+      operation.Unbounded,
+      None,
+      SkipRetryDeadline,
+    )
   let assert operation.RunLastResult(outcome: operation.RunFailed(..), ..) =
     outcome
-    as "A one-attempt operator budget does not gain retries."
-  assert attempts == 1
+    as "Five server-advised retries exhaust the overload attempt cap."
+  assert attempts == 6
+}
+
+pub fn stricter_configured_retry_budget_is_preserved_test() {
+  list.each(
+    [#("unknown_backend", None), #("server_is_overloaded", Some(1))],
+    fn(row) {
+      let #(code, hint) = row
+      let #(outcome, attempts, _, _) =
+        run(code, hint, operation.Bounded(1), Some(2), SkipRetryDeadline)
+      let assert operation.RunLastResult(outcome: operation.RunFailed(..), ..) =
+        outcome
+        as "Neither the three- nor the six-attempt ceiling raises the configured budget."
+      assert attempts == 1
+    },
+  )
 }
