@@ -1049,6 +1049,22 @@ pub fn an_ignore_by_the_model_router_drops_the_chosen_agent_too_test() {
   assert record.agent == None
 }
 
+pub fn a_requeued_trigger_forgets_the_agent_an_earlier_pass_chose_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  let ignored =
+    run(offered, [
+      event.AgentChosen(TriggerId("c1"), "small fixes"),
+      event.RoutedIgnore(TriggerId("c1"), Some(kept())),
+    ])
+  let assert Ok(#(again, _)) =
+    engine.apply(
+      ignored,
+      event.Requeued(TriggerId("c1"), model.PrincipalId("owner")),
+    )
+  let assert Ok(record) = state.record(again, TriggerId("c1"))
+  assert record.agent == None
+}
+
 pub fn an_agent_chosen_event_is_a_new_tag_an_older_reader_would_refuse_test() {
   let line = codec.encode(event.AgentChosen(TriggerId("c1"), "small fixes"))
   assert string.contains(line, "\"t\":\"agent_chosen\"")
