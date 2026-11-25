@@ -364,6 +364,40 @@ pub fn create_named_with_agency(
   pool: String,
   agency: agency_limits.AgencyLimits,
 ) -> Result(Target, String) {
+  create_named_in(
+    host,
+    key,
+    workspace,
+    name,
+    configuration,
+    profile,
+    executor,
+    pool,
+    agency,
+    None,
+  )
+}
+
+/// `create_named_with_agency`, in a new Git worktree of the workspace when
+/// `worktree` names the commit-ish its branch starts from (protocol-change/133).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.create_named_in(host, key, project.path, name, config, "", "", "", agency_limits.empty, Some("HEAD"))
+/// ```
+pub fn create_named_in(
+  host: Host,
+  key: String,
+  workspace: String,
+  name: String,
+  configuration: String,
+  profile: String,
+  executor: String,
+  pool: String,
+  agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
+) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
@@ -376,6 +410,7 @@ pub fn create_named_with_agency(
         executor,
         pool,
         agency,
+        worktree,
       ),
       10_000,
     )

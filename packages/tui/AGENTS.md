@@ -1,6 +1,18 @@
 # tui
 
 
+## Worktree launch
+
+`--worktree [--base REF]` (protocol-change/133) is read by `placement.take_worktree`
+before the options that carry a value, and `placement.in_worktree` folds it into
+the placement as `InWorktree(base)`, refused beside `--executor` or `--pool` and
+with `--session` or `--vm`. The launch's directory is unchanged (`options.workspace`
+stays the path), so the footer and the picker treat `InWorktree` as `OnThisHost`.
+`run.parse` takes the same two words. The creation carries the base as
+`CreateSession.worktree` and `job.CreateSession.worktree`, which `selection.create_named_in`
+sends as `{"worktree":{"base":...}}`; a creation without one omits the member.
+Tests: `worktree_launch_test`.
+
 ## Launch preflight and replacement
 
 `update/lifecycle` authenticates the captured endpoint and matches its native

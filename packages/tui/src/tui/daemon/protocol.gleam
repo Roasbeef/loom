@@ -236,6 +236,11 @@ pub type Command {
     pool: String,
     /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
+    /// The commit-ish a Git worktree of `workspace` branches from, or `None`
+    /// for a session that works in the directory itself. Sent as
+    /// `{"worktree": {"base": ...}}`, and only beside a path on the daemon's
+    /// host (protocol-change/133).
+    worktree: Option(String),
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -1158,6 +1163,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       executor,
       pool,
       agency,
+      worktree,
     ) -> {
       use fields <- result.try(
         text_fields([
@@ -1197,11 +1203,27 @@ fn command_fields(command: Command, epoch: Epoch) {
 
       let agency_fields = encode_agency_field(agency)
 
+      // A creation in the directory itself carries no `worktree` key, so a
+      // daemon that predates worktrees receives exactly the request it always
+      // did.
+      let worktree_fields = case worktree {
+        Some(base) -> [
+          #("worktree", json.Object([#("base", json.String(base))])),
+        ]
+        None -> []
+      }
+
       [
         #("configuration", json.String(configuration)),
         ..list.append(
           fields,
-          list.flatten([profile, executor, pool, agency_fields]),
+          list.flatten([
+            profile,
+            executor,
+            pool,
+            agency_fields,
+            worktree_fields,
+          ]),
         )
       ]
     }

@@ -250,6 +250,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       90_000,
     )
@@ -419,6 +420,7 @@ pub fn a_creation_carries_the_launch_profile_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       90_000,
     )

@@ -50,6 +50,7 @@
 ////    last result, or no verdict yet.
 //// 5. `render` writes the report as one compact JSON object.
 
+import core/agency_limits
 import core/codec
 import core/entry
 import core/json
@@ -273,10 +274,15 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
 
   // The guest's flags are the guest's, so they are taken out before the rest.
   use #(flags, rest) <- result.try(vm_ensure.guest_flags(arguments))
+
+  // `--worktree` and its `--base` are one choice, so they are read together
+  // before the words that fold into the request one at a time.
+  use #(worktree, rest) <- result.try(placement.take_worktree(rest))
   use request <- result.try(parse_words(
     rest,
     Request(..start, guest_flags: flags),
   ))
+  use request <- result.try(with_worktree(request, worktree))
   use Nil <- result.try(check_guest(request))
 
   // A prompt is the whole point; an empty one would start a session to send
@@ -284,6 +290,33 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
   case string.trim(request.prompt) {
     "" -> Error("run needs a prompt: loom run -p <text>")
     _ -> Ok(request)
+  }
+}
+
+/// Folds the worktree choice into the request's placement. The guest is already
+/// a checkout of its own, so a worktree beside `--vm` has no meaning and is
+/// refused rather than silently ignored.
+fn with_worktree(
+  request: Request,
+  worktree: Option(String),
+) -> Result(Request, String) {
+  // No choice leaves the request alone; a choice needs tools on this machine.
+  case worktree, request.tools {
+    None, _ -> Ok(request)
+    Some(_), InTheGuest ->
+      Error(
+        "--vm runs the session in a guest of its own; --worktree makes a worktree on this machine, so drop one of them",
+      )
+    Some(_), OnThisMachine -> {
+      use chosen <- result.map(placement.in_worktree(
+        request.options.placement,
+        worktree,
+      ))
+      Request(
+        ..request,
+        options: bootstrap.Options(..request.options, placement: chosen),
+      )
+    }
   }
 }
 
@@ -749,40 +782,42 @@ fn create_target(
   // The workspace is a directory here unless the request is placed on an
   // executor, whose registered name goes to the daemon as it is, never
   // resolved on this machine, with the name the terminal gives such a session.
-  use #(workspace, name, executor, pool) <- result.try(case options.placement {
-    placement.OnExecutor(executor:, workspace: registered) ->
-      Ok(#(
-        registered,
-        session_workspace.session_name(session_workspace.Context(
+  use #(workspace, name, executor, pool, worktree) <- result.try(
+    case options.placement {
+      placement.OnExecutor(executor:, workspace: registered) ->
+        Ok(#(
           registered,
+          session_workspace.session_name(session_workspace.Context(
+            registered,
+            None,
+          )),
+          executor,
+          "",
           None,
-        )),
-        executor,
-        "",
-      ))
-    placement.InPool(pool:, workspace: registered) ->
-      Ok(#(
-        registered,
-        session_workspace.session_name(session_workspace.Context(
+        ))
+      placement.InPool(pool:, workspace: registered) ->
+        Ok(#(
           registered,
+          session_workspace.session_name(session_workspace.Context(
+            registered,
+            None,
+          )),
+          "",
+          pool,
           None,
-        )),
-        "",
-        pool,
-      ))
-    placement.OnThisHost -> {
-      use directory <- result.map(
-        host_bootstrap.canonical_directory(case options.workspace {
-          "" -> "."
-          path -> path
-        })
-        |> result.map_error(fn(reason) { "resolve workspace: " <> reason }),
-      )
-      #(directory, bootstrap.workspace_name(directory), "", "")
-    }
-  })
+        ))
+      placement.OnThisHost -> {
+        use directory <- result.map(local_directory(options))
+        #(directory, bootstrap.workspace_name(directory), "", "", None)
+      }
+      placement.InWorktree(base:) -> {
+        use directory <- result.map(local_directory(options))
+        #(directory, bootstrap.workspace_name(directory), "", "", Some(base))
+      }
+    },
+  )
 
-  selection.create_named(
+  selection.create_named_in(
     host,
     key,
     workspace,
@@ -791,7 +826,19 @@ fn create_target(
     options.profile,
     executor,
     pool,
+    agency_limits.empty,
+    worktree,
   )
+}
+
+/// The launch's directory on this machine, resolved to its canonical form. The
+/// directory is the current one unless `--workspace` named another.
+fn local_directory(options: bootstrap.Options) -> Result(String, String) {
+  host_bootstrap.canonical_directory(case options.workspace {
+    "" -> "."
+    path -> path
+  })
+  |> result.map_error(fn(reason) { "resolve workspace: " <> reason })
 }
 
 /// Opens the session socket, runs the receive loop under the deadline and closes the socket, reporting what it saw.
@@ -1179,7 +1226,8 @@ fn measure_posture(options: bootstrap.Options, scratch: String) -> Posture {
   // The self-test measures this host's helper, so it says nothing about tools
   // that ran on an executor, such as a guest.
   case options.placement {
-    placement.OnThisHost -> measure_host_posture(options, scratch)
+    placement.OnThisHost | placement.InWorktree(..) ->
+      measure_host_posture(options, scratch)
     placement.OnExecutor(..) | placement.InPool(..) ->
       Unverified(
         "the tools ran on an executor, whose jail this host's self-test does "

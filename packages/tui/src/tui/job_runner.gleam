@@ -676,11 +676,12 @@ fn resolve(
       executor:,
       pool:,
       agency:,
+      worktree:,
     ) ->
       with_control(running, control, fn(host) {
         fn() {
           use host <- daemon_selection.with_live_control(host)
-          daemon_selection.create_named_with_agency(
+          daemon_selection.create_named_in(
             host,
             key,
             workspace,
@@ -690,6 +691,7 @@ fn resolve(
             executor,
             pool,
             agency,
+            worktree,
           )
         }
       })
