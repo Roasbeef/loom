@@ -289,7 +289,7 @@ pub fn the_evolution_pane_has_hairlines_and_tints_and_no_bars_or_shadows_test() 
   )
   assert string.contains(
     css,
-    ".evolution-ask{border:1px solid color-mix(in srgb,var(--color-signal)35%,var(--color-divider))}",
+    ".evolution-ask{border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider))}",
   )
   let rules =
     string.split(css, "}")
