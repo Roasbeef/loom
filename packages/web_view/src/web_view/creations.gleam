@@ -235,6 +235,10 @@ pub type Reason {
   /// so opening another page does not reset it.
   TooMany
 
+  /// A worktree was asked of a folder that is not the top of a Git repository's
+  /// main checkout (protocol-change/133).
+  NotARepository
+
   /// The daemon has no room for another running session.
   Full
 
@@ -258,6 +262,8 @@ pub fn reason_words(reason: Reason) -> String {
     NotKnown -> "That workspace is not in your list. Reload the page."
     NotAFolder ->
       "That is not a folder you can use. Give the path of an existing folder you own."
+    NotARepository ->
+      "A worktree needs the top folder of a Git repository. Choose that folder, or start without a worktree."
     OutsideHome ->
       "That folder is outside your home directory. Choose one inside it."
     HomeItself ->

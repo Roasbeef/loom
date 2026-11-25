@@ -615,7 +615,7 @@ pub fn the_forms_handlers_are_beneath_the_table_test() {
 fn creating() -> home.Start {
   home.Start(
     ..start(home.OperatorCeiling, reports()),
-    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
   )
 }
 
@@ -753,7 +753,7 @@ pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
       home.Start(
         ..start(home.OperatorCeiling, reports()),
         sessions: fn(deliver) { deliver(home.Listed(saved)) },
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   let listed =
@@ -875,7 +875,7 @@ pub fn a_session_starting_later_does_not_change_the_centre_test() {
     opened(
       home.Start(
         ..start(home.OperatorCeiling, quiet),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   assert !string.contains(drawn(model), "<h1>Inbox</h1>")
@@ -914,7 +914,7 @@ pub fn an_emptied_inbox_says_nothing_waits_test() {
     opened(
       home.Start(
         ..start(home.OperatorCeiling, reports()),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   let emptied =
@@ -942,7 +942,7 @@ pub fn the_inbox_control_follows_the_threads_test() {
     opened(
       home.Start(
         ..start(home.OperatorCeiling, []),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   assert !string.contains(drawn(run(empty, home.ShowingList)), "‹ Inbox")

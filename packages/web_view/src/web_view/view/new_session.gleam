@@ -146,6 +146,8 @@ pub type Presses(message) {
     model: fn(Option(String)) -> message,
     /// The Subagent limits disclosure toggle was pressed.
     toggle_limits: message,
+    /// The Worktree toggle was pressed.
+    toggle_worktree: message,
     /// The form was submitted carrying optional subagent limit fields.
     start_with_limits: fn(String, Typed, composer.LimitsInput) -> message,
     /// The code list's search text changed.
@@ -900,8 +902,44 @@ fn chips(pane: Pane(message)) -> Element(message) {
         composer.role_words(pane.state.roles),
         model_list(pane),
       ),
+      worktree_toggle(pane),
     ]),
   )
+}
+
+/// The Worktree toggle beside the chips: pressed, the session works in its own
+/// Git worktree of the folder and its changes stay out of the folder. It is
+/// drawn only where it can be honoured, for a folder on this daemon's machine,
+/// and its state is the page's, so the form carries no field for it.
+fn worktree_toggle(pane: Pane(message)) -> Element(message) {
+  // Dispatch on whether the target in force is a folder on this machine.
+  case pane.state.agent, pane.target {
+    composer.Here, Some(composer.Folder(_))
+    | composer.Here, Some(composer.TypedFolder)
+    | composer.Here, Some(composer.Picked(_))
+    ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("place-chip"),
+          attribute.attribute("aria-pressed", case pane.state.worktree {
+            composer.InTree -> "true"
+            composer.InFolder -> "false"
+          }),
+          event.on_click(pane.presses.toggle_worktree),
+        ],
+        [
+          html.span([attribute.class("place-chip-key")], [html.text("Worktree")]),
+          html.span([attribute.class("place-chip-value")], [
+            html.text(case pane.state.worktree {
+              composer.InTree -> "on"
+              composer.InFolder -> "off"
+            }),
+          ]),
+        ],
+      )
+    composer.Here, _ | composer.Orchestrator(_), _ -> element.none()
+  }
 }
 
 /// One chip: a button that says what it holds, and the list under it while open.

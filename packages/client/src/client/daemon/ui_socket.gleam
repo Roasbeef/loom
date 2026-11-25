@@ -929,7 +929,7 @@ pub fn upgrade_home(
     home_create_capability(
       attachment.principal,
       ceiling,
-      fn(place, name, sharing, roles, agency, prompt, deliver) {
+      fn(place, name, sharing, roles, agency, worktree, prompt, deliver) {
         create_task_with_agency(
           standing,
           tickets,
@@ -951,6 +951,7 @@ pub fn upgrade_home(
           sharing,
           roles,
           agency,
+          worktree,
           prompt,
           first_message_for(attachment, gateway_of),
           deliver,
@@ -1833,7 +1834,13 @@ fn live_start(
       snapshot.Expected(target.session, attached.epoch, attached.incarnation),
     )
     Waiting | Crowded -> #(
-      component.Label(name: "", workspace: "", executor: "", pool: ""),
+      component.Label(
+        name: "",
+        workspace: "",
+        executor: "",
+        pool: "",
+        branch: "",
+      ),
       snapshot.Expected(target.session, "", ""),
     )
   }
@@ -1868,11 +1875,29 @@ fn live_start(
 fn labelled(label: remote_feed.Label) -> component.Label {
   case label.placement {
     remote_top.Folder(path:) ->
-      component.Label(name: label.name, workspace: path, executor: "", pool: "")
+      component.Label(
+        name: label.name,
+        workspace: path,
+        executor: "",
+        pool: "",
+        branch: "",
+      )
     remote_top.Workspace(executor:, name:) ->
-      component.Label(name: label.name, workspace: name, executor:, pool: "")
+      component.Label(
+        name: label.name,
+        workspace: name,
+        executor:,
+        pool: "",
+        branch: "",
+      )
     remote_top.Pooled(pool:, name:) ->
-      component.Label(name: label.name, workspace: name, executor: "", pool:)
+      component.Label(
+        name: label.name,
+        workspace: name,
+        executor: "",
+        pool:,
+        branch: "",
+      )
   }
 }
 
@@ -2156,6 +2181,7 @@ pub fn home_create_capability(
     creations.Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -2166,6 +2192,7 @@ pub fn home_create_capability(
     creations.Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -3192,6 +3219,7 @@ fn admit_home(
       creations.Sharing,
       creations.Roles,
       agency_limits.AgencyLimits,
+      Option(String),
       String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
@@ -3633,6 +3661,13 @@ fn admit(
         pool: case role {
           Owning -> registration.pool
           Observing | Operating -> ""
+        },
+        // A session in its own worktree says which branch it works on, to
+        // every role: the branch is named for the session, so it tells a
+        // reader nothing of the machine.
+        branch: case manager.worktree_base(attachment.registry, session_id) {
+          Ok(Some(_)) -> "loom/" <> session_id
+          Ok(None) | Error(_) -> ""
         },
       )),
       // The digest, not the path, is what the page's storage is keyed by.
@@ -4979,6 +5014,7 @@ pub fn create_with(
     sharing,
     roles,
     agency_limits.empty,
+    None,
     prompt,
     send,
     within:,
@@ -5006,6 +5042,7 @@ pub fn create_with_agency(
   sharing: creations.Sharing,
   roles: creations.Roles,
   agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
   prompt: String,
   send: fn(String, String) -> Result(Nil, String),
   within within: Int,
@@ -5036,7 +5073,7 @@ pub fn create_with_agency(
       executor_of(place),
       pool_of(place),
       agency,
-      None,
+      worktree,
     )
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
@@ -5346,6 +5383,7 @@ fn creation_refusal(code: String) -> creations.Reason {
   case code {
     "forbidden" -> creations.NotOwner
     "invalid_workspace" -> creations.NotAFolder
+    "not_a_repository" -> creations.NotARepository
     "capacity" -> creations.Full
     "unknown_profile" -> creations.UnknownProfile
     "unknown_model" -> creations.UnknownModel
@@ -5408,6 +5446,7 @@ pub fn create_task(
     sharing,
     roles,
     agency_limits.empty,
+    None,
     prompt,
     send,
     deliver,
@@ -5435,6 +5474,7 @@ pub fn create_task_with_agency(
   sharing: creations.Sharing,
   roles: creations.Roles,
   agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
   prompt: String,
   send: fn(String, String) -> Result(Nil, String),
   deliver: fn(creations.Answer) -> Nil,
@@ -5454,6 +5494,7 @@ pub fn create_task_with_agency(
           sharing,
           roles,
           agency,
+          worktree,
           prompt,
           send,
           within: resume_wait_ms,

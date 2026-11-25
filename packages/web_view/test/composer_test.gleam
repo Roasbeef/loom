@@ -206,6 +206,7 @@ pub fn a_start_asks_once_for_the_place_the_form_describes_test() {
       "review",
       creations.default_roles,
       agency_limits.empty,
+      None,
     )
   assert out.sending == composer.Out
 
@@ -428,6 +429,7 @@ pub fn a_start_carries_the_message_and_its_name_test() {
       "fix the retry test\nthen the docs",
       creations.default_roles,
       agency_limits.empty,
+      None,
     )
 
   let #(_, intent) =
@@ -439,6 +441,7 @@ pub fn a_start_carries_the_message_and_its_name_test() {
       "",
       creations.default_roles,
       agency_limits.empty,
+      None,
     )
 }
 
@@ -793,5 +796,48 @@ pub fn subagent_limits_disclosure_toggles_and_validates_test() {
         session_strands: Some(512),
         depth_cap: Some(agency_limits.UnlimitedDepth),
       ),
+      None,
     )
+}
+
+// The Worktree toggle makes the next start ask for a worktree from `HEAD`, only
+// for a folder on this daemon's machine, and is off until pressed.
+pub fn the_worktree_toggle_asks_for_a_tree_of_a_local_folder_test() {
+  let chosen =
+    update(
+      composer.new(),
+      composer.ChoseTarget(composer.Folder("/src/loom")),
+      offers(),
+    ).0
+  assert chosen.worktree == composer.InFolder
+
+  let toggled = update(chosen, composer.ToggledWorktree, offers()).0
+  assert toggled.worktree == composer.InTree
+  let #(_, intent) =
+    update(toggled, composer.Started("review", composer.Nothing), offers())
+  let assert composer.Create(worktree: Some("HEAD"), ..) = intent
+
+  // Pressed again it is the folder again.
+  let off = update(toggled, composer.ToggledWorktree, offers()).0
+  assert off.worktree == composer.InFolder
+  let #(_, intent) =
+    update(off, composer.Started("review", composer.Nothing), offers())
+  let assert composer.Create(worktree: None, ..) = intent
+}
+
+pub fn the_worktree_toggle_does_nothing_without_a_local_folder_test() {
+  // No target yet: nothing to make a tree of.
+  let fresh = composer.new()
+  assert update(fresh, composer.ToggledWorktree, offers()).0.worktree
+    == composer.InFolder
+
+  // An executor's workspace chooses its own mode.
+  let remote =
+    update(
+      composer.new(),
+      composer.ChoseTarget(composer.OnExecutor("build-box", Some("app"))),
+      offers(),
+    ).0
+  assert update(remote, composer.ToggledWorktree, offers()).0.worktree
+    == composer.InFolder
 }

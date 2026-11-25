@@ -677,6 +677,10 @@ pub type Label {
     executor: String,
     /// The `[pools.<name>]` the session was created in, or the empty string.
     pool: String,
+    /// The branch of the session's own Git worktree, `loom/<session id>`, or
+    /// the empty string for a session that works in its folder
+    /// (protocol-change/133). `workspace` is still the folder.
+    branch: String,
   )
 }
 
@@ -10204,6 +10208,13 @@ pub fn stream_head(
   let folder = case option.map(label, fn(label) { label.workspace }) {
     Some(path) -> heading.last_folder(path)
     None -> ""
+  }
+
+  // A session in its own worktree says so, with the branch it works on, so the
+  // person knows where its changes are.
+  let folder = case option.map(label, fn(label) { label.branch }) {
+    Some(branch) if branch != "" -> folder <> " · worktree " <> branch
+    Some(_) | None -> folder
   }
 
   let strand = agent_roster.short_name(model.shared.active_strand)
