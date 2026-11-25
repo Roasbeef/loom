@@ -132,18 +132,24 @@ pub fn reserve_session(
 }
 
 /// Atomically reserves a session registration, its domain mapping, and any
-/// optional per-session agency limits in one transaction.
+/// optional per-session agency limits and worktree base in one transaction.
+///
+/// `worktree` is the commit-ish a session created in its own Git worktree
+/// branches from, or `None` for a session that works in its folder. Writing it
+/// in the reservation's transaction means a registration that exists always
+/// says where its session works, so the first open never has to guess.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // domain.reserve_session_with_agency(store, record, mapping, agency_limits.empty)
+/// // domain.reserve_session_with_agency(store, record, mapping, agency_limits.empty, None)
 /// ```
 pub fn reserve_session_with_agency(
   store: Catalogue,
   record: catalogue.Registration,
   domain: Domain,
   limits: agency_limits.AgencyLimits,
+  worktree: Option(String),
 ) -> Result(catalogue.Registration, Error) {
   catalogue.atomic(store, fn() {
     use saved <- result.try(catalogue.reserve_in_transaction(store, record))
@@ -152,6 +158,11 @@ pub fn reserve_session_with_agency(
       store,
       saved.id,
       limits,
+    ))
+    use Nil <- result.try(catalogue.set_worktree_base_in_transaction(
+      store,
+      saved.id,
+      worktree,
     ))
     Ok(saved)
   })

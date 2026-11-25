@@ -94,6 +94,7 @@ import storage/catalogue_session_attention_schema
 import storage/catalogue_spend_schema
 import storage/catalogue_start_failures_schema
 import storage/catalogue_subtitles_schema
+import storage/catalogue_worktrees_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite_policy
@@ -312,7 +313,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 23
+pub const current_version = 24
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -341,6 +342,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(21, catalogue_agency_schema.schema),
     #(22, catalogue_session_attention_schema.schema),
     #(23, catalogue_passkeys_schema.schema),
+    #(24, catalogue_worktrees_schema.schema),
   ]
 }
 
@@ -3088,6 +3090,13 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
       sql.delete_session_agency_limits(id),
     ))
 
+    // A session created in a worktree (version 24) leaves its base with it, so
+    // a later session that reuses the identity does not inherit the choice.
+    use Nil <- result.try(statement(
+      catalogue,
+      sql.delete_session_worktree_base(id),
+    ))
+
     // The attention summary (version 22) names the registration too, and a
     // later session that reuses the identity must not inherit its counts.
     use Nil <- result.try(statement(catalogue, sql.delete_session_attention(id)))
@@ -3626,6 +3635,29 @@ pub fn is_workspace_name(text: String) -> Bool {
   && string.byte_size(text) <= workspace_name_limit
   && !string.contains(text, "/")
   && !string.contains(text, "\u{0}")
+}
+
+/// Whether text may name the commit-ish a session's worktree branches from: 1
+/// to 255 bytes, not starting with `-` (which Git would read as an option), and
+/// with no space or control character. Whether the name resolves in the folder
+/// is Git's to say when the worktree is made. `workspaces.usable_base` applies
+/// the same rule to `[workspaces.<name>] base`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_worktree_base("origin/main")
+/// assert !catalogue.is_worktree_base("--detach")
+/// assert !catalogue.is_worktree_base("a b")
+/// ```
+pub fn is_worktree_base(text: String) -> Bool {
+  text != ""
+  && string.byte_size(text) <= 255
+  && !string.starts_with(text, "-")
+  && list.all(string.to_utf_codepoints(text), fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+    code > 32 && code != 127
+  })
 }
 
 // The column's default, the empty string, means no profile. Any other text is
@@ -4231,6 +4263,79 @@ pub fn agency_limits(
     [] -> Ok(agency_limits.defaults())
     [row] -> decode_agency_row(row)
     [_, _, ..] -> Error(Invalid("duplicate session agency limits"))
+  }
+}
+
+/// Reads the commit-ish a session's own Git worktree branches from, or `None`
+/// for a session that works in its folder (protocol-change/133).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.worktree_base(catalogue, id) == Ok(None)
+/// ```
+pub fn worktree_base(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Option(String), Error) {
+  use rows <- result.try(query(catalogue, sql.session_worktree_base(id)))
+
+  // A session with no row works in its folder.
+  case rows {
+    [] -> Ok(None)
+    [row] -> Ok(Some(row.base))
+    [_, _, ..] -> Error(Invalid("duplicate session worktree base"))
+  }
+}
+
+/// Reads the worktree bases of `ids`, pairing each identity that works in its
+/// own worktree with its base and omitting the rest, in the order of `ids`. The
+/// caller bounds `ids` to one listing page and has already dropped the sessions
+/// its credential does not hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.worktree_bases(catalogue, ["a", "b"]) == Ok([#("a", "HEAD")])
+/// ```
+pub fn worktree_bases(
+  catalogue: Catalogue,
+  ids: List(String),
+) -> Result(List(#(String, String)), Error) {
+  list.try_fold(ids, [], fn(found, id) {
+    use base <- result.try(worktree_base(catalogue, id))
+
+    // A session in its folder has no row and is left out.
+    case base {
+      Some(text) -> Ok([#(id, text), ..found])
+      None -> Ok(found)
+    }
+  })
+  |> result.map(list.reverse)
+}
+
+/// Records, inside an existing catalogue transaction, that a session works in
+/// its own worktree started from `base`. `None` stores nothing, so a session in
+/// its folder has no row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.set_worktree_base_in_transaction(catalogue, id, Some("HEAD"))
+/// ```
+@internal
+pub fn set_worktree_base_in_transaction(
+  catalogue: Catalogue,
+  id: String,
+  base: Option(String),
+) -> Result(Nil, Error) {
+  case base {
+    None -> Ok(Nil)
+    Some(text) ->
+      case is_worktree_base(text) {
+        True -> statement(catalogue, sql.set_session_worktree_base(id, text))
+        False -> Error(Invalid("not a usable worktree base"))
+      }
   }
 }
 
