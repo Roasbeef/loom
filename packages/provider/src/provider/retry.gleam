@@ -9,7 +9,7 @@
 //// patterns and the retry classifier live together.
 
 import gleam/int
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import provider/internal/error_code
 import provider/stream.{
@@ -50,7 +50,8 @@ pub type RetryPolicy {
 /// take precedence over transient statuses and message heuristics. Other
 /// HTTP 408/429/5xx, named transient errors, transport failures and disconnects
 /// use the configured retry policy. Unknown Responses stream failures use
-/// three total generation attempts through `RetryableWithin`.
+/// three total generation attempts through `RetryableWithin`. Responses
+/// capacity errors require event-level advice and allow at most five retries.
 ///
 /// An ordinary HTTP 429 bypasses the overflow text heuristic: throttling
 /// prose can mention a token limit without describing an oversized request.
@@ -102,6 +103,20 @@ pub fn classify(error: ProviderError) -> RetryClass {
         False -> Retryable(backoff_hint_ms: retry_after_ms)
       }
     }
+
+    // A streamed capacity error without advice must not enter fallback or
+    // the potentially unbounded configured retry ladder. The adapter scopes
+    // these labels so other dialects can retain their raw error semantics.
+    StreamError(api_error_type:, retry_after_ms:, ..)
+      if api_error_type == "responses.server_is_overloaded"
+      || api_error_type == "responses.policy_capacity_unavailable"
+    ->
+      case retry_after_ms {
+        Some(_) ->
+          RetryableWithin(backoff_hint_ms: retry_after_ms, max_attempts: 6)
+        None -> Terminal
+      }
+
     StreamError(api_error_type: "responses_error", message:, retry_after_ms:) ->
       case is_overflow_message(message) {
         True -> Terminal

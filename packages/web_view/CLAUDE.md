@@ -1058,8 +1058,11 @@ page keys and nonces, and the relay into the session's gateway.
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
   server timer; before the generation clock starts it says `Thinking` alone).
-  The first fragment replaces it with `Reasoning` or the answer. The shared
-  `generation_rate` ledger observes captures for every strand, and focus reads
+  A capture that marks the followed operation as waiting for a provider retry
+  draws `live.RetryWait` instead of `Thinking` and hides the generating line.
+  The next capture that leaves retry wait restores the usual generation rows.
+  The first fragment replaces `Thinking` with `Reasoning` or the answer. The
+  shared `generation_rate` ledger observes captures for every strand, and focus reads
   the selected strand's existing clock without resetting it. Joining an already
   running request starts a partial observation window and leaves its
   full-request TPS unmeasured. The region is a row of the
