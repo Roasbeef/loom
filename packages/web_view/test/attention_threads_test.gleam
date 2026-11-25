@@ -431,8 +431,7 @@ pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
   )
   assert string.contains(html, "<span>Other</span><input")
   assert string.contains(html, "inbox-other")
-  assert string.contains(html, "Message this session")
-  assert !string.contains(html, "Message web ui")
+  assert string.contains(html, ">Add a message to web ui<")
 
   // Between Other's own control and its text field, no option closes.
   let assert Ok(#(_, from_other)) = string.split_once(html, "value=\"other\"")
@@ -442,11 +441,11 @@ pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
 }
 
 // A record of a sub-agent's strand is named on its row by the strand, without
-// the identifier the agency appends, so two rows of one session differ.
+// its parent and the identifier the agency appends.
 pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
   let html = drawn(owner())
 
-  assert string.contains(html, ">sub:main/audit-…cdef</span>")
+  assert string.contains(html, ">sub:audit</span>")
   assert !string.contains(html, "0123456789abcdef</span>")
 }
 
@@ -462,20 +461,19 @@ fn count_of(html: String, needle: String) -> Int {
   list.length(string.split(html, needle)) - 1
 }
 
-// Two siblings of one purpose keep a short distinguishing tail, so their rows
-// do not read alike, and a long purpose is cut before the tail.
-pub fn sibling_strands_keep_a_distinguishing_tail_test() {
-  let a = attention_thread.strand_name("sub:main/audit-0123456789abcdef")
-  let b = attention_thread.strand_name("sub:main/audit-0123456789ab1234")
-  assert a == "sub:main/audit-…cdef"
-  assert b == "sub:main/audit-…1234"
+// A sub-agent's strand is named by its purpose alone, and a long purpose is cut.
+pub fn a_strand_is_named_by_its_purpose_test() {
+  assert attention_thread.strand_name("sub:main/audit-0123456789abcdef")
+    == "sub:audit"
+  assert attention_thread.strand_name("sub:coord/audit-0123456789ab1234")
+    == "sub:audit"
 
   let long =
     attention_thread.strand_name(
       "sub:main/review-the-meter-pricing-and-the-rate-card-0123456789abcdef",
     )
   assert string.length(long) == 36
-  assert string.ends_with(long, "…-…cdef")
+  assert string.ends_with(long, "…")
   assert attention_thread.strand_name("main") == "main"
 }
 
@@ -503,6 +501,10 @@ pub fn staging_an_answer_sends_nothing_until_send_test() {
   assert string.contains(html, long_prompt <> " — beta")
   assert string.contains(html, "Which files? — a.gleam, b.gleam")
   assert received(asked) == []
+
+  // Something is staged, so Clear is drawn; a thread with nothing staged has none.
+  assert string.contains(html, ">Clear<")
+  assert !string.contains(drawn(picked), ">Clear<")
 
   // Send answers at the revision that was read, with the wire object.
   let sent = run(staged, home.ItemSent)
@@ -667,6 +669,16 @@ pub fn the_stuck_pane_is_a_card_of_what_the_page_knows_test() {
   assert string.contains(html, "<td>Strand status</td>")
   assert string.contains(html, "Send it a nudge")
   assert string.contains(html, ">Retry the last step<")
+
+  // The nudge is the final design's option card: recommended, with the words it
+  // sends, and the thread's eyebrow names the delegate under its session. A
+  // thread with nothing staged has no Clear button.
+  assert string.contains(html, "inbox-nudge")
+  assert string.contains(html, "recommended")
+  assert string.contains(html, "Sends now, exactly: “")
+  assert string.contains(html, "sub:audit · under ")
+  assert string.contains(html, "Or message sub:audit")
+  assert !string.contains(html, ">Clear<")
 }
 
 // Dismiss names the strand and the failed run the page's feed read held, sends

@@ -687,15 +687,20 @@ fn outbox(offer: Offer(message)) -> Element(message) {
         bar_words(state, offer.name),
         chips,
         html.div([attribute.class("inbox-outbox-buttons")], [
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("inbox-btn"),
-              attribute.disabled(!review_pane.has_staged(state) || sending),
-              event.on_click(acting.unstage),
-            ],
-            [html.text("Clear")],
-          ),
+          // Clear is drawn only while something is staged.
+          case review_pane.has_staged(state) {
+            True ->
+              html.button(
+                [
+                  attribute.type_("button"),
+                  attribute.class("inbox-btn"),
+                  attribute.disabled(sending),
+                  event.on_click(acting.unstage),
+                ],
+                [html.text("Clear")],
+              )
+            False -> element.none()
+          },
           html.button(
             [
               attribute.type_("button"),

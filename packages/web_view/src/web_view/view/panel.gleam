@@ -38,7 +38,10 @@
 //// not move, and first on screen: the pane is a flex column and the
 //// stylesheet orders the rail above the title. That puts the rail where a
 //// reader looks first without changing the tab model or the paths the socket
-//// admits. Like the nudge card it draws `element.none()` when it has nothing,
+//// admits. At 980px and up the stylesheet goes further and draws the rail above the
+//// shell's tab bar, on every tab, as the final design draws the live mode's
+//// column; the boxes between the two take no box of their own
+//// (`web_client.css`, the session page's wide column). Like the nudge card it draws `element.none()` when it has nothing,
 //// so the pane's child list keeps one length.
 ////
 //// The title counts the strands the list holds, as text the component

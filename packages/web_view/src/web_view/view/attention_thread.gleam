@@ -46,12 +46,14 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/event
+import session_view/strand_name
 import web_view/answer_rule
 import web_view/approval_evidence.{type Seen}
 import web_view/attention_feed
 import web_view/attention_rule.{type Item, type Key}
 import web_view/item_pane.{type State}
 import web_view/session_brief.{type Brief}
+import web_view/thread_send
 import web_view/thread_words.{type Phrase}
 import web_view/view/brief_view
 import web_view/view/inbox_parts as parts
@@ -146,16 +148,14 @@ pub fn row(
 /// appends to a sub-agent's name, which tells siblings of one purpose apart in
 /// the data and not on a row.
 fn row_name(item: Item, name_of: fn(String) -> String) -> String {
-  // Each kind of record names the strand it is about.
-  let strand = case item {
-    attention_rule.AskItem(ask:, ..) -> ask.strand
-    attention_rule.FindItem(find:, ..) -> find.strand
-    attention_rule.StuckItem(stuck:, ..) -> stuck.strand
-  }
+  target_name(item, name_of(attention_rule.session_of(item)))
+}
 
-  // The main strand is the session itself and keeps the session's name.
-  case strand {
-    "main" -> name_of(attention_rule.session_of(item))
+/// The name a record's strand is addressed by: `session_name` for the main
+/// strand, which is the session itself, and the delegate's purpose for another.
+fn target_name(item: Item, session_name: String) -> String {
+  case strand_of(item) {
+    "main" -> session_name
     other -> strand_name(other)
   }
 }
@@ -163,48 +163,31 @@ fn row_name(item: Item, name_of: fn(String) -> String) -> String {
 /// The most graphemes of a strand's name that a row keeps.
 const strand_limit = 36
 
-/// A strand's name as a row's name. The sixteen hexadecimal digits the agency
-/// appends to a sub-agent's name are cut to `-…` and their last four, which keep
-/// two siblings of one purpose apart (`audit-…cdef`), and a name still longer
-/// than `strand_limit` has its purpose cut and ends in `…` before that tail.
+/// A strand's name as a row's name, in the final design's form: `sub:` and the
+/// purpose (`sub:mockup-b`). The agency names a sub-agent
+/// `sub:<parent>/<purpose>-<digits>`, and `session_view/strand_name.short` cuts
+/// that to the purpose, as the live page does. Two siblings of one purpose read
+/// alike on a row; the thread's own page still carries the full strand. Any
+/// other name is kept, and a name over `strand_limit` ends in `…`.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert attention_thread.strand_name("sub:main/audit-0123456789abcdef")
-///   == "sub:main/audit-…cdef"
+///   == "sub:audit"
 /// ```
 pub fn strand_name(strand: String) -> String {
-  let graphemes = string.to_graphemes(strand)
-  let count = list.length(graphemes)
-  let tail = list.drop(graphemes, count - 17)
-
-  // A name shorter than the suffix cannot carry it, so only a long name whose
-  // tail is a dash and sixteen hexadecimal digits has a tail to keep.
-  let #(purpose, kept) = case count > 17, tail {
-    True, ["-", ..digits] ->
-      case list.all(digits, is_hex) {
-        True -> #(
-          string.concat(list.take(graphemes, count - 17)),
-          "-…" <> string.concat(list.drop(digits, 12)),
-        )
-        False -> #(strand, "")
-      }
-    True, [] | False, _ | True, [_, ..] -> #(strand, "")
+  // Only a delegate (`sub:`) has a parent and digits to drop; any other name stays.
+  let name = case string.starts_with(strand, "sub:") {
+    True -> "sub:" <> strand_name.short(strand)
+    False -> strand
   }
 
-  let room = strand_limit - string.length(kept)
-
-  // A purpose over the room is cut and marked as cut.
-  case string.length(purpose) > room {
-    True -> string.slice(purpose, 0, room - 1) <> "…" <> kept
-    False -> purpose <> kept
+  // A name over the room is cut and marked as cut.
+  case string.length(name) > strand_limit {
+    True -> string.slice(name, 0, strand_limit - 1) <> "…"
+    False -> name
   }
-}
-
-/// Whether a grapheme is a lowercase hexadecimal digit.
-fn is_hex(grapheme: String) -> Bool {
-  string.contains("0123456789abcdef", grapheme) && grapheme != ""
 }
 
 /// The age a row draws, marked when an ask or a stuck strand has waited on the
@@ -376,7 +359,7 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
             _, None -> element.none()
           },
           body(item, offer),
-          message_field(offer),
+          message_field(item, offer),
           html.div([attribute.class("inbox-acts")], [
             html.button(
               [
@@ -393,14 +376,25 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// The quiet words of a pane's eyebrow: the session's name and the strand the
-/// record is about.
+/// The quiet words of a pane's eyebrow: `<session> · main` for the session's own
+/// strand, and `sub:<purpose> · under <session>` for a delegate.
 fn eyebrow(item: Item, session_name: String) -> String {
+  let strand = strand_of(item)
+
+  // The main strand is the session itself; any other is a delegate, drawn as the
+  // final design's `sub:<purpose> · under <session>`.
+  case strand {
+    "main" -> session_name <> " · main"
+    other -> strand_name(other) <> " · under " <> session_name
+  }
+}
+
+/// The strand a record is about.
+fn strand_of(item: Item) -> String {
   case item {
-    attention_rule.AskItem(ask:, ..) -> session_name <> " · " <> ask.strand
-    attention_rule.FindItem(find:, ..) -> session_name <> " · " <> find.strand
-    attention_rule.StuckItem(stuck:, ..) ->
-      session_name <> " · " <> stuck.strand
+    attention_rule.AskItem(ask:, ..) -> ask.strand
+    attention_rule.FindItem(find:, ..) -> find.strand
+    attention_rule.StuckItem(stuck:, ..) -> stuck.strand
   }
 }
 
@@ -754,7 +748,7 @@ fn control(
 /// radio for a question that takes one answer and a checkbox for one that takes
 /// several.
 fn other_option(kind: String, question: Question) -> Element(message) {
-  html.label([attribute.class("inbox-option")], [
+  html.label([attribute.class("inbox-option inbox-other")], [
     html.input([
       attribute.type_(kind),
       attribute.name(answer_rule.field_name(question)),
@@ -930,10 +924,23 @@ fn stuck_decide(
           html.button(
             [
               attribute.type_("button"),
-              attribute.class("inbox-btn"),
+              attribute.class("inbox-nudge"),
               event.on_click(acting.retry),
             ],
-            [html.text("Retry the last step")],
+            [
+              html.span([attribute.class("inbox-nudge-num")], [html.text("1")]),
+              html.span([attribute.class("inbox-nudge-lbl")], [
+                html.text("Retry the last step"),
+              ]),
+              html.em([attribute.class("inbox-mark")], [
+                html.text("recommended"),
+              ]),
+              html.small([attribute.class("inbox-note")], [
+                html.text(
+                  "Sends now, exactly: “" <> thread_send.retry_prompt <> "”",
+                ),
+              ]),
+            ],
           ),
           case stuck.operation {
             Some(_) ->
@@ -956,13 +963,27 @@ fn stuck_decide(
   ])
 }
 
+/// The heading over the note field: an ask adds a message to the answer, and
+/// any other record's message is its own action.
+fn message_words(item: Item, target: String) -> String {
+  case item {
+    attention_rule.AskItem(..) -> "Add a message to " <> target
+    attention_rule.FindItem(..) | attention_rule.StuckItem(..) ->
+      "Or message " <> target
+  }
+}
+
 /// The note field: one box that stages a message for the thread's strand. A
 /// page that may not act has none.
-fn message_field(offer: Offer(message)) -> Element(message) {
+fn message_field(item: Item, offer: Offer(message)) -> Element(message) {
+  // The heading names the strand the message goes to.
+  let target = target_name(item, offer.session_name)
+
+  // A page that may not act has no message box.
   case offer.acting {
     None -> element.none()
     Some(acting) ->
-      parts.section("Message this session", [
+      parts.section(message_words(item, target), [
         html.form(
           [
             attribute.class("inbox-form"),
@@ -1023,7 +1044,10 @@ fn outbox(offer: Offer(message)) -> Element(message) {
           _, [] -> "Not sent."
           _, _ ->
             "To "
-            <> offer.session_name
+            <> case offer.item {
+              Some(item) -> target_name(item, offer.session_name)
+              None -> offer.session_name
+            }
             <> " · "
             <> int.to_string(list.length(chips))
             <> " staged."
@@ -1034,15 +1058,20 @@ fn outbox(offer: Offer(message)) -> Element(message) {
         },
         chips,
         html.div([attribute.class("inbox-outbox-buttons")], [
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("inbox-btn"),
-              attribute.disabled(!item_pane.has_staged(state)),
-              event.on_click(acting.unstage),
-            ],
-            [html.text("Clear")],
-          ),
+          // Clear is drawn only while something is staged; an empty bar has
+          // nothing to clear, and the final design's bar is the Send button alone.
+          case item_pane.has_staged(state) {
+            True ->
+              html.button(
+                [
+                  attribute.type_("button"),
+                  attribute.class("inbox-btn"),
+                  event.on_click(acting.unstage),
+                ],
+                [html.text("Clear")],
+              )
+            False -> element.none()
+          },
           html.button(
             [
               attribute.type_("button"),

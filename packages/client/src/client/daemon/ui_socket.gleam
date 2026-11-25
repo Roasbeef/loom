@@ -1217,10 +1217,11 @@ pub fn upgrade_home(
 
   // The owner's projects (protocol-change/106, the addendum on the web view) are
   // read and answered in tasks of the page's own, as the other orchestrators
-  // are. The section's buttons are clicks beneath `home.projects_path` and the
-  // answer form is a submit beneath `home.table_path`, both of which only the
-  // owner's socket admits (`home_event`), so the capability is what makes the
-  // section exist and `projects_for` is what decides each read and answer.
+  // are. The section is the head of the inbox list, beneath `home.table_path`,
+  // so its buttons are clicks and its forms are submits that region already
+  // admits (`home_event`) and no admission is added. The capability is what makes
+  // the section exist and each message the component ignores without it, and
+  // `projects_for` and its siblings are what decide each read and answer.
   let projecting =
     option.then(attachment.projects, fn(feed) {
       home_projects_capability(
@@ -1253,6 +1254,30 @@ pub fn upgrade_home(
           retry: fn(project, ticket, deliver) {
             read_task(deliver, fn() {
               retry_ticket_for(standing, open, feed, project, ticket)
+            })
+          },
+          propose: fn(folder, deliver) {
+            read_task(deliver, fn() {
+              propose_for(
+                standing,
+                open,
+                new_folder.check(_, attachment.state_root),
+                feed,
+                folder,
+              )
+            })
+          },
+          create: fn(folder, check, setup, deliver) {
+            read_task(deliver, fn() {
+              create_project_for(
+                standing,
+                open,
+                new_folder.check(_, attachment.state_root),
+                feed,
+                folder,
+                check,
+                setup,
+              )
             })
           },
         ),
@@ -3114,11 +3139,8 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 
       // This branch resolves name rights before the operation continues.
       decode.success(case name, rights {
-        "click", Administering ->
-          home_row_path(path)
-          || owner_projects_path(path)
-          || path == home.admin_path
-        "click", Submitting -> home_row_path(path) || owner_projects_path(path)
+        "click", Administering -> home_row_path(path) || path == home.admin_path
+        "click", Submitting -> home_row_path(path)
         "click", Browsing -> home_row_path(path)
         "submit", Submitting | "submit", Administering ->
           string.starts_with(path, home.table_path <> "\t") || named_path(path)
@@ -3149,14 +3171,6 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 // and nowhere else outside the owner's table forms.
 fn named_path(path: String) -> Bool {
   string.starts_with(path, home.signins_path <> "\t")
-}
-
-// A ticket's button is beneath the Projects section (protocol-change/106, the
-// addendum on the web view). Only the owner's socket admits it, so `Browsing`
-// never reaches this function, and the region's own path is not a button, so the
-// prefix includes the separator.
-fn owner_projects_path(path: String) -> Bool {
-  string.starts_with(path, home.projects_path <> "\t")
 }
 
 // A row's button is beneath the table's section or the sidebar's column. The
@@ -5782,6 +5796,90 @@ pub fn retry_ticket_for(
   case authorized_owner(standing, open) {
     Ok(_) -> feed.retry(project, ticket)
     Error(_) -> page_projects.Declined("forbidden")
+  }
+}
+
+/// The proposal for a folder, for the owner's page, after the same owner check
+/// and the same judgement of the folder as a new session's. The folder is the
+/// text of a button the page drew or of the field the owner typed, and the
+/// daemon decides which it is: `project_folder` accepts a workspace the owner
+/// holds a session in or remembers, and judges any other text as a typed path.
+/// Nothing is read from a folder that fails it, and nothing runs in one that
+/// passes: the proposal names files and picks from a fixed table.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.propose_for(standing, open, new_folder.check(_, state_root), feed, "/work/loom")
+/// ```
+@internal
+pub fn propose_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  folder: fn(String) -> Result(String, creations.Reason),
+  feed: ui_projects.Feed,
+  text: String,
+) -> page_projects.Proposal {
+  // The owner check comes first, then the folder, then the read.
+  let judged = {
+    use _ <- result.try(authorized_owner(standing, open))
+    project_folder(standing, folder, text)
+  }
+
+  // A folder that passed both checks reaches the feed, and any refusal is the
+  // reason the checks gave, so no actor is asked for a folder that failed.
+  case judged {
+    Ok(workspace) -> feed.propose(workspace)
+    Error(reason) -> page_projects.ProposalRefused(reason)
+  }
+}
+
+/// A project for a folder, for the owner's page, after the checks
+/// `propose_for` makes. A page that fails them makes nothing and writes to no
+/// project's ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.create_project_for(standing, open, new_folder.check(_, state_root), feed, "/work/loom", None, None)
+/// ```
+@internal
+pub fn create_project_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  folder: fn(String) -> Result(String, creations.Reason),
+  feed: ui_projects.Feed,
+  text: String,
+  check: Option(String),
+  setup: Option(String),
+) -> page_projects.Creation {
+  let judged = {
+    use _ <- result.try(authorized_owner(standing, open))
+    project_folder(standing, folder, text)
+  }
+
+  // As for a proposal: only a judged folder reaches the feed, and nothing is
+  // made or written for one that failed.
+  case judged {
+    Ok(workspace) -> feed.create(workspace, check, setup)
+    Error(reason) -> page_projects.NotMade(reason)
+  }
+}
+
+/// The canonical folder a page's text stands for when the owner makes a
+/// project: the workspace of a session the owner holds or a recent folder, as a
+/// new session's drawn button is judged, and otherwise the text as a typed path.
+/// The first ends at `NotKnown` for text that is neither, which is when the text
+/// is judged as typed.
+fn project_folder(
+  standing: Standing(instance),
+  folder: fn(String) -> Result(String, creations.Reason),
+  text: String,
+) -> Result(String, creations.Reason) {
+  case placed(standing, folder, creations.Drawn(text)) {
+    Error(creations.NotKnown) -> placed(standing, folder, creations.Typed(text))
+    Ok(workspace) -> Ok(workspace)
+    Error(reason) -> Error(reason)
   }
 }
 

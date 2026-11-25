@@ -433,43 +433,42 @@ and corruption refusal. Raw artifacts and the validator are in this tree's
 `.notes/profiles/2026-11-04/`. That profiling round made no production or implementation
 change. The older sections retain their historical workload/build limits.
 
-## Distributed runtime acceptance: where #1137 stands (2026-11-20)
+## Distributed runtime acceptance: #1137 closed (2026-11-24)
 
-All four exit criteria have now been driven on two machines (a laptop and a
-Linux box over a DERP link of about 110 ms) at `4850c2274`, with real models and
-keyless executors. The [record](review/distributed-1137.md), section "Two-machine
-drive", has the numbers. Earlier claims in this file that every criterion had
-run on loopback only, or that two real machines were still to do, are out of
-date.
+All four exit criteria of #1137 have been driven on two machines (a laptop and a
+Linux box on the tailnet) with real models and keyless executors, and the issue
+is closed. The [record](review/distributed-1137.md) has the numbers; its last
+two sections, "Two-machine drive" and "Criterion 1: the laptop daemon frozen",
+are the ones to read. Earlier statements in this file that criterion 1 was not
+ticked, or that the drive's defects were unfixed, are out of date.
 
-- **Passed:** criterion 2 (move; the box needs an `[orchestrators.laptop]`
-  row), criterion 3 (eight children on eight executors, 106 s, 103 tests OK,
-  on run 2 after one prompt sentence naming `context: my_workspace`), and
-  criterion 4 (page parity; a held page reconnected 6 s after a box restart).
-- **Passed only as a stand-in:** criterion 1. The real lid close did not
-  overlap the child, so the laptop daemon was stopped for 10 min 19 s while a
-  child kept committing on the box; the parent then joined, merged and pushed.
-  A real lid close with a child running is not shown, so criterion 1 is not
-  ticked.
-- **Next work is the defects the drive found**, none fixed: `loom sessions move`
-  exits 0 on a refusal; provisioned plans omit `[orchestrators.<source>]` and
-  `[spawners.<name>.top_level]`; the relayed page cannot open a moved session;
-  a seeded child's snapshot commit carries the parent's untracked
-  `__pycache__`; a `--no-remember` box page navigated by hand says "This page
-  has ended" (cause unknown); a model that omits `context` gets unseeded
-  children (cause unverified).
-- **Landed or landing:** `loom vm up --workspace-mode shared|worktree` (#1299,
-  merged) lets a guest take worktree mode so a seeded spawn fits; it is opt-in
-  and the default stays shared, with an addendum in ADR-022. Four web fixes for
-  ended pages, outage banners, per-tab unavailable panes and the composer
-  draft across a reconnect are landing in #1300.
-- **Deferred:** phase 1 of
-  protocol-change/118 (chunked move transfer, draft PR #1297, not on main). Review on 2026-11-19 found three
-  correctness holes and no exit criterion depends on transfer speed; the slow
-  case is about the top 1 percent of session files on a link under about
-  4 Mbit/s. The timed two-machine move above was the measurement it waited for.
-- **Still blocked on the owner:** criterion 3 on a pool of untrusted microVM
-  guests (#85).
+- **Criteria 2, 3 and 4** passed on 2026-11-19 and 20 at `4850c2274`: a move
+  to the box, eight children on eight executors (106 s, 103 tests OK), and page
+  parity with a dropped link that recovered in 6 s.
+- **Criterion 1** passed at `a8f5dc379` with the laptop daemon frozen by
+  SIGSTOP for ten minutes while five child commits landed on the box; the link
+  came back unaided, and the parent joined, merged and pushed. A real lid close
+  with a child running is still not shown. What a freeze leaves out (a new
+  network address and a clock jump after wake) was covered only by the one real
+  sleep of 2026-11-20, where the link returned four minutes after the wake.
+- **The drive's defects are fixed**: #1325 (move refusal and provisioned rows,
+  the relayed page and moved sessions, an unstated `context` refused under
+  protocol-change/129, the snapshot merge advice) and #1347 (home and admin keys
+  of another page). #1346 added archiving of a moved-away stub and documented
+  the `from_node` and Rows custody trust limits.
+- **Left open on purpose**, each with its own issue: #1042 (the laptop sees only
+  a child's first run; needs a ruling on a box-to-laptop run report), #1136
+  (offer the operator's models to a session on another orchestrator), #1340
+  (cross-node session messaging and presence), #1341 (orchestrator failover),
+  and protocol-change/118 phase 1, chunked move transfer (draft PR #1297; no
+  criterion depends on transfer speed).
+- **Not driven:** criterion 3 on a pool of untrusted microVM guests. The tier
+  it needs is complete (#85, closed 2026-11-19, with seeded children on guests
+  through `loom vm up --workspace-mode worktree`), so this is a drive still to
+  run, not a blocker.
+- **Building the web assets on macOS** no longer needs a hand re-sign of
+  Tailwind: `scripts/web_assets.sh` re-signs the downloaded binary ad hoc and
+  retries when its signature does not verify (#1381).
 
 ## TLS launch preflight (issue #1137)
 

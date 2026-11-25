@@ -279,7 +279,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:9007`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:9046`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -833,7 +833,8 @@ disabled row with a reason where it is down) and one for each pool, with a searc
 The Code list opens under the chip with the cursor in the search field. Its folder
 rows are the remembered folders ("Recent", at most eight, the folder in force
 checked), the folders ranked from the daemon's index of names below the owner's home
-("Folders"; one bounded index built when the list opens and kept five minutes), and the owner's projects, each drawn as a name with
+("Folders"; one bounded index built when the list opens and refreshed after five
+minutes), and the owner's projects, each drawn as a name with
 its parent dimmed beside it; "Open folder…" opens the folder picker. The arrow keys
 move down the rows, Enter chooses the first row from the field or the focused row,
 and Escape closes the list, which `<loom-picklist>` does in the browser. On a phone
@@ -1431,9 +1432,11 @@ name field once it holds a name.
 
 #### Projects and a ticket's page
 
-A daemon with project mode adds a Projects section at the top of the owner's home
-(protocol-change/106, the addendum on the web view), above the composer or the session
-list. It answers one question, what is waiting on the owner, and a project with
+A daemon with project mode adds a Projects section (protocol-change/106, the addendum on
+the web view). It is the head of the inbox list while the rail's "Projects" folder is
+chosen, which an owner's operating page always lists; it was the first 211 px of every
+page's first screen until the fidelity pass of 2026-11-24 took it out of the flow. It
+answers one question, what is waiting on the owner, and a project with
 nothing waiting is one line. A project with tickets that need a person lists them
 under the daemon's stage word (delivery, answer, review, blocked, failed, then a
 stage this client does not know but the daemon spelled `person/...`), most urgent

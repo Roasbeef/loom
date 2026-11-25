@@ -14,7 +14,8 @@
 //// `service` → `loaded` → `focus` → `key` → `send` → `answered`
 ////
 //// 1. `service` runs on every tick. It starts a read when the board's rest has
-////    passed and the control request is free.
+////    passed, or has been cut short because the ask tool's result was committed,
+////    and the control request is free.
 //// 2. `loaded` takes the read's outcome into the board. When an ask the board
 ////    did not hold appears, it says so in the footer notice. It does not move
 ////    the keyboard.
@@ -88,39 +89,17 @@ fn reset_for_session(model: Model) -> Model {
   }
 }
 
-/// Whether any strand of the session has a live run.
-fn running(model: Model) -> Bool {
-  list.any(model.shared.strands, fn(strand) { strand.live_phase != None })
-}
-
-/// Cuts the board's rest short when the last run of the session has just
-/// ended, comparing the model before a step with the model after it.
-///
-/// An `ask` ends its asker's run, so that edge is when a new ask exists, and the
-/// owner sees it at once and not within the poll's rest. The step compares two
-/// models because the tick can see a run begin and end between two services.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // ask_control.watch(before, after)
-/// ```
-pub fn watch(before: Model, after: Model) -> Model {
-  // Only the edge from some strand running to none running counts.
-  case running(before), running(after) {
-    True, False ->
-      Model(
-        ..after,
-        view: view_set.asks(after.view, ask_board.due(after.view.asks)),
-      )
-    True, True | False, True | False, False -> after
-  }
-}
-
 /// Starts a read when the board's rest has passed.
 fn poll(model: Model, host: job.Daemon) -> Model {
   let now = model.shared.stamp.now_ms
-  let board = model.view.asks
+
+  // A committed `ask` result cuts the rest short, because the tool creates the
+  // ask before its result is committed and the owner should not wait out the
+  // rest to see the question. The board compares the capture's newest ask
+  // sequence for inequality, so a value that fell, as it does after a change
+  // of session, wakes it as well, and the run's speed does not matter.
+  let board =
+    ask_board.ask_committed(model.view.asks, model.shared.newest_ask_seq)
 
   // A board that thinks an answer is on its way while the control request is
   // empty lost its reply, so it rests as a failed read would.

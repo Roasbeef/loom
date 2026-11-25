@@ -5619,3 +5619,18 @@ page cannot tell its owner from the person the link was passed to.
 elements with no handler. `session_switch_test` pins that a session page's
 folders are buttons only where the page holds the capability. `ui_route_test`
 pins that the owner's operating link for one session is refused the way home.
+
+## Addendum: home and admin meet OtherPage (2026-11-23)
+
+This supersedes the statement in the addendum of 2026-11-20, "A page key used on
+another page's address", that the home and admin pages never meet `OtherPage`.
+
+They do, by the same edit of an address: a session's key on `/home`, or the home's key
+on `/admin`. `home_grant` and `admin_grant` drew `PageEnded` for a live key of another
+scope, so the home said "This page has ended." for a page that had not ended. They now
+draw `OtherPage`, with a headline for each ("... not for the home." and "... not for
+the admin page.") and the same advice, whose command is `loom ui`. A key that names no
+live page is still `PageEnded`. Nothing about what a key opens changes: the grant
+check that refused the request still refuses it, with the same 403, and only the
+words differ.
+`a_key_for_another_page_on_home_or_admin_says_it_is_another_page_test` pins it.

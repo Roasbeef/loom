@@ -211,7 +211,7 @@ pub fn the_reading_pane_shows_the_first_thread_and_labels_its_words_test() {
   assert string.contains(html, "inbox-reading-default")
   assert string.contains(
     html,
-    "vetting lint · /src/loom · waiting on an approval",
+    "vetting lint · main · loom · waiting on an approval",
   )
   assert string.contains(html, "Decide on the session&#39;s page ›")
 }
@@ -414,6 +414,11 @@ pub fn the_buttons_name_their_delivery_test() {
   assert string.contains(working, "value=\"steer\"")
   assert string.contains(working, "aria-label=\"Message this session\"")
   assert string.contains(working, "name=\"draft\"")
+
+  // The box is headed with the session's name, and an approval's with `Or`.
+  assert string.contains(working, ">Message docs sweep<")
+  let waiting = drawn(run(model, home.InboxOpened("B")))
+  assert string.contains(waiting, ">Or message vetting lint<")
 }
 
 // A page that holds no capability draws no field: a member's home, an
@@ -712,15 +717,15 @@ pub fn the_default_thread_is_sticky_test() {
     ),
   ]
   let model = opened(start(home.OperatorCeiling, only_working))
-  assert string.contains(drawn(model), "docs sweep · /src/loom · working")
+  assert string.contains(drawn(model), "docs sweep · main · loom · working")
 
   // An approval now outranks it, and the pane still shows the working thread.
   let later = run(model, home.Observed(reports()))
   assert string.contains(drawn(later), "Needs you<span")
-  assert string.contains(drawn(later), "docs sweep · /src/loom · working")
+  assert string.contains(drawn(later), "docs sweep · main · loom · working")
   assert !string.contains(
     drawn(later),
-    "vetting lint · /src/loom · waiting on an approval",
+    "vetting lint · main · loom · waiting on an approval",
   )
 }
 
@@ -732,7 +737,7 @@ pub fn a_slow_session_keeps_its_last_report_test() {
   let without_c = list.filter(reports(), fn(row) { row.0 != "C" })
   let later = run(pressed, home.Observed(without_c))
 
-  assert string.contains(drawn(later), "docs sweep · /src/loom · working")
+  assert string.contains(drawn(later), "docs sweep · main · loom · working")
   assert string.contains(drawn(later), "reading the spec")
 }
 
