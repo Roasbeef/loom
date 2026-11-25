@@ -66,6 +66,12 @@ it is pinned for release.
   still receives. It sends nothing, holds no key and has no authority: a
   decision names a ticket the request listed, or new work, or a decline, or a
   fallback, and `route.route` still checks it.
+- `Judgement` (in `project/model`) is what Jev answered for a trigger, in basis
+  points. `Routed` and `RoutedIgnore` carry it as an optional field, the engine
+  keeps it on the stored trigger, and `AgentChosen` records the catalogue agent
+  for an offered trigger under its own event tag, so an older build refuses it.
+  A ticket's agent is its origin trigger's (`state.agent_of`). No rule reads
+  either.
 - `project/codec` is the ledger's JSON form of an event, with total decoders.
 - `project/snapshot` is the engine's whole state as one JSON document, with total
   decoders, and `retire`, the retention rule: it drops tickets that ended and
