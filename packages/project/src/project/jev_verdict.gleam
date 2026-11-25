@@ -373,13 +373,19 @@ fn majority(trials: List(Trial)) -> Option(Decision) {
 }
 
 /// Whether a decision and a recorded target are the same choice: the same kind,
-/// and the same ticket where a ticket is named. Opening a ticket matches
+/// and the same ticket where a ticket is named. Attaching and resuming one
+/// ticket are the same choice, since which of the two a ticket takes follows
+/// whether it is open when the run is made and not when the router chose. Opening a ticket matches
 /// opening one whichever agent Jev chose, since the router chooses none.
 fn same(decision: Decision, recorded: Target) -> Bool {
   case decision, recorded {
     jev.New(_), Opened -> True
-    jev.Attach(ticket), AttachedTo(other) -> ticket == other
-    jev.Resume(ticket), ResumedOn(other) -> ticket == other
+    jev.Attach(ticket), AttachedTo(other)
+    | jev.Attach(ticket), ResumedOn(other)
+    -> ticket == other
+    jev.Resume(ticket), ResumedOn(other)
+    | jev.Resume(ticket), AttachedTo(other)
+    -> ticket == other
     jev.Decline(_), Ignored -> True
     _, _ -> False
   }
