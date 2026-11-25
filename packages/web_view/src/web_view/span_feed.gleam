@@ -18,7 +18,7 @@
 
 import core/json.{type JsonValue}
 import gleam/list
-import gleam/option.{type Option}
+
 import gleam/result
 import session_view/span_lines
 import web_view/session_brief.{type Untrusted}

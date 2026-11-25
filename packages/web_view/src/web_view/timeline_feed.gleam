@@ -31,7 +31,6 @@ import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import session_view/timeline
 import web_view/session_brief.{type Untrusted}
 
