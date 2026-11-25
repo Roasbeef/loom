@@ -10,6 +10,7 @@ import evalstat/verdict as stat
 import gleam/dict
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/string
 import project/codec
 import project/engine
@@ -53,7 +54,7 @@ fn recorded(count: Int) -> State {
         )
       let decision = case index % 2 == 0 {
         True -> world.accept(id(index))
-        False -> event.RoutedIgnore(TriggerId(id(index)))
+        False -> event.RoutedIgnore(TriggerId(id(index)), option.None)
       }
       [arrival(trigger), decision, event.RouterTurnEnded]
     })
@@ -90,7 +91,7 @@ pub fn a_tape_holds_the_thread_as_it_stood_test() {
     run(fresh(), [
       event.ModeSet(source, world.rule, model.Observe),
       arrival(first),
-      event.RoutedIgnore(TriggerId("a")),
+      event.RoutedIgnore(TriggerId("a"), option.None),
       event.RouterTurnEnded,
       arrival(second),
     ])
@@ -101,7 +102,7 @@ pub fn a_tape_holds_the_thread_as_it_stood_test() {
     model.Trigger(..world.overheard("c", "shared"), actor: model.ActorId("rae"))
   let after_comment =
     run(early, [
-      event.RoutedIgnore(TriggerId("b")),
+      event.RoutedIgnore(TriggerId("b"), option.None),
       event.RouterTurnEnded,
       arrival(later),
     ])

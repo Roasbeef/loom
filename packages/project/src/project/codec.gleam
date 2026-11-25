@@ -28,12 +28,14 @@
 //// 3. `report_json`, `reason_json` and `routing_json`, with their decoders, are
 ////    the pieces the snapshot reuses.
 
+import gleam/bool
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import project/event.{type CheckResult, type Event}
 import project/host
+import project/jev
 import project/model.{
   type ActorId, type ApprovalGrant, type Head, type Inputs, type Question,
   type Report, type RouteKind, type Routing, type RuleMatch, type Trigger,
@@ -93,15 +95,26 @@ fn to_json(incoming: Event) -> Json {
         #("trigger", trigger_json(trigger)),
         #("bot", json.string(bot.value)),
       ])
-    event.Routed(routing) ->
-      tagged("routed", [#("routing", routing_json(routing))])
+    event.Routed(routing, judgement) ->
+      tagged("routed", [
+        #("routing", routing_json(routing)),
+        ..judgement_field(judgement)
+      ])
     event.RoutedStop(trigger, ticket) ->
       tagged("routed_stop", [
         #("trigger", json.string(trigger.value)),
         ticket_field(ticket),
       ])
-    event.RoutedIgnore(trigger) ->
-      tagged("routed_ignore", [#("trigger", json.string(trigger.value))])
+    event.RoutedIgnore(trigger, judgement) ->
+      tagged("routed_ignore", [
+        #("trigger", json.string(trigger.value)),
+        ..judgement_field(judgement)
+      ])
+    event.AgentChosen(trigger, agent) ->
+      tagged("agent_chosen", [
+        #("trigger", json.string(trigger.value)),
+        #("agent", json.string(agent)),
+      ])
     event.RouterTurnEnded -> tagged("router_turn_ended", [])
     event.Requeued(trigger, by) ->
       tagged("requeued", [
@@ -246,7 +259,12 @@ fn event_decoder() -> Decoder(Event) {
     "trigger_arrived" -> arrived_decoder()
     "routed" -> {
       use routing <- decode.field("routing", routing_decoder())
-      decode.success(event.Routed(routing))
+      use judgement <- decode.optional_field(
+        "judgement",
+        None,
+        decode.map(judgement_decoder(), Some),
+      )
+      decode.success(event.Routed(routing, judgement))
     }
     "routed_stop" -> {
       use trigger <- decode.field("trigger", trigger_id())
@@ -255,7 +273,17 @@ fn event_decoder() -> Decoder(Event) {
     }
     "routed_ignore" -> {
       use trigger <- decode.field("trigger", trigger_id())
-      decode.success(event.RoutedIgnore(trigger))
+      use judgement <- decode.optional_field(
+        "judgement",
+        None,
+        decode.map(judgement_decoder(), Some),
+      )
+      decode.success(event.RoutedIgnore(trigger, judgement))
+    }
+    "agent_chosen" -> {
+      use trigger <- decode.field("trigger", trigger_id())
+      use agent <- decode.field("agent", decode.string)
+      decode.success(event.AgentChosen(trigger, agent))
     }
     "router_turn_ended" -> decode.success(event.RouterTurnEnded)
     "requeued" -> {
@@ -527,6 +555,126 @@ fn rule_match_decoder() -> Decoder(RuleMatch) {
     word_decoder(grants, model.ApprovalsNotGranted, "Grant"),
   )
   decode.success(RuleMatch(rule:, approvals:))
+}
+
+/// The `judgement` field of an event, present only when Jev decided, so a
+/// decision by the model router encodes exactly as it always has.
+fn judgement_field(
+  judgement: Option(model.Judgement),
+) -> List(#(String, Json)) {
+  case judgement {
+    Some(found) -> [#("judgement", judgement_json(found))]
+    None -> []
+  }
+}
+
+/// Write what Jev answered. Probabilities are integer basis points, so the
+/// ledger holds no floats and reads the same on either target.
+@internal
+pub fn judgement_json(found: model.Judgement) -> Json {
+  json.object([
+    #("model", json.string(found.model)),
+    #("shape", json.int(found.shape_version)),
+    #("asks", json.nullable(found.asks_for_work, json.int)),
+    #("clear", json.int(found.clear_alone)),
+    #("continues", json.nullable(found.continues, json.int)),
+    #("which", json.array(found.which, share_json)),
+    #("decline", json.array(found.decline, share_json)),
+    #("agent", json.array(found.agent, share_json)),
+    #("offered", json.array(found.offered, fn(id) { json.string(id.value) })),
+    #("bar", json.int(found.attach_bar)),
+    #("in", json.int(found.input_tokens)),
+    #("out", json.int(found.output_tokens)),
+  ])
+}
+
+fn share_json(share: model.Share) -> Json {
+  json.object([
+    #("label", json.string(share.label)),
+    #("points", json.int(share.points)),
+  ])
+}
+
+/// Read what Jev answered. A probability outside 0 to 10000, or a negative
+/// token count, is a decode failure and never a value.
+@internal
+pub fn judgement_decoder() -> Decoder(model.Judgement) {
+  use model_name <- decode.field("model", decode.string)
+
+  // A ledger line is read back into a page, so it is held to the rule a live
+  // response is: a model name that `jev.accept` would refuse is not a value.
+  use <- bool.lazy_guard(!jev.valid_model(model_name), fn() {
+    decode.failure(empty_judgement(), "a valid model name")
+  })
+  use shape_version <- decode.field("shape", decode.int)
+  use asks_for_work <- decode.field("asks", decode.optional(points()))
+  use clear_alone <- decode.field("clear", points())
+  use continues <- decode.field("continues", decode.optional(points()))
+  use which <- decode.field("which", decode.list(share_decoder()))
+  use decline <- decode.field("decline", decode.list(share_decoder()))
+  use agent <- decode.field("agent", decode.list(share_decoder()))
+  use offered <- decode.field("offered", decode.list(ticket_id()))
+  use attach_bar <- decode.field("bar", points())
+  use input_tokens <- decode.field("in", count())
+  use output_tokens <- decode.field("out", count())
+  decode.success(model.Judgement(
+    model: model_name,
+    shape_version:,
+    asks_for_work:,
+    clear_alone:,
+    continues:,
+    which:,
+    decline:,
+    agent:,
+    offered:,
+    attach_bar:,
+    input_tokens:,
+    output_tokens:,
+  ))
+}
+
+/// The value a failed judgement decode names while it reports the failure.
+fn empty_judgement() -> model.Judgement {
+  model.Judgement(
+    model: "",
+    shape_version: 0,
+    asks_for_work: None,
+    clear_alone: 0,
+    continues: None,
+    which: [],
+    decline: [],
+    agent: [],
+    offered: [],
+    attach_bar: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+  )
+}
+
+fn share_decoder() -> Decoder(model.Share) {
+  use label <- decode.field("label", decode.string)
+  use points <- decode.field("points", points())
+  decode.success(model.Share(label:, points:))
+}
+
+/// An integer from 0 to 10000.
+fn points() -> Decoder(Int) {
+  decode.then(decode.int, fn(value) {
+    case value >= 0 && value <= 10_000 {
+      True -> decode.success(value)
+      False -> decode.failure(0, "basis points from 0 to 10000")
+    }
+  })
+}
+
+/// A nonnegative count.
+fn count() -> Decoder(Int) {
+  decode.then(decode.int, fn(value) {
+    case value >= 0 {
+      True -> decode.success(value)
+      False -> decode.failure(0, "a nonnegative count")
+    }
+  })
 }
 
 /// Write a routing decision as references only, with no free text for a

@@ -190,21 +190,48 @@ fn arrival() -> Generator(Event) {
 fn routed(current: State) -> Generator(Event) {
   qcheck.bind(trigger_ids(current), fn(trigger) {
     qcheck.bind(ticket_ids(current), fn(ticket) {
-      qcheck.from_weighted_generators(
-        #(8, qcheck.return(route(trigger, model.Accept(model.title("t"))))),
-        [
-          #(3, qcheck.return(route(trigger, model.Attach(ticket)))),
-          #(2, qcheck.return(route(trigger, model.Resume(ticket)))),
-          #(3, qcheck.return(event.RoutedStop(trigger, ticket))),
-          #(2, qcheck.return(event.RoutedIgnore(trigger))),
-        ],
-      )
+      // Jev's judgement rides on a routing about a third of the time, so a
+      // sequence mixes judged and unjudged settlements of the same trigger.
+      qcheck.bind(judged(), fn(judgement) {
+        qcheck.from_weighted_generators(
+          #(
+            8,
+            qcheck.return(route(
+              trigger,
+              model.Accept(model.title("t")),
+              judgement,
+            )),
+          ),
+          [
+            #(3, qcheck.return(route(trigger, model.Attach(ticket), judgement))),
+            #(2, qcheck.return(route(trigger, model.Resume(ticket), judgement))),
+            #(3, qcheck.return(event.RoutedStop(trigger, ticket))),
+            #(2, qcheck.return(event.RoutedIgnore(trigger, judgement))),
+            #(
+              2,
+              qcheck.map(gen.ident("agent"), fn(agent) {
+                event.AgentChosen(trigger, agent)
+              }),
+            ),
+          ],
+        )
+      })
     })
   })
 }
 
-fn route(trigger: TriggerId, kind: model.RouteKind) -> Event {
-  event.Routed(model.Routing(trigger, kind, [], [], None))
+fn judged() -> Generator(Option(model.Judgement)) {
+  qcheck.from_weighted_generators(#(2, qcheck.return(None)), [
+    #(1, qcheck.map(gen.judgement(), Some)),
+  ])
+}
+
+fn route(
+  trigger: TriggerId,
+  kind: model.RouteKind,
+  judgement: Option(model.Judgement),
+) -> Event {
+  event.Routed(model.Routing(trigger, kind, [], [], None), judgement)
 }
 
 // Project-level controls, leaning towards getting a pair into `Auto` so that
@@ -618,7 +645,7 @@ fn shadow(
           )
         False -> logged
       }
-    event.Routed(routing) ->
+    event.Routed(routing, _) ->
       case explicit_in(next, routing.trigger) {
         True ->
           Sut(..logged, reached: [routed_ticket(routing), ..logged.reached])
@@ -888,7 +915,7 @@ fn check_routing(
   next: State,
 ) -> Result(Nil, statem.Violation) {
   case incoming {
-    event.Routed(routing) ->
+    event.Routed(routing, _) ->
       case
         strength_in(sut.state, routing.trigger),
         decided_work(next, routing.trigger)

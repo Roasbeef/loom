@@ -239,9 +239,14 @@ pub fn event() -> Generator(Event) {
   let mode = one_of([model.Off, model.Observe, model.Auto])
   qcheck.from_generators(qcheck.return(event.RouterTurnEnded), [
     qcheck.map2(trigger(), qcheck.map(text(), ActorId), event.TriggerArrived),
-    qcheck.map(routing(), event.Routed),
+    qcheck.map2(routing(), qcheck.option_from(judgement()), event.Routed),
     qcheck.map2(trigger_id(), ticket_id(), event.RoutedStop),
-    qcheck.map(trigger_id(), event.RoutedIgnore),
+    qcheck.map2(
+      trigger_id(),
+      qcheck.option_from(judgement()),
+      event.RoutedIgnore,
+    ),
+    qcheck.map2(trigger_id(), ident("agent"), event.AgentChosen),
     qcheck.map2(trigger_id(), principal(), event.Requeued),
     qcheck.map3(
       qcheck.map(text(), SourceId),
@@ -348,6 +353,55 @@ pub fn mandate() -> Generator(Mandate) {
         source:,
         scope: model.Scope(scope.0, scope.1),
         policy_version:,
+      )
+    },
+  )
+}
+
+/// A basis-point probability, weighted toward the ends.
+fn points() -> Generator(Int) {
+  qcheck.from_generators(qcheck.bounded_int(0, 10_000), [
+    one_of([0, 10_000, 5000]),
+  ])
+}
+
+/// A list of labelled probabilities.
+fn shares() -> Generator(List(model.Share)) {
+  qcheck.map(
+    qcheck.list_from(qcheck.tuple2(ident("label"), points())),
+    fn(pairs) {
+      list.map(pairs, fn(pair) { model.Share(label: pair.0, points: pair.1) })
+    },
+  )
+}
+
+/// What Jev answered for a trigger.
+pub fn judgement() -> Generator(model.Judgement) {
+  qcheck.map6(
+    qcheck.tuple3(ident("jev-1."), qcheck.bounded_int(1, 3), points()),
+    qcheck.tuple3(
+      qcheck.option_from(points()),
+      qcheck.option_from(points()),
+      shares(),
+    ),
+    qcheck.tuple2(shares(), shares()),
+    qcheck.list_from(ticket_id()),
+    qcheck.tuple2(points(), qcheck.bounded_int(0, 5000)),
+    qcheck.bounded_int(0, 400),
+    fn(head, middle, more, offered, bar_and_in, out) {
+      model.Judgement(
+        model: head.0,
+        shape_version: head.1,
+        asks_for_work: middle.0,
+        clear_alone: head.2,
+        continues: middle.1,
+        which: middle.2,
+        decline: more.0,
+        agent: more.1,
+        offered:,
+        attach_bar: bar_and_in.0,
+        input_tokens: bar_and_in.1,
+        output_tokens: out,
       )
     },
   )

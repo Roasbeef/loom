@@ -822,6 +822,55 @@ pub type Routing {
   )
 }
 
+/// One probability, in basis points (0 to 10000), against the label it was
+/// given for. A label is a ticket id, a decline word or an agent label of the
+/// request, so a record reads without the list the request was built from. An
+/// agent label `agent_N` is the agent's position in the catalogue the request
+/// listed, not its name: the name is on `AgentChosen`.
+pub type Share {
+  Share(
+    /// What the probability is of.
+    label: String,
+    /// The probability in basis points.
+    points: Int,
+  )
+}
+
+/// What Jev answered for one trigger, kept beside the decision so a page can
+/// show it and a later sweep of the thresholds does not need the request. It
+/// is display and evaluation data: no rule of the engine reads it.
+pub type Judgement {
+  Judgement(
+    /// The model Jev reported, validated before it was kept.
+    model: String,
+    /// The request-shape version the request was built under.
+    shape_version: Int,
+    /// Whether the message asks for work, when the request asked.
+    asks_for_work: Option(Int),
+    /// Whether the message can be acted on alone.
+    clear_alone: Int,
+    /// Whether the message continues a listed ticket, when the request asked.
+    continues: Option(Int),
+    /// The largest probabilities of the which-ticket Choice, up to five,
+    /// labelled by ticket id.
+    which: List(Share),
+    /// The decline-reason Choice's probabilities.
+    decline: List(Share),
+    /// The largest probabilities of the agent Choice, up to three, labelled
+    /// `agent_N`, where N is the agent's position in the catalogue as the
+    /// request listed it.
+    agent: List(Share),
+    /// The tickets the request offered, in the order it listed them.
+    offered: List(TicketId),
+    /// The attach bar in force, in basis points.
+    attach_bar: Int,
+    /// Input tokens billed.
+    input_tokens: Int,
+    /// Output tokens, which the service does not charge for.
+    output_tokens: Int,
+  )
+}
+
 // --- project controls --------------------------------------------------------
 
 /// How a source and rule pair is allowed to act.
