@@ -27,7 +27,6 @@
 import argv
 import client/internal/ffi_os
 import core/clock
-import core/register
 import gleam/int
 import gleam/io
 import gleam/list
