@@ -2,7 +2,7 @@
 
 Status: **proposed 2026-11-24, not built.** The owner asked for project mode to decide where an incoming message goes with typed Jev decisions, in Gleam, through [jevelin](https://github.com/Roasbeef/jevelin). This note is the design for review. The wire and ledger changes it needs are an addendum to [protocol-change/106](../../protocol-change/106-project-mode.md), written with the implementation. The configuration keys are listed here and enter [configuration.md](../configuration.md) with the code that reads them, because `make doc-check` refuses a documented key the decoders do not accept.
 
-In this note, we say what Jev decides, what it is shown, where it sits beside the model router, how the daemon calls it, how a decision is recorded, and how to measure it before it becomes the default.
+In this note, we say what Jev decides, what it is shown, when it runs beside the model router, how the daemon calls it, how a decision is recorded, and how to measure it before it becomes the default.
 
 ## 1. What exists
 
