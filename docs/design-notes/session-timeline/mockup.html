@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session timeline</title>
+<!--
+  A sketch for docs/design-notes/session-timeline.md, section 6. Static: the
+  session, times and files are invented, and the cards open with <details>, so
+  there is no script. The kind word, time, chips and step words are the page's
+  own words from records. The violet "summary" chip and the text after it are a
+  model's title and detail line: untrusted text, drawn as a text node. Red chips
+  are failed calls; an exit status is never coloured green, since it is not a
+  verdict. Diff lines are red (removed) and green (added). No accent bars, no
+  shadows: a tinted background and a hairline border. Light and dark follow the
+  system setting.
+-->
+<style>
+:root{--bg:#f6f5f1;--sunk:#efede7;--raised:#fff;--fg:#1d1c1a;--quiet:#6b6962;--faint:#8f8c84;--divider:#dedbd3;
+--op-bg:#efedfe;--op-fg:#3c3489;--op-line:#afa9ec;--bad-bg:#fcebea;--bad-fg:#9a2a22;--bad-line:#e4a29d;
+--add-bg:#e6f4ea;--add-fg:#1e6b38;--del-bg:#fbe9e7;--del-fg:#a02b22;--run:#2f7d4f;--signal:#e8a33c}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--sunk:#111110;--raised:#1e1e1c;--fg:#ecebe6;--quiet:#a5a39b;--faint:#7e7c75;--divider:#2e2d2a;
+--op-bg:#2a2650;--op-fg:#cecbf6;--op-line:#534ab7;--bad-bg:#3a1c1a;--bad-fg:#f2a9a3;--bad-line:#7a3430;
+--add-bg:#173022;--add-fg:#8fd6a5;--del-bg:#3a1c1a;--del-fg:#f2a9a3;--run:#5cc189}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{display:grid;grid-template-columns:minmax(0,760px) 340px;gap:28px;padding:20px;justify-content:center;align-items:start}
+@media (max-width:1180px){.wrap{grid-template-columns:minmax(0,760px)}}
+.cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+.pane{background:var(--bg);border:1px solid var(--divider);border-radius:10px;padding:16px 18px}
+.state{font-size:12px;color:var(--quiet)}
+h1{margin:4px 0 10px;font-size:18px;font-weight:600}
+h3{margin:18px 0 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet)}
+.stat{font-size:13px;color:var(--quiet)}
+.stat b{color:var(--fg)}
+.now{background:var(--sunk);border:1px solid var(--divider);border-radius:8px;padding:10px 12px}
+.now .l{font-size:12px;color:var(--quiet)}
+.now i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--run);margin-right:6px}
+ol.cards{list-style:none;margin:0;padding:0}
+details.card{background:var(--sunk);border:1px solid var(--divider);border-radius:8px;margin:0 0 8px}
+details.card.failed{background:var(--bad-bg);border-color:var(--bad-line)}
+details.card>summary{list-style:none;cursor:pointer;padding:9px 12px}
+details.card>summary::-webkit-details-marker{display:none}
+.l1{display:flex;gap:8px;align-items:baseline}
+.kind{font-size:11px;padding:0 6px;border:1px solid var(--divider);border-radius:6px;color:var(--quiet);white-space:nowrap}
+.tm{margin-left:auto;font-size:12px;color:var(--faint);white-space:nowrap}
+.title{margin-top:3px;font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chip{font-size:11.5px;padding:0 7px;border:1px solid var(--divider);border-radius:6px;color:var(--quiet);background:var(--raised);white-space:nowrap}
+.chip code{font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg)}
+.chip.bad{background:var(--bad-bg);border-color:var(--bad-line);color:var(--bad-fg)}
+.chip.bad code{color:var(--bad-fg)}
+.sum{font-size:11px;padding:0 6px;border-radius:6px;background:var(--op-bg);color:var(--op-fg);border:1px solid var(--op-line);margin-right:6px;white-space:nowrap}
+.body{padding:0 12px 11px;border-top:1px solid var(--divider)}
+.detail{margin:8px 0;font-size:13px;color:var(--quiet)}
+.steps{margin:6px 0;padding:0;list-style:none;font-size:12.5px}
+.steps li{padding:2px 0;color:var(--quiet)}
+.steps code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg)}
+.open{display:inline-block;margin-top:6px;font-size:12.5px;padding:3px 10px;border:1px solid var(--divider);border-radius:6px;background:var(--raised);color:var(--fg)}
+.ex{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:6px 0;border:1px solid var(--divider);border-radius:6px;overflow:hidden}
+.ex div{padding:0 8px;white-space:pre-wrap}
+.ex .a{background:var(--add-bg);color:var(--add-fg)}
+.ex .d{background:var(--del-bg);color:var(--del-fg)}
+.more{font-size:12.5px;color:var(--quiet);margin:2px 0 6px}
+.verdict{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0 4px;padding:10px 12px;background:var(--sunk);border:1px solid var(--divider);border-radius:8px}
+.verdict .w{flex:1;min-width:140px;font-size:13px;color:var(--quiet)}
+.btn{font-size:13px;padding:5px 12px;border:1px solid var(--divider);border-radius:6px;background:var(--raised);color:var(--fg)}
+.file{display:flex;gap:8px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--divider);font-size:13px}
+.file code{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file .n{margin-left:auto;font-size:12px;white-space:nowrap}
+.file .n .p{color:var(--add-fg)}.file .n .m{color:var(--del-fg)}
+details.others{margin-top:8px;border:1px solid var(--divider);border-radius:8px;background:var(--sunk)}
+details.others>summary{cursor:pointer;padding:8px 12px;font-size:13px;color:var(--quiet)}
+details.others .file{padding:6px 12px}
+.board{background:var(--bg);border:1px solid var(--divider);border-radius:10px}
+.brow{padding:10px 12px;border-bottom:1px solid var(--divider)}
+.brow:last-child{border-bottom:0}
+.brow .sn{font-weight:600}
+.brow .g{font-size:12.5px;color:var(--quiet);margin-top:2px}
+.strip{display:flex;gap:3px;margin-top:6px}
+.tick{width:12px;height:12px;border-radius:3px;background:var(--sunk);border:1px solid var(--divider)}
+.tick.bad{background:var(--bad-bg);border-color:var(--bad-line)}
+.tick.live{background:var(--raised);border-style:dashed}
+.phone{width:375px;max-width:100%;border:1px solid var(--divider);border-radius:18px;padding:12px;background:var(--bg)}
+.phone .title{font-size:14px}
+.phone .chips{margin-top:5px}
+.phone .open{display:block;text-align:center;width:100%;padding:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<section>
+<p class="cap">Review thread, desktop width</p>
+<div class="pane">
+  <div class="state">Review · finished 14 min ago · session <b>fix-hashline-replay</b></div>
+  <h1>Replay hashline edits after a restart</h1>
+  <div class="stat"><b>+312 −8</b> in <b>11 files</b> written through this session's edit tools, and <b>6 others</b> · 9 steps failed once</div>
+
+  <h3>Where it is</h3>
+  <div class="now">
+    <div class="l"><i></i>Idle since 13:52 · last record 14 min ago · no approval waiting</div>
+    <div style="margin-top:4px"><span class="sum">summary</span>Waiting for the owner after the repro compiled.</div>
+  </div>
+
+  <h3>Timeline · 7 cards</h3>
+  <ol class="cards">
+    <li><details class="card">
+      <summary>
+        <div class="l1"><span class="kind">Prompt</span><span class="tm">13:04</span></div>
+        <div class="title">“Replay hashline edits after a restart”</div>
+        <div class="chips"><span class="chip">from <b>roasbeef</b></span></div>
+      </summary>
+      <div class="body"><a class="open">Open in transcript</a></div>
+    </details></li>
+
+    <li><details class="card">
+      <summary>
+        <div class="l1"><span class="kind">Work</span><span class="tm">13:04 · 6 min · 14 steps</span></div>
+        <div class="title"><span class="sum">summary</span>Read the replay path and the hashline store</div>
+        <div class="chips"><span class="chip">0 files written</span><span class="chip">9 reads</span></div>
+      </summary>
+      <div class="body">
+        <p class="detail"><span class="sum">summary</span>Traced how a restart reloads edits and found the hash index is rebuilt after replay, not before.</p>
+        <ul class="steps"><li><code>Read replay.gleam</code></li><li><code>Read hashline.gleam</code></li><li>Reasoning · 31s</li></ul>
+        <a class="open">Open in transcript</a>
+      </div>
+    </details></li>
+
+    <li><details class="card" open>
+      <summary>
+        <div class="l1"><span class="kind">Work</span><span class="tm">13:10 · 11 min · 22 steps</span></div>
+        <div class="title"><span class="sum">summary</span>Rebuilt the index before replay</div>
+        <div class="chips"><span class="chip">3 files <span style="color:var(--add-fg)">+98</span> <span style="color:var(--del-fg)">−6</span></span><span class="chip"><code>replay.gleam</code></span><span class="chip"><code>hashline.gleam</code></span><span class="chip">+1 more</span></div>
+      </summary>
+      <div class="body">
+        <p class="detail"><span class="sum">summary</span>Moves index construction ahead of replay so a replayed edit finds its anchor.</p>
+        <div class="ex"><div class="d">−  let edits = replay(log)</div><div class="d">−  let index = build_index(store)</div><div class="a">+  let index = build_index(store)</div><div class="a">+  let edits = replay(log, index)</div></div>
+        <ul class="steps"><li><code>Edit replay.gleam +12 −4</code></li><li><code>Edit hashline.gleam +71 −2</code></li><li><code>Write replay_test.gleam +15</code></li></ul>
+        <a class="open">Open in transcript</a>
+      </div>
+    </details></li>
+
+    <li><details class="card failed">
+      <summary>
+        <div class="l1"><span class="kind">Command</span><span class="tm">13:21 · 4 min</span></div>
+        <div class="title"><span class="sum">summary</span>The package check failed on one test</div>
+        <div class="chips"><span class="chip bad"><code>make check-storage</code> · exit 2</span><span class="chip bad">1 failed call</span></div>
+      </summary>
+      <div class="body">
+        <p class="detail"><span class="sum">summary</span>The new replay test expected the old ordering.</p>
+        <a class="open">Open in transcript</a>
+      </div>
+    </details></li>
+
+    <li><details class="card">
+      <summary>
+        <div class="l1"><span class="kind">Command</span><span class="tm">13:30 · 9 min</span></div>
+        <div class="title"><span class="sum">summary</span>Fixed the test and reran the package check</div>
+        <div class="chips"><span class="chip"><code>make check-storage</code> · exit 0</span><span class="chip">2 files <span style="color:var(--add-fg)">+6</span> <span style="color:var(--del-fg)">−2</span></span></div>
+      </summary>
+      <div class="body"><a class="open">Open in transcript</a></div>
+    </details></li>
+
+    <li><details class="card">
+      <summary>
+        <div class="l1"><span class="kind">Commit</span><span class="tm">13:41</span></div>
+        <div class="title"><span class="sum">summary</span>Committed the replay fix</div>
+        <div class="chips"><span class="chip"><code>git commit</code> · exit 0</span><span class="chip">6 files</span></div>
+      </summary>
+      <div class="body"><a class="open">Open in transcript</a></div>
+    </details></li>
+
+    <li><details class="card">
+      <summary>
+        <div class="l1"><span class="kind">Answer</span><span class="tm">13:52</span></div>
+        <div class="title">“Status while the repro compiles.”</div>
+        <div class="chips"><span class="chip">agent's last message</span></div>
+      </summary>
+      <div class="body"><a class="open">Open in transcript</a></div>
+    </details></li>
+  </ol>
+  <p class="more">All 7 shown. Older cards page in ten at a time.</p>
+
+  <div class="verdict"><span class="w">Verdict and message go together.</span><span class="btn">Approve</span><span class="btn">Request changes</span></div>
+
+  <h3>Changes this session wrote</h3>
+  <div class="file"><code>packages/storage/src/storage/replay.gleam</code><span class="n"><span class="p">+86</span> <span class="m">−4</span></span></div>
+  <div class="file"><code>packages/storage/src/storage/hashline.gleam</code><span class="n"><span class="p">+71</span> <span class="m">−2</span></span></div>
+  <div class="file"><code>packages/storage/test/replay_test.gleam</code><span class="n"><span class="p">+21</span> <span class="m">−0</span></span></div>
+  <details class="others">
+    <summary>Not written through this session's edit tools · 6 files</summary>
+    <div class="file"><code>.claude/settings.local.json</code><span class="n"><span class="p">+3</span> <span class="m">−1</span></span></div>
+    <div class="file"><code>packages/web_view/src/web_view/component.gleam</code><span class="n"><span class="p">+120</span> <span class="m">−0</span></span></div>
+  </details>
+</div>
+</section>
+
+<aside>
+<p class="cap">Phone width</p>
+<div class="phone">
+  <div class="state">Review · 14 min ago</div>
+  <div class="now" style="margin-top:6px"><div class="l"><i></i>Idle · last record 14 min ago</div></div>
+  <h3>Timeline · 7 cards</h3>
+  <details class="card failed" style="margin-bottom:8px" open>
+    <summary>
+      <div class="l1"><span class="kind">Command</span><span class="tm">13:21</span></div>
+      <div class="title"><span class="sum">summary</span>The package check failed on one test</div>
+      <div class="chips"><span class="chip bad"><code>make check-storage</code> · exit 2</span></div>
+    </summary>
+    <div class="body"><p class="detail">The new replay test expected the old ordering.</p><a class="open">Open in transcript</a></div>
+  </details>
+  <details class="card"><summary>
+      <div class="l1"><span class="kind">Commit</span><span class="tm">13:41</span></div>
+      <div class="title"><span class="sum">summary</span>Committed the replay fix</div>
+      <div class="chips"><span class="chip"><code>git commit</code> · exit 0</span></div>
+  </summary></details>
+  <div class="verdict"><span class="btn">Approve</span><span class="btn">Request changes</span></div>
+</div>
+
+<p class="cap" style="margin-top:22px">Watch all board</p>
+<div class="board">
+  <div class="brow"><div class="sn">fix-hashline-replay</div><div class="g"><span class="sum">summary</span>Waiting for the owner.</div>
+    <div class="strip"><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick bad"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span></div></div>
+  <div class="brow"><div class="sn">web/sidebar-live</div><div class="g">Running 4 min · 5 steps since the last card</div>
+    <div class="strip"><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick live"></span></div></div>
+  <div class="brow"><div class="sn">docs/triage-band</div><div class="g">Stopped on an approval for <code>bash</code></div>
+    <div class="strip"><span class="tick"></span><span class="tick bad"></span><span class="tick live"></span></div></div>
+</div>
+</aside>
+
+</div>
+</body>
+</html>
