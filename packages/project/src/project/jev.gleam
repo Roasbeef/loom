@@ -26,14 +26,17 @@
 //// declines, or falls back. It cannot be a stop, and it cannot decline an
 //// explicit trigger, because the request for one has no question to decline
 //// with. Whatever it says still passes through `route.route`, which checks
-//// the gate's stored strength. A listed ticket is never one that the engine
-//// would refuse for an inferred trigger, so that label does not exist.
+//// the gate's stored strength. A `Shape` can be built only from the engine's
+//// state and the trigger's strength, so the tickets it lists are always ones
+//// the engine would accept for that strength, and the which-ticket Choice
+//// answers with the ticket itself, so a decision cannot be paired with a
+//// different list than the request carried.
 ////
 //// ## Flow
 ////
-//// `listing` → `request` → the daemon sends it → `accept` → `decide`
+//// `shape` → `request` → the daemon sends it → `accept` → `decide`
 ////
-//// 1. `listing` picks the tickets the request may offer.
+//// 1. `shape` lists the tickets the request may offer for a strength.
 //// 2. `request` builds the questions and the object Jev reads as its state.
 //// 3. `accept` checks the model name the response reports and returns the
 ////    answers as integer basis points.
@@ -41,8 +44,14 @@
 //// 5. `still_offered` names the candidates the engine still holds as offered,
 ////    which are the ones the model router receives.
 ////
+//// All probabilities here are integer basis points, rounded from the
+//// service's floats, and every bar is compared after that rounding, which is
+//// also what the ledger keeps. A value of 0.49995 therefore passes a bar of
+//// 0.50, and one of 0.30004 counts as at most 0.30.
+////
 //// The design is in docs/design-notes/project-jev-routing.md.
 
+import gleam/dict
 import gleam/float
 import gleam/int
 import gleam/json.{type Json}
@@ -56,7 +65,7 @@ import jevelin/content.{type Content}
 import jevelin/probability
 import jevelin/question
 import project/model.{
-  type Strength, type TicketId, type TriggerId, Explicit, Inferred,
+  type Inputs, type Strength, type TicketId, type TriggerId, Explicit, Inferred,
 }
 import project/stage
 import project/state.{type State}
@@ -98,17 +107,41 @@ pub type Standing {
   EndedTicket
 }
 
-/// What a request asked, and so what its answers can mean.
-pub type Shape {
+/// What a request asked, and so what its answers can mean. It is built only by
+/// `shape`, from the engine's state and a strength, so a trigger of one
+/// strength never carries the list built for the other.
+pub opaque type Shape {
   Shape(
     /// The trigger's strength, fixed by the gate when it arrived.
     strength: Strength,
-    /// The tickets offered, in the order the labels number them.
+    /// The tickets offered, newest opened first.
     tickets: List(Listed),
     /// What each catalogue agent is for, in the operator's words and in the
     /// order the labels number them.
     agents: List(String),
   )
+}
+
+/// Where a message came from, in the gate's own vocabulary. It is rendered to a
+/// fixed phrase, so the sender's login cannot reach a request.
+pub type Source {
+  /// The owner typed it in the composer.
+  FromOwner
+
+  /// A listed person addressed the agent.
+  FromPersonAddressing
+
+  /// A listed person spoke without addressing the agent.
+  FromPersonNotAddressing
+
+  /// A listed bot.
+  FromBot
+
+  /// A report of a failed check.
+  FromCiFailure
+
+  /// Anyone not listed.
+  FromStranger
 }
 
 /// The text of one request.
@@ -117,20 +150,21 @@ pub type Message {
     /// The trigger's text. A request carries at most
     /// `max_message_codepoints` of it.
     text: String,
-    /// A fixed phrase for where the message came from, never a login.
-    source: String,
+    /// Where the message came from.
+    source: Source,
   )
 }
 
-/// A Choice answer in basis points, over labels numbered from zero.
-pub type Ranked {
+/// A Choice answer in basis points. `a` is the type of the options: a ticket,
+/// a decline reason or an agent's index.
+pub type Ranked(a) {
   Ranked(
-    /// The index of the label Jev selected.
-    selected: Int,
+    /// The option Jev selected.
+    selected: a,
     /// Jev's confidence in the selection.
     confidence: Int,
-    /// The probability of every label, in request order.
-    shares: List(#(Int, Int)),
+    /// The probability of every option, in request order.
+    shares: List(#(a, Int)),
   )
 }
 
@@ -145,11 +179,11 @@ pub type Answers {
     /// Whether the message continues a listed ticket.
     continues: Option(Int),
     /// Which listed ticket it continues.
-    which_ticket: Option(Ranked),
-    /// Why it asks for no work: index 0 is `off_topic`, 1 is `nothing_to_do`.
-    decline_reason: Option(Ranked),
-    /// Which catalogue agent fits new work.
-    agent: Option(Ranked),
+    which_ticket: Option(Ranked(TicketId)),
+    /// Why it asks for no work.
+    decline_reason: Option(Ranked(DeclineReason)),
+    /// Which catalogue agent fits new work, by its index in the catalogue.
+    agent: Option(Ranked(Int)),
   )
 }
 
@@ -202,14 +236,54 @@ pub type Decision {
   Fallback(why: Why)
 }
 
-/// The one bar an operator sets, in basis points: how sure Jev must be to
-/// attach a message to an existing ticket. The other bars are fixed here and
-/// belong to the request-shape version that the pin carries.
-pub type Bars {
+/// The one bar an operator sets: how sure Jev must be to attach a message to an
+/// existing ticket. The other bars are fixed here and belong to the
+/// request-shape version that the pin carries. It can be built only from a
+/// percent above one half, since a lower bar would let a ticket with less than
+/// even odds take the message.
+pub opaque type Bars {
   Bars(
-    /// The least probability for attaching to a listed ticket.
+    /// The least probability for attaching to a listed ticket, in basis
+    /// points.
     attach: Int,
   )
+}
+
+/// The bar for a percent from 51 to 100, and nothing for any other value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.bars(80) |> result.map(jev.attach_points) == Ok(8000)
+/// assert jev.bars(50) == Error(Nil)
+/// ```
+pub fn bars(percent: Int) -> Result(Bars, Nil) {
+  case percent >= 51 && percent <= 100 {
+    True -> Ok(Bars(attach: percent * 100))
+    False -> Error(Nil)
+  }
+}
+
+/// The attach bar in basis points.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.attach_points(jev.default_bars()) == 8000
+/// ```
+pub fn attach_points(bars: Bars) -> Int {
+  bars.attach
+}
+
+/// The bar the configuration gives when it names none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.attach_points(jev.default_bars()) == 8000
+/// ```
+pub fn default_bars() -> Bars {
+  Bars(attach: 8000)
 }
 
 // --- the fixed bars ----------------------------------------------------------
@@ -235,23 +309,81 @@ const agent_confidence_least = 5000
 /// the pin, so changing a question, a bar or the listing rule raises it.
 pub const request_shape_version = 1
 
-// --- the listing -------------------------------------------------------------
+// --- the shape ---------------------------------------------------------------
 
-/// The tickets a request about a trigger of `strength` may offer.
+/// What a request about a trigger of `strength` asks, given the engine's state
+/// and the agent catalogue.
 ///
-/// These are the tickets whose mandate stands (no person's stop), newest
-/// opened first, at most `max_listed`. For an inferred trigger a ticket with
-/// an explicit mandate is left out, which is the test `intake.takes` applies,
-/// so Jev cannot pick a ticket the engine would refuse.
+/// The tickets are those whose mandate stands (no person's stop), newest
+/// opened first, at most `max_listed`. For an inferred trigger a ticket with an
+/// explicit mandate is left out, which is the test `intake.takes` applies, so
+/// Jev cannot pick a ticket the engine would refuse.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // jev.listing(state.start(config), Inferred) == []
+/// assert jev.tickets(jev.shape(state.start(config), Inferred, [])) == []
 /// ```
-pub fn listing(current: State, strength: Strength) -> List(Listed) {
-  state.tickets_oldest_first(current)
-  |> list.reverse
+pub fn shape(
+  current: State,
+  strength: Strength,
+  agents: List(String),
+) -> Shape {
+  Shape(strength:, tickets: listing(current, strength), agents:)
+}
+
+/// The tickets a shape offers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.tickets(jev.shape(state.start(config), Explicit, [])) == []
+/// ```
+pub fn tickets(shape: Shape) -> List(Listed) {
+  shape.tickets
+}
+
+/// The strength a shape was built for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.strength(jev.shape(state.start(config), Explicit, []))
+///   == Explicit
+/// ```
+pub fn strength(shape: Shape) -> Strength {
+  shape.strength
+}
+
+/// What each catalogue agent of a shape is for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.agents(jev.shape(state.start(config), Explicit, ["a"])) == ["a"]
+/// ```
+pub fn agents(shape: Shape) -> List(String) {
+  shape.agents
+}
+
+/// A shape whose tickets are rotated `by` places. The verdict's three trials
+/// are three rotations of the ticket order, because Jev leans toward the first
+/// option of a Choice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jev.rotate(shape, 1) lists the same tickets from the second
+/// ```
+pub fn rotate(shape: Shape, by: Int) -> Shape {
+  Shape(..shape, tickets: rotated(shape.tickets, by))
+}
+
+/// The tickets a request about a trigger of `strength` may list.
+fn listing(current: State, strength: Strength) -> List(Listed) {
+  // The state keeps its tickets newest opened first.
+  current.order
+  |> list.filter_map(fn(id) { dict.get(current.tickets, id) })
   |> list.filter(fn(ticket) { offerable(ticket, strength) })
   |> list.take(max_listed)
   |> list.map(listed)
@@ -263,7 +395,8 @@ fn offerable(ticket: state.Ticket, strength: Strength) -> Bool {
     state.Withdrawn(_), _, _ -> False
     state.Granted, Inferred, Explicit -> False
     state.Granted, Inferred, Inferred -> True
-    state.Granted, Explicit, _ -> True
+    state.Granted, Explicit, Explicit -> True
+    state.Granted, Explicit, Inferred -> True
   }
 }
 
@@ -283,9 +416,7 @@ fn listed(ticket: state.Ticket) -> Listed {
   )
 }
 
-/// Rotate a list so that it starts `by` places later, wrapping around. The
-/// verdict's three trials are three rotations of the ticket order, because
-/// Jev leans toward the first option of a Choice.
+/// Rotate a list so that it starts `by` places later, wrapping around.
 ///
 /// ## Examples
 ///
@@ -301,6 +432,38 @@ pub fn rotated(items: List(a), by: Int) -> List(a) {
       let #(front, back) = list.split(items, shift)
       list.append(back, front)
     }
+  }
+}
+
+/// Where a message came from, from the gate's inputs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jev.source_of(inputs) == jev.FromOwner for an owner's post
+/// ```
+pub fn source_of(inputs: Inputs) -> Source {
+  case inputs.sender, inputs.addressing {
+    model.Owner, _ -> FromOwner
+    model.Person, model.Addressed -> FromPersonAddressing
+    model.Person, model.Unaddressed -> FromPersonNotAddressing
+    model.ListedBot, _ -> FromBot
+    model.CiFailure, _ -> FromCiFailure
+    model.Unlisted, _ -> FromStranger
+  }
+}
+
+/// The fixed phrase a source is rendered to.
+fn source_phrase(source: Source) -> String {
+  case source {
+    FromOwner -> "a post by the project's owner"
+    FromPersonAddressing ->
+      "a comment by a listed person, addressed to the agent"
+    FromPersonNotAddressing ->
+      "a comment by a listed person, not addressed to the agent"
+    FromBot -> "a comment by a listed bot"
+    FromCiFailure -> "a report of a failed check"
+    FromStranger -> "a comment by someone not listed"
   }
 }
 
@@ -321,9 +484,9 @@ type Answer {
   Asks(Int)
   Clear(Int)
   Continues(Int)
-  Which(Ranked)
-  Reason(Ranked)
-  Agent(Ranked)
+  Which(Ranked(TicketId))
+  Reason(Ranked(DeclineReason))
+  Agent(Ranked(Int))
 }
 
 /// Build the one request for a message.
@@ -377,26 +540,23 @@ fn fold_answers(answers: List(Answer)) -> Answers {
 
 /// The Nouls this shape asks.
 fn noul_batches(shape: Shape) -> List(Batch(Answer)) {
-  let inferred = shape.strength == Inferred
-  let listed = shape.tickets != []
-  [
-    case inferred {
-      True -> [asks_question()]
-      False -> []
-    },
-    [clear_question()],
-    case listed {
-      True -> [continues_question()]
-      False -> []
-    },
-  ]
-  |> list.flatten
+  // Only an inferred trigger is asked whether it asks for work.
+  let asks = case shape.strength {
+    Inferred -> [asks_question()]
+    Explicit -> []
+  }
+
+  // The Noul about tickets needs tickets to be listed.
+  let continues = case shape.tickets {
+    [] -> []
+    [_, ..] -> [continues_question()]
+  }
+
+  list.flatten([asks, [clear_question()], continues])
 }
 
 /// The Choices this shape asks.
 fn choice_batches(shape: Shape) -> Result(List(Batch(Answer)), RequestError) {
-  let inferred = shape.strength == Inferred
-
   // One ticket gives the Choice nothing to choose between, so it is not
   // asked, and that ticket is the target.
   use which <- result.try(case shape.tickets {
@@ -405,9 +565,9 @@ fn choice_batches(shape: Shape) -> Result(List(Batch(Answer)), RequestError) {
   })
 
   // Only an inferred trigger can be declined, so only it is asked why not.
-  use reason <- result.try(case inferred {
-    True -> reason_question() |> result.map(fn(b) { [b] })
-    False -> Ok([])
+  use reason <- result.try(case shape.strength {
+    Inferred -> reason_question() |> result.map(fn(b) { [b] })
+    Explicit -> Ok([])
   })
 
   // One agent is used without a question, for the same reason.
@@ -419,14 +579,14 @@ fn choice_batches(shape: Shape) -> Result(List(Batch(Answer)), RequestError) {
   list.flatten([which, reason, agent])
 }
 
-/// The `state` object. A request about a message sees only these fields.
+/// The state object. A question sees only these fields.
 fn state_of(shape: Shape, message: Message) -> Content {
   let base = [
     #("message", json.string(cap_message(message.text))),
-    #("source", json.string(message.source)),
+    #("source", json.string(source_phrase(message.source))),
   ]
 
-  // The Noul about tickets sees only `state`, so the tickets are in it.
+  // The Noul about tickets sees only the state, so the tickets are in it.
   let tickets = case shape.tickets {
     [] -> []
     listed -> [#("tickets", tickets_json(listed))]
@@ -439,23 +599,33 @@ fn state_of(shape: Shape, message: Message) -> Content {
 fn tickets_json(listed: List(Listed)) -> Json {
   json.object(
     list.index_map(listed, fn(entry, index) {
-      #(ticket_label(index), description(entry))
+      #(ticket_label(index), json.object(description_fields(entry)))
     }),
   )
 }
 
-/// A ticket's description: its stage, and its title when it has one to show.
-fn description(entry: Listed) -> Json {
-  // A ticket whose title is a stranger's has the stage word alone.
+/// The one template of a ticket's description: its stage, and its title when it
+/// has one to show. A ticket whose title is a stranger's has the stage word
+/// alone. The state object and the which-ticket options both use it, so the two
+/// cannot drift, and the template is part of the pin.
+fn description_fields(entry: Listed) -> List(#(String, Json)) {
+  // A title is present only when the ticket has one to show.
   let title = case entry.title {
     Some(text) -> [#("title", json.string(text))]
     None -> []
   }
 
-  json.object([#("stage", json.string(entry.stage)), ..title])
+  [#("stage", json.string(entry.stage)), ..title]
 }
 
 /// The first `max_message_codepoints` code points of a message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jev.cap_message("abc") == "abc"
+/// assert string.length(jev.cap_message(string.repeat("x", 5000))) == 4096
+/// ```
 pub fn cap_message(text: String) -> String {
   text
   |> string.to_utf_codepoints
@@ -527,12 +697,17 @@ fn continues_question() -> Batch(Answer) {
   |> batch.map(fn(p) { Continues(basis_points(p)) })
 }
 
-/// Which listed ticket does it continue?
+/// Which listed ticket does it continue? The option's value is the ticket, so
+/// the answer carries what it names.
 fn which_question(
   tickets: List(Listed),
 ) -> Result(Batch(Answer), RequestError) {
   list.index_map(tickets, fn(entry, index) {
-    question.Alternative(ticket_label(index), index, Some(describe(entry)))
+    question.Alternative(
+      ticket_label(index),
+      entry.ticket,
+      Some(content.Object(description_fields(entry))),
+    )
   })
   |> question.choice(
     content.Text(
@@ -548,28 +723,17 @@ fn which_question(
   })
 }
 
-/// An alternative's description for a ticket.
-fn describe(entry: Listed) -> Content {
-  // The same rule as in the state object: a title only when one is shown.
-  let title = case entry.title {
-    Some(text) -> [#("title", json.string(text))]
-    None -> []
-  }
-
-  content.Object([#("stage", json.string(entry.stage)), ..title])
-}
-
 /// Why does it ask for no work?
 fn reason_question() -> Result(Batch(Answer), RequestError) {
   question.choice(content.Text("If state.message asks for no work, why not?"), [
     question.Alternative(
       "off_topic",
-      0,
+      OffTopic,
       Some(content.Text("The message is not about this project.")),
     ),
     question.Alternative(
       "nothing_to_do",
-      1,
+      NothingToDo,
       Some(content.Text(
         "The message is about the project but needs nothing done.",
       )),
@@ -610,8 +774,8 @@ fn basis_points(value: probability.Probability) -> Int {
   |> int.clamp(0, 10_000)
 }
 
-/// A decoded Choice as basis points over the labels' indexes.
-fn ranked(choice: question.Choice(Int)) -> Ranked {
+/// A decoded Choice as basis points over the options it was asked with.
+fn ranked(choice: question.Choice(a)) -> Ranked(a) {
   Ranked(
     selected: choice.selected,
     confidence: basis_points(choice.confidence),
@@ -719,7 +883,7 @@ fn model_character(character: String) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // jev.decide(shape, jev.Bars(attach: 8000), answers) -> jev.New(None)
+/// // jev.decide(shape, jev.default_bars(), answers) -> jev.New(None)
 /// ```
 pub fn decide(shape: Shape, bars: Bars, answers: Answers) -> Decision {
   case answers.clear_alone < clear_least {
@@ -728,47 +892,54 @@ pub fn decide(shape: Shape, bars: Bars, answers: Answers) -> Decision {
   }
 }
 
-/// Whether the message passes the bar for being work. An explicit trigger is
-/// work by definition, and an inferred one must ask for it surely enough.
-fn asks_for_work(shape: Shape, answers: Answers) -> Bool {
-  case shape.strength, answers.asks_for_work {
-    Explicit, _ -> True
-    Inferred, Some(value) -> value >= asks_at_least
-    Inferred, None -> False
+/// The rule after the clarity check. The two strengths differ in what they may
+/// do, so each has its own arms.
+fn combine(shape: Shape, bars: Bars, answers: Answers) -> Decision {
+  let continuing = continues_a_ticket(shape, bars, answers)
+
+  // An explicit trigger is work by definition and is never declined, so it
+  // attaches or opens new work.
+  case shape.strength {
+    Explicit ->
+      case continuing {
+        True -> attach(shape, bars, answers)
+        False -> new_work(shape, answers)
+      }
+
+    Inferred -> inferred(shape, bars, answers)
   }
 }
 
-/// The rule after the clarity check.
-fn combine(shape: Shape, bars: Bars, answers: Answers) -> Decision {
-  let inferred = shape.strength == Inferred
-  let asks = answers.asks_for_work
-  let continues = answers.continues
-  let listed = shape.tickets != []
+/// An inferred trigger must also show that it asks for work.
+fn inferred(shape: Shape, bars: Bars, answers: Answers) -> Decision {
+  // The asks-for-work Noul decides between acting, declining and falling back.
+  case continues_a_ticket(shape, bars, answers), answers.asks_for_work {
+    // It continues a ticket and surely asks for work.
+    True, Some(asks) if asks >= asks_at_least -> attach(shape, bars, answers)
 
-  // The message continues a listed ticket when the Noul is sure enough.
-  let continuing = case continues {
-    Some(value) -> listed && value >= bars.attach
-    None -> False
+    // It continues a ticket and does not clearly ask for work, which includes
+    // saying it asks for none. The answers disagree, so neither is acted on.
+    True, Some(_) -> Fallback(LowProbability)
+    True, None -> Fallback(LowProbability)
+
+    // It continues nothing and surely asks for no work.
+    False, Some(asks) if asks <= asks_at_most -> decline(answers)
+
+    // It continues nothing and surely asks for work.
+    False, Some(asks) if asks >= asks_at_least -> new_work(shape, answers)
+
+    // It falls between the bars, or the question was not answered.
+    False, Some(_) -> Fallback(LowProbability)
+    False, None -> Fallback(LowProbability)
   }
+}
 
-  let asking = asks_for_work(shape, answers)
-
-  // The two Nouls decide between an attach, a contradiction and the rest.
-  case continuing, asking {
-    // The message continues a ticket and, if inferred, asks for work.
-    True, True -> attach(shape, bars, answers)
-
-    // The message continues a ticket and says it asks for no work. The two
-    // answers disagree, so neither is acted on.
-    True, False -> Fallback(LowProbability)
-
-    False, _ ->
-      // An inferred message that asks for no work is declined, and anything
-      // else is new work if it passes that test's own bar.
-      case inferred, asks {
-        True, Some(value) if value <= asks_at_most -> decline(answers)
-        _, _ -> new_work(shape, answers)
-      }
+/// Whether the message continues a listed ticket surely enough to attach.
+fn continues_a_ticket(shape: Shape, bars: Bars, answers: Answers) -> Bool {
+  case shape.tickets, answers.continues {
+    [], _ -> False
+    [_, ..], Some(value) -> value >= bars.attach
+    [_, ..], None -> False
   }
 }
 
@@ -782,66 +953,60 @@ fn attach(shape: Shape, bars: Bars, answers: Answers) -> Decision {
         OpenTicket -> Attach(entry.ticket)
         EndedTicket -> Resume(entry.ticket)
       }
+
     None -> Fallback(LowProbability)
   }
 }
 
 /// The listed ticket the answers select, if they select it surely enough. With
 /// one ticket listed the question is not asked and that ticket is the target.
+/// The Choice answers with the ticket itself, so an answer naming a ticket that
+/// this shape did not list finds nothing.
 fn chosen(
   tickets: List(Listed),
-  which: Option(Ranked),
+  which: Option(Ranked(TicketId)),
   bar: Int,
 ) -> Option(Listed) {
   case tickets, which {
     [only], _ -> Some(only)
     [_, _, ..], Some(ranked) ->
-      case share_of(ranked, ranked.selected) >= bar {
-        True -> at(tickets, ranked.selected)
+      case share_of(ranked) >= bar {
+        True ->
+          list.find(tickets, fn(entry) { entry.ticket == ranked.selected })
+          |> option.from_result
         False -> None
       }
     _, _ -> None
   }
 }
 
-/// The element at an index, if the list has one.
-fn at(items: List(a), index: Int) -> Option(a) {
-  case index >= 0 {
-    True -> items |> list.drop(index) |> list.first |> option.from_result
-    False -> None
-  }
-}
-
-/// A label's probability in a Choice answer, or zero for a label it lacks.
-fn share_of(ranked: Ranked, index: Int) -> Int {
-  case list.key_find(ranked.shares, index) {
-    Ok(value) -> value
-    Error(Nil) -> 0
-  }
+/// The probability of the option a Choice selected, or zero if its shares do
+/// not list it.
+fn share_of(ranked: Ranked(a)) -> Int {
+  list.key_find(ranked.shares, ranked.selected) |> result.unwrap(0)
 }
 
 /// A decline, with the reason Jev gives.
 fn decline(answers: Answers) -> Decision {
   case answers.decline_reason {
-    Some(Ranked(selected: 0, ..)) -> Decline(OffTopic)
-    Some(Ranked(selected: 1, ..)) -> Decline(NothingToDo)
-    _ -> Fallback(LowProbability)
+    Some(Ranked(selected: OffTopic, ..)) -> Decline(OffTopic)
+    Some(Ranked(selected: NothingToDo, ..)) -> Decline(NothingToDo)
+    None -> Fallback(LowProbability)
   }
 }
 
-/// New work, when the message continues nothing listed and, if inferred, asks
-/// for work.
+/// New work, when the message continues nothing listed.
 fn new_work(shape: Shape, answers: Answers) -> Decision {
   // The message is apart from the tickets when none is listed or the Noul is
   // low.
   let apart = case shape.tickets, answers.continues {
     [], _ -> True
-    _, Some(value) -> value <= continues_at_most
-    _, None -> False
+    [_, ..], Some(value) -> value <= continues_at_most
+    [_, ..], None -> False
   }
 
-  // Both the separation and, for an inferred trigger, the ask must hold.
-  case apart && asks_for_work(shape, answers) {
+  // New work opens a ticket with the agent the answers choose.
+  case apart {
     True -> New(agent: agent_of(shape.agents, answers.agent))
     False -> Fallback(LowProbability)
   }
@@ -850,7 +1015,7 @@ fn new_work(shape: Shape, answers: Answers) -> Decision {
 /// The catalogue index of the agent that takes new work. A catalogue of one is
 /// used without a question, and a selection below the confidence bar means the
 /// default.
-fn agent_of(agents: List(String), asked: Option(Ranked)) -> Option(Int) {
+fn agent_of(agents: List(String), asked: Option(Ranked(Int))) -> Option(Int) {
   case agents, asked {
     [], _ -> None
     [_], _ -> Some(0)
@@ -859,7 +1024,8 @@ fn agent_of(agents: List(String), asked: Option(Ranked)) -> Option(Int) {
       // agent that exists.
       case
         ranked.confidence >= agent_confidence_least
-        && option.is_some(at(agents, ranked.selected))
+        && ranked.selected >= 0
+        && list.drop(agents, ranked.selected) != []
       {
         True -> Some(ranked.selected)
         False -> None
