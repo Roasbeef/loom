@@ -749,7 +749,7 @@ fn creating_from_home(
     Ok(chosen) -> Some(chosen)
     Error(Nil) -> None
   }
-  let ask = fn(place, name, sharing, roles, _agency, prompt, deliver) {
+  let ask = fn(place, name, sharing, roles, _agency, _worktree, prompt, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -796,6 +796,7 @@ fn creating_from_home(
         sharing,
         creations.Roles(profile:, model:),
         agency_limits.empty,
+        None,
         "",
         fn(answer) { process.send(answers, answer) },
       )
