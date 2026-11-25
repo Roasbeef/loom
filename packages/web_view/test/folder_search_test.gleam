@@ -107,10 +107,9 @@ pub fn an_open_list_owes_one_index_test() {
   assert nothing == None
 }
 
-// The answer settles the build only while one is out, an index lives for its
-// lifetime and is asked for again after it with the old one kept on show, and a
-// refusal is asked for again at the next open and keeps an old index.
-pub fn an_index_lives_for_its_lifetime_and_a_refusal_is_retried_test() {
+// The answer settles the build only while one is out, and an index lives for its
+// lifetime and is asked for again after it with the old one kept on show.
+pub fn an_index_lives_for_its_lifetime_test() {
   let #(asking, _) = composer.indexing(listed(), offers(composer.MayType))
   let built = index([["loom"]])
 
@@ -119,24 +118,59 @@ pub fn an_index_lives_for_its_lifetime_and_a_refusal_is_retried_test() {
   let held = composer.indexed(asking, Ok(built), 5)
   assert held.seek == composer.Indexed(built, 5)
 
-  // Inside its lifetime nothing is asked; at the end of it a new build is, and the
-  // old index stays drawn.
   let young = composer.Offers(..offers(composer.MayType), now: 5 + 299_999)
   assert composer.indexing(held, young).1 == None
   let old = composer.Offers(..offers(composer.MayType), now: 5 + 300_000)
   let #(renewing, seeds) = composer.indexing(held, old)
   assert renewing.seek == composer.Indexing(Some(built))
   assert seeds != None
-  let kept =
-    composer.indexed(renewing, Error(folder_browse.Unreadable), 400_000)
-  assert kept.seek == composer.Indexed(built, 400_000)
+}
 
-  // A first build that is refused is asked for again.
+// A refusal is retried when the list next opens and not on a keystroke, whether it
+// was the first build or a refresh of an index already held, and the held index
+// stays in use meanwhile.
+pub fn a_refusal_is_retried_at_the_next_open_not_the_next_keystroke_test() {
+  let #(asking, _) = composer.indexing(listed(), offers(composer.MayType))
   let refused = composer.indexed(asking, Error(folder_browse.Unreadable), 5)
-  assert refused.seek == composer.Unindexable(folder_browse.Unreadable)
-  let #(retry, again) = composer.indexing(refused, offers(composer.MayType))
+  assert refused.seek == composer.Unindexable(folder_browse.Unreadable, None)
+
+  // A keystroke asks for nothing.
+  let #(typing, _) = step(refused, composer.Searched("loom"))
+  assert composer.indexing(typing, offers(composer.MayType)).1 == None
+
+  // Closing and opening the list asks again.
+  let #(shut, _) = step(typing, composer.Toggled(composer.CodeChip))
+  let #(reopened, _) = step(shut, composer.Toggled(composer.CodeChip))
+  assert reopened.seek == composer.Unindexed
+  let #(retry, again) = composer.indexing(reopened, offers(composer.MayType))
   assert retry.seek == composer.Indexing(None)
   assert again != None
+
+  // A refused refresh keeps the old index drawn, asks for nothing on a keystroke
+  // and refreshes at the next open.
+  let built = index([["loom"]])
+  let stale =
+    composer.State(..listed(), seek: composer.Indexed(built, 0), search: "loom")
+  let old = composer.Offers(..offers(composer.MayType), now: 300_000)
+  let #(renewing, _) = composer.indexing(stale, old)
+  let kept =
+    composer.indexed(renewing, Error(folder_browse.Unreadable), 300_000)
+  assert kept.seek
+    == composer.Unindexable(folder_browse.Unreadable, Some(built))
+  assert list.length(composer.choices(kept, old).found) == 1
+  let #(typed, _) = step(kept, composer.Searched("loomy"))
+  assert composer.indexing(typed, old).1 == None
+  let #(closed, _) = step(typed, composer.Toggled(composer.CodeChip))
+  let #(open_again, _) = step(closed, composer.Toggled(composer.CodeChip))
+  assert composer.indexing(open_again, old).1 != None
+}
+
+// Coming back from the folder picker the search field is empty, so the list is not
+// filtered by text the person cannot see.
+pub fn returning_from_the_picker_clears_the_search_test() {
+  let #(browsing, _) =
+    step(composer.State(..listed(), search: "loom"), composer.OpenedBrowser)
+  assert browsing.search == ""
 }
 
 // The ranking: an exact name, then a name that starts with the fragment, then one
@@ -513,10 +547,7 @@ pub fn the_list_says_when_it_indexes_and_when_it_stopped_test() {
       composer.Toggled(composer.CodeChip),
       composer.Searched("loom"),
     ])
-  assert string.contains(
-    drawn(refused),
-    folder_browse.refusal_words(folder_browse.Unreadable),
-  )
+  assert string.contains(drawn(refused), "took too long to build")
 
   let empty =
     opened(owner(process.new_subject(), Ok(Index("/Users/o", [], Covered))))

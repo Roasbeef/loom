@@ -477,3 +477,64 @@ pub fn the_remembered_folders_seed_a_deep_container_test() {
     )
   assert found(hostile, "loom") == []
 }
+
+// A seed whose parent is as deep as the depth bound is dropped, since its children
+// would be trails past what a creation takes, and a seed with a `..` component is
+// refused whole.
+pub fn a_seed_too_deep_or_with_a_dot_dot_is_not_read_test() {
+  let home = owners_home("index-seed-depth")
+  let deep = "/a/b/c/d/e/f"
+  make(home <> deep <> "/g/seed-child")
+  make(home <> "/one/two")
+  make(home <> "/other/target-up")
+  list.each(["a", "b", "c", "d", "e", "f", "g", "h"], fn(name) {
+    make(home <> "/" <> name <> "/x/y")
+  })
+  let tight = folder_listing.Limits(..folder_listing.limits, visits: 4)
+
+  // The parent `a/b/c/d/e/f/g` is seven deep, past the bound, so it is not seeded
+  // and its folder is not found with the tight budget.
+  let too_deep =
+    folder_listing.index_in(
+      home,
+      [home <> deep <> "/g/seed-child"],
+      tight,
+      clock,
+    )
+  assert found(too_deep, "seed-child") == []
+  assert list.all(too_deep.entries, fn(entry) {
+    list.length(entry.trail) <= folder_browse.index_depth
+  })
+
+  // `one/../other/target-up` would reach `other` through a `..`, which is refused.
+  let dots =
+    folder_listing.index_in(home, [home <> "/one/../other/x"], tight, clock)
+  assert found(dots, "target-up") == []
+  let plain = folder_listing.index_in(home, [home <> "/other/x"], tight, clock)
+  assert found(plain, "target-up") == [["other", "target-up"]]
+}
+
+// A remembered folder inside a repository seeds its parent as below the checkout,
+// so only folders that hold a `.git` are listed there, as the walk from the home
+// would list them.
+pub fn a_seed_inside_a_checkout_lists_only_checkouts_test() {
+  let home = owners_home("index-seed-checkout")
+  make(home <> "/code/proj/.git")
+  make(home <> "/code/proj/packages/client/src")
+  make(home <> "/code/proj/packages/lib/.git")
+  list.each(["a", "b", "c", "d", "e", "f"], fn(name) {
+    make(home <> "/" <> name <> "/x/y")
+  })
+  let tight = folder_listing.Limits(..folder_listing.limits, visits: 8)
+
+  let seeded =
+    folder_listing.index_in(
+      home,
+      [home <> "/code/proj/packages/client"],
+      tight,
+      clock,
+    )
+  assert found(seeded, "lib") == [["code", "proj", "packages", "lib"]]
+  assert found(seeded, "client") == []
+  assert found(seeded, "src") == []
+}

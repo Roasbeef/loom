@@ -1281,13 +1281,15 @@ fn folder_row(pane: Pane(message), each: composer.Choice) -> Element(message) {
 /// typed: that the index is being built, that the daemon refused to build one, or
 /// that the build stopped before it had looked everywhere.
 fn seek_note(pane: Pane(message)) -> List(Element(message)) {
-  // The note depends on what the index is doing and whether anything is typed.
+  // Nothing is said until something is typed, since the rows already show the
+  // remembered folders.
   let typing = case folder_browse.needle(pane.state.search) {
     Ok(_) -> True
     Error(Nil) -> False
   }
 
-  // The note depends on what the index is doing and whether anything is typed.
+  // Once something is typed, the note says what the index is doing or why it
+  // has nothing to rank.
   case typing, pane.state.seek {
     False, _ | True, composer.Unindexed -> []
     True, composer.Indexing(before: None) -> [
@@ -1296,9 +1298,11 @@ fn seek_note(pane: Pane(message)) -> List(Element(message)) {
       ]),
     ]
     True, composer.Indexing(before: Some(_)) -> []
-    True, composer.Unindexable(why:) -> [
+    True, composer.Unindexable(..) -> [
       html.p([attribute.class("pop-foot")], [
-        html.text(folder_browse.refusal_words(why)),
+        html.text(
+          "The folder list took too long to build. Type a path, or try again.",
+        ),
       ]),
     ]
     True, composer.Indexed(index:, ..) ->
@@ -1348,7 +1352,7 @@ fn nothing_note(
     composer.Indexing(before: Some(_))
     | composer.Unindexed
     | composer.Indexed(..)
-    | composer.Unindexable(_) -> False
+    | composer.Unindexable(..) -> False
   }
 
   // The note is for text that matched no row anywhere and is not waiting for one.

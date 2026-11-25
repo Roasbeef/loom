@@ -334,12 +334,12 @@ pub fn index_in(
   bounds: Limits,
   now: fn() -> Int,
 ) -> folder_browse.Index {
-  let parents = seed_trails(home, seeds)
+  let parents = seed_trails(home, seeds, bounds)
   let start =
     Walk(
       front: list.append(
-        list.map(parents, fn(trail) {
-          Pending(trail, list.length(trail), Anywhere)
+        list.map(parents, fn(seed) {
+          Pending(seed.0, list.length(seed.0), seed.1)
         }),
         [Pending([], 0, Anywhere)],
       ),
@@ -349,25 +349,49 @@ pub fn index_in(
       read: 0,
       stop_at: now() + bounds.ms,
     )
-  let #(entries, reach) = crawl(home, start, parents, bounds, now)
+  let #(entries, reach) =
+    crawl(home, start, list.map(parents, fn(seed) { seed.0 }), bounds, now)
 
   folder_browse.Index(home:, entries:, reach:)
 }
 
-/// The distinct parent folders of the seeds that lie below the home, as trails that
-/// are real visible directories all the way down.
-fn seed_trails(home: String, seeds: List(String)) -> List(List(String)) {
+/// The distinct parent folders of the seeds, each with the context it is read in.
+///
+/// A parent is kept only when it lies below the home, is shallower than the depth
+/// bound (so its children, one level down, are still trails a creation takes), and
+/// every component of it is a real visible directory. Its context is
+/// `BelowCheckout` when the home or any component holds a `.git`, because a
+/// remembered folder inside a repository must not index the repository's internals
+/// that the walk from the home would have left out.
+fn seed_trails(
+  home: String,
+  seeds: List(String),
+  bounds: Limits,
+) -> List(#(List(String), Context)) {
   list.filter_map(seeds, fn(path) {
-    // A seed counts only when it lies below the home and every component of its parent is a real directory.
+    // A seed outside the home names nothing the index may read, whatever its
+    // spelling, so only a path that begins with the home and a slash is split.
     case string.starts_with(path, home <> "/") {
       True -> {
         let below = string.drop_start(path, string.length(home) + 1)
-        let parent = string.split(below, "/") |> list.reverse |> list.drop(1)
-        let trail = list.reverse(parent)
+        let trail =
+          string.split(below, "/")
+          |> list.reverse
+          |> list.drop(1)
+          |> list.reverse
 
-        // A seed counts only when it lies below the home and every component of its parent is a real directory.
-        case trail != [] && real_trail(home, trail, []) {
-          True -> Ok(trail)
+        // A home that is itself a checkout makes every seed below one.
+        let outer = case holds_git(home) {
+          True -> BelowCheckout
+          False -> Anywhere
+        }
+
+        // An empty parent is the home, which is read anyway, and a deep one would
+        // list trails past what a creation accepts.
+        case trail != [] && list.length(trail) < bounds.depth {
+          True ->
+            real_trail(home, trail, [], outer)
+            |> result.map(fn(context) { #(trail, context) })
           False -> Error(Nil)
         }
       }
@@ -377,19 +401,34 @@ fn seed_trails(home: String, seeds: List(String)) -> List(List(String)) {
   |> list.unique
 }
 
-/// Whether every component of a trail is a visible real directory, checked from
-/// the home down, so a link anywhere in it makes the whole trail refused.
-fn real_trail(home: String, rest: List(String), done: List(String)) -> Bool {
-  // The trail is checked one component at a time, from the home down.
+/// The context a trail is read in, when every component of it is a visible real
+/// directory, checked from the home down, so a link anywhere in it makes the whole
+/// trail refused. A component that holds a `.git` makes the context `BelowCheckout`.
+fn real_trail(
+  home: String,
+  rest: List(String),
+  done: List(String),
+  context: Context,
+) -> Result(Context, Nil) {
+  // The trail is walked from the home down, one component at a time, so the first
+  // link or hidden name stops the walk before anything below it is touched.
   case rest {
-    [] -> True
+    [] -> Ok(context)
     [name, ..more] -> {
       let so_far = list.append(done, [name])
+      let path = string.join([home, ..so_far], "/")
+      let allowed =
+        listable([name]) == [name]
+        && !is_library(list.length(done), name)
+        && is_real_directory(path)
 
-      listable([name]) == [name]
-      && !is_library(list.length(done), name)
-      && is_real_directory(string.join([home, ..so_far], "/"))
-      && real_trail(home, more, so_far)
+      // A component that is hidden, a link or not a directory refuses the trail;
+      // one that holds a checkout changes how what is below it is listed.
+      case allowed, holds_git(path) {
+        False, _ -> Error(Nil)
+        True, True -> real_trail(home, more, so_far, BelowCheckout)
+        True, False -> real_trail(home, more, so_far, context)
+      }
     }
   }
 }
@@ -425,10 +464,15 @@ fn crawl(
 
 /// The next waiting directory and the walk without it.
 fn take(walk: Walk) -> Result(#(Pending, Walk), Nil) {
-  case walk.front, list.reverse(walk.back) {
-    [item, ..rest], _ -> Ok(#(item, Walk(..walk, front: rest)))
-    [], [item, ..rest] -> Ok(#(item, Walk(..walk, front: rest, back: [])))
-    [], [] -> Error(Nil)
+  // The back list is turned over only when the front is empty, so each directory
+  // costs a constant and not the length of the queue.
+  case walk.front {
+    [item, ..rest] -> Ok(#(item, Walk(..walk, front: rest)))
+    [] ->
+      case list.reverse(walk.back) {
+        [item, ..rest] -> Ok(#(item, Walk(..walk, front: rest, back: [])))
+        [] -> Error(Nil)
+      }
   }
 }
 
@@ -445,13 +489,15 @@ fn read_into(
   let folder = string.join([home, ..item.trail], "/")
   let walk = Walk(..walk, read: walk.read + 1)
 
-  // What a directory read means for its children depends on whether it holds a checkout.
+  // A directory that cannot be read, or holds more than the entry bound, adds
+  // nothing and is not retried.
   case read_children(folder) {
     Error(_) -> walk
     Ok(names) -> {
       let checkout = list.contains(names, ".git")
 
-      // What a directory read means for its children depends on whether it holds a checkout.
+      // Everything below a checkout is read as below one: the walk goes on through
+      // its folders to find sub-repositories, but lists only those.
       let below = case item.context, checkout {
         Anywhere, False -> Anywhere
         Anywhere, True | BelowCheckout, _ -> BelowCheckout
@@ -467,13 +513,16 @@ fn read_into(
       list.fold(children, walk, fn(walk, name) {
         let trail = list.append(item.trail, [name])
 
-        // What a directory read means for its children depends on whether it holds a checkout.
+        // Outside a checkout every folder is listed. Inside one, a folder is listed
+        // only when it holds a `.git`, which is how a worktree or sub-repository
+        // is told from the repository's own source folders.
         let shown = case item.context, checkout {
           Anywhere, False -> True
           Anywhere, True | BelowCheckout, _ -> holds_git(folder <> "/" <> name)
         }
 
-        // What a directory read means for its children depends on whether it holds a checkout.
+        // The count is of listed entries, which is what the entry bound limits; a
+        // folder that is only read through is queued below but not counted.
         let walk = case shown {
           True ->
             Walk(

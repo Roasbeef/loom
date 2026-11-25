@@ -336,7 +336,7 @@ pub fn refusal_words(refusal: Refusal) -> String {
 pub fn needle(text: String) -> Result(String, Nil) {
   let trimmed = string.trim(text) |> string.lowercase
 
-  // A fragment is kept only if its length and spelling pass.
+  // A leading `~/` names the home, so a pasted path searches the path below it.
   let fragment = case string.starts_with(trimmed, "~/") {
     True -> string.drop_start(trimmed, 2)
     False -> trimmed
@@ -373,13 +373,14 @@ pub fn rank(entries: List(Entry), fragment: String) -> List(List(String)) {
   let slashed = string.contains(fragment, "/")
 
   list.filter_map(entries, fn(entry) {
-    // An entry is ranked by how well its name holds the fragment.
+    // A slash makes the fragment a path, which is compared with the whole trail;
+    // otherwise only the directory's own name is.
     let held = case slashed {
       True -> string.lowercase(string.join(entry.trail, "/"))
       False -> entry.lower
     }
 
-    // An entry is ranked by how well its name holds the fragment.
+    // An entry the fragment is not in is dropped, and the rest are ranked.
     case kind(held, fragment) {
       Ok(rank) ->
         Ok(#(

@@ -5611,7 +5611,8 @@ pub fn index_for(
   home: fn() -> Result(String, creations.Reason),
   seeds: List(String),
 ) -> folder_browse.IndexAnswer {
-  // This branch resolves authorized_owner standing open before the operation continues.
+  // The owner check comes first so a page that may not create costs no filesystem
+  // read, and the home is resolved only after it for the same reason.
   case authorized_owner(standing, open) {
     Ok(_) ->
       case home() {

@@ -4841,7 +4841,8 @@ fn browsing(model: Model, trail: List(String)) -> #(Model, Effect(Msg)) {
 /// it handed back seeds. At most one build is ever out, because the composer
 /// holds `Indexing` until the answer comes.
 fn indexing(model: Model, seeds: Option(List(String))) -> Effect(Msg) {
-  // An index is owed only while the Code list is open on a page that may type a path.
+  // Seeds mean the composer put a build out; a page with no folder capability
+  // never gets that far, so a missing one is answered with nothing.
   case seeds, model.start.folders {
     Some(held), Some(Folders(index:, ..)) -> {
       use dispatch <- effect.from

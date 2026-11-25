@@ -264,10 +264,12 @@ pub type Seek {
   )
 
   /// The daemon refused to build one, in fixed words. The next open of the list
-  /// asks again.
+  /// asks again, and a keystroke does not.
   Unindexable(
     /// Why.
     why: folder_browse.Refusal,
+    /// The index held before the refused refresh, which stays in use.
+    before: Option(folder_browse.Index),
   )
 }
 
@@ -1035,7 +1037,13 @@ fn toggled(state: State, chip: Chip) -> #(State, Intent) {
       Stay,
     )
     Showing(_) | Shut -> #(
-      State(..state, open: Showing(chip), search: "", browser: Closed),
+      State(
+        ..state,
+        open: Showing(chip),
+        search: "",
+        seek: retried(state.seek),
+        browser: Closed,
+      ),
       case chip, state.agent {
         CodeChip, Here -> ReadPlacements
         CodeChip, Orchestrator(name:) -> ReadOn(orchestrator: name)
@@ -1043,6 +1051,19 @@ fn toggled(state: State, chip: Chip) -> #(State, Intent) {
         ModelChip, _ -> Stay
       },
     )
+  }
+}
+
+/// What an index state becomes when a list opens: a refused build is forgotten so
+/// the open asks again, and an index kept through a refused refresh is made stale
+/// so the open refreshes it. This is the only place a refusal is retried, so a
+/// keystroke after one asks the daemon for nothing.
+fn retried(seek: Seek) -> Seek {
+  case seek {
+    Unindexable(_, Some(index)) ->
+      Indexed(index:, at: 0 - folder_browse.index_ttl_ms)
+    Unindexable(_, None) -> Unindexed
+    Unindexed | Indexing(_) | Indexed(..) -> seek
   }
 }
 
@@ -1172,7 +1193,7 @@ fn chose_target(state: State, offers: Offers, target: Target) -> State {
 fn opened_browser(state: State, offers: Offers) -> #(State, Intent) {
   case offers.typing {
     MayType -> #(
-      State(..state, browser: Reading(trail: [], behind: None)),
+      State(..state, search: "", browser: Reading(trail: [], behind: None)),
       Browse(trail: []),
     )
     MayNotType -> #(state, Stay)
@@ -1305,7 +1326,8 @@ fn chose_model(state: State, offers: Offers, model: Option(String)) -> State {
 /// Updates the search text while the Code chip is showing. The text only ranks
 /// the index the page holds, so it asks the daemon for nothing.
 fn searched(state: State, text: String) -> State {
-  // The list's own chip is the only place a search is typed.
+  // The field exists only inside the Code list, so text from any other state is a
+  // stale or forged message and is ignored.
   case state.open {
     Showing(chip: CodeChip) -> State(..state, search: bounded(text))
     Showing(_) | Shut -> state
@@ -1329,10 +1351,11 @@ pub fn indexing(
   state: State,
   offers: Offers,
 ) -> #(State, Option(List(String))) {
-  // An index is owed only while the Code list is open on a page that may type a path.
+  // An index is owed when the Code list is open on a page that may type a path and
+  // none is held, or the held one is past its lifetime. A refusal is not owed
+  // again here: `retried` forgets it when the list next opens.
   let owed = case state.open, offers.typing, state.seek {
     Showing(chip: CodeChip), MayType, Unindexed -> Some(None)
-    Showing(chip: CodeChip), MayType, Unindexable(_) -> Some(None)
     Showing(chip: CodeChip), MayType, Indexed(index:, at:) ->
       case offers.now - at >= folder_browse.index_ttl_ms {
         True -> Some(Some(index))
@@ -1341,7 +1364,8 @@ pub fn indexing(
     _, _, _ -> None
   }
 
-  // An index is owed only while the Code list is open on a page that may type a path.
+  // A build is out from here on, with the index held before it kept in use, so
+  // nothing asks again until the answer arrives.
   case owed {
     Some(before) -> #(
       State(..state, seek: Indexing(before:)),
@@ -1370,10 +1394,9 @@ pub fn indexed(
 ) -> State {
   case state.seek, answer {
     Indexing(_), Ok(index) -> State(..state, seek: Indexed(index:, at: now))
-    Indexing(Some(index)), Error(_) ->
-      State(..state, seek: Indexed(index:, at: now))
-    Indexing(None), Error(why) -> State(..state, seek: Unindexable(why:))
-    Unindexed, _ | Indexed(..), _ | Unindexable(_), _ -> state
+    Indexing(before:), Error(why) ->
+      State(..state, seek: Unindexable(why:, before:))
+    Unindexed, _ | Indexed(..), _ | Unindexable(..), _ -> state
   }
 }
 
@@ -1476,10 +1499,13 @@ pub fn choices(state: State, offers: Offers) -> Choices {
 
   let shown = shown_hits(state)
 
-  // A folder that a drawn remembered folder already shows is not offered twice.
+  // The home the index was built under, which turns an entry's trail into the
+  // whole path a remembered folder is compared with.
   let home = case state.seek {
-    Indexed(index:, ..) | Indexing(before: Some(index)) -> index.home
-    Unindexed | Unindexable(_) | Indexing(before: None) -> ""
+    Indexed(index:, ..)
+    | Indexing(before: Some(index))
+    | Unindexable(_, Some(index)) -> index.home
+    Unindexed | Unindexable(_, None) | Indexing(before: None) -> ""
   }
 
   // A found folder is left out only when a remembered folder drawn above it is the
@@ -1534,13 +1560,15 @@ pub fn first_choice(choices: Choices) -> Option(Choice) {
 /// The folders the list draws from the index: the best entries for the fragment
 /// now typed, ranked. A stale index stays in use while its replacement is out.
 fn shown_hits(state: State) -> List(List(String)) {
-  // Ranking needs a held index and a fragment worth ranking.
+  // Any index in hand is used, including the one kept through a refused refresh.
   let held = case state.seek {
-    Indexed(index:, ..) | Indexing(before: Some(index)) -> Ok(index)
-    Unindexed | Unindexable(_) | Indexing(before: None) -> Error(Nil)
+    Indexed(index:, ..)
+    | Indexing(before: Some(index))
+    | Unindexable(_, Some(index)) -> Ok(index)
+    Unindexed | Unindexable(_, None) | Indexing(before: None) -> Error(Nil)
   }
 
-  // Ranking needs a held index and a fragment worth ranking.
+  // With text too short to rank, or no index yet, there is nothing to show.
   case held, folder_browse.needle(state.search) {
     Ok(index), Ok(fragment) -> folder_browse.rank(index.entries, fragment)
     Ok(_), Error(Nil) | Error(Nil), _ -> []

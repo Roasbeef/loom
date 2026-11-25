@@ -200,19 +200,25 @@ asks the daemon for nothing. Each keystroke ranks the held index in memory
 request at a time: it is `Indexing` from the ask until the answer, and nothing asks
 again meanwhile, so no number of keystrokes starts a second build.
 
-**Lifetime.** The index belongs to the page and lives for `index_ttl_ms` = 5 minutes
-from the page's clock when it arrived. The next open of the list after that asks for
-a new one, and the old one stays drawn until it arrives. A build that was refused is
-asked for again at the next open, and an index already held survives a refused
-refresh. The page ends and the index with it.
+**Lifetime.** The index belongs to the page. It is fresh for `index_ttl_ms` = 5
+minutes from the page's clock when it arrived. Nothing is evicted: after five minutes
+it is stale, the next composer message while the list is open asks for a new one, and
+the stale one stays drawn until that arrives. A build that was refused is asked for
+again when the list next opens and not on a keystroke, so a home that cannot be
+indexed in time costs one build for each open and not one for each key. An index held
+through a refused refresh stays in use and is refreshed at the next open. The index
+ends with the page, and up to 60,000 entries stay in the page's memory until it does.
 
 **The seeds.** The one argument is the page's remembered folders. The daemon reads
 the parent of each of them (when it lies below the home) before the rest of the home,
 so a container of repositories, such as `~/gocode/src/github.com/roasbeef`, is
 indexed first however wide the rest of the home is. A seed is a hint, not a path to
 trust: each component of its parent is checked from the home down as a visible real
-directory, and one that passes through a link, lies outside the home or is hidden is
-not read.
+directory, and one that passes through a link, holds a `..`, lies outside the home or
+is hidden is not read. A parent as deep as `index_depth` is dropped, since its
+children would be trails past what a creation takes. A parent inside a checkout is
+read as below it, so a remembered folder in `~/code/proj/packages` indexes the
+sub-repositories there and not the repository's own source folders.
 
 **Who may ask.** The same rule as `browse`: `Folders` is `Some` only for the
 daemon's owner on a page minted to operate, and `ui_socket.index_for` runs
@@ -254,10 +260,13 @@ fragment that holds a slash is looked for in the whole trail, so `code/app` find
 `app` below `code`. `needle` removes a leading `~/`, so a pasted `~/code/app` is the
 same search, and requires two characters.
 
-**What the page keeps.** The page holds the ranking it last drew, and a press names an
-index into it (`ChoseFound(index)`), which `folder_browse.hit_trail` turns into a
+**What the page keeps.** The page holds the index, not the ranking. A press names an
+index into the ranking of the index and the text as they are when the press arrives
+(`ChoseFound(index)`), which `folder_browse.hit_trail` turns into a
 trail, so the browser names no path, and an index outside the ranking changes
-nothing. A found folder becomes `composer.Picked(trail)`, which reaches the daemon as
+nothing. If a refresh of the index lands between the draw and the press, the index
+may name a different folder, which the chip shows at once and the creation judges
+anyway. A found folder becomes `composer.Picked(trail)`, which reaches the daemon as
 the typed `~/` path that `new_folder.check` judges when the session is created,
 exactly as a folder chosen in the picker does. The listing is advice; the creation is
 the check. A found folder is left out of the Folders rows only when a remembered
@@ -303,10 +312,22 @@ handler there.
   second and listed 17,090 entries, and ranking them took 6 to 11 ms. A cold file
   cache is slower and is bounded by the 4 second limit.
 - Up to 60,000 entries held in the page's memory, each a trail of at most six names
-  that are shared with the directory listing they came from, for five minutes.
+  that are shared with the directory listing they came from, for the life of the page
+  (see Lifetime).
 - A folder deeper than six levels, inside a directory the build does not enter, or
   beyond a bound of a very large home is found through "Open folder..." or a typed
   path, and the list says when the build stopped.
+- **Known limit, no change here.** `bootstrap.list_directory_bounded` reads a whole
+  directory and only then applies `entry_limit`, so a directory of a million files is
+  materialised before it is refused. The listing already had this, and the index does
+  it for up to 20,000 directories. It is bounded in time by the 4 second limit and the
+  5 second deadline and in memory by the largest single directory. A real fix needs
+  a bounded read in the host, which would be new FFI, so it is not done here.
+- **A home that is itself a Git repository** (a dotfiles checkout) reads the whole walk
+  as below a checkout: only folders that hold a `.git` are listed, so a plain
+  `~/Documents/x` is not found by the index, and the queue of folders to read is
+  bounded by the read and time limits and not by the entry bound. Such an owner types
+  a path or uses "Open folder...".
 - A link to a folder is not found by name, since the walk follows none. The folder it
   points to is found under its own name if it lies inside the home.
 - The index is a snapshot. A folder created after it was built is not offered for up
