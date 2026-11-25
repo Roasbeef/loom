@@ -118,7 +118,7 @@ words for a pending-proposal badge (`session_words(n)`), not a proposals engine.
   no current operation**; else `working` if any strand has a current operation; else `idle`; unknown word is
   `unknown` (same doc; implemented at `client/peer_mail.gleam:1519-1526`, words at `:1533-1537`).
 - The page tells a failure from an approval by the `approvals` count: `needs_you` with 0 approvals becomes
-  `Activity.Failed` (`web_view/sessions.gleam:193-208` type, `:240-245` `activity_from`, words at `:254`). In the
+  `Activity.Failed` (`web_view/sessions.gleam:227-208` type, `:240-245` `activity_from`, words at `:254`). In the
   sidebar grouping `Failed` lands in **Idle** with its own colour (`web_view/listing.gleam:294-298`, `bucket` arm
   `sessions.Live, Ok(sessions.Failed) -> Idle`).
 - **What is dropped:** the daemon reduces each row to `#(id, state)` before the page sees it
@@ -227,7 +227,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
   question{seq,text,options}, pull_request, failure, actions[CanAnswer|CanClose|CanRetry|CanPublish|CanStop]`
   (`session_view/project_board.gleam:107-189`). Board also carries `would` (what `observe` rules would have done), `rules`
   with verdicts, and source `notes` such as a rate-limit end time (`project_board.gleam:273-299`).
-- Gaps: `options` is decoded but the daemon writes `"options": []` always (`client/daemon/project_host.gleam:4645-4307`),
+- Gaps: `options` is decoded but the daemon writes `"options": []` always (`client/daemon/project_host.gleam:4743-4307`),
   and the worker tool has no options or recommendation field. Durable: yes (ledger). Not wired: `token_ceiling`
   has no consumer (`project-mode.md` "Known gaps"). Status: #1164 merged on 2026-11-02 (the handoff's "draft" heading was stale and is corrected in `docs/next.md`, "Project mode");
   "never run" lists publishing against real GitHub.
@@ -427,7 +427,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
 | Observer can see counts but not decide | Any inbox surface drawing decide buttons must gate them like approval cards (owner/operator only, 600 ms arming, never auto-focus) | `approvals.md:261-299` |
 | No naked `Bool`, literate comments, lint R0-R22 | Module `////` prose, `///` on every public item, blank line above comments, bodies of at most about eight statements, `make check` is the gate (verify by its own exit code) | `CLAUDE.md` |
 | Pure-state-machine pattern for UI state | State machines as functions; process machinery via weft; no hand-rolled timers/pollers | `CLAUDE.md` ("Process machinery goes through weft"); `docs/weft.md` |
-| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1183` |
+| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1208` |
 
 ---
 
