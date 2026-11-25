@@ -860,13 +860,13 @@ fn dispatch(
         "failed_usage",
       )
       let error = result.unwrap(wire.field(response, "error"), json.Null)
-      stream_failure(acc, error)
+      stream_failure(acc, error, json.Null)
     }
     "error" -> {
       // Native Responses errors carry an inner error object. Compatible
       // endpoints can still use the older flat code/message envelope.
       let error = result.unwrap(wire.field(value, "error"), value)
-      stream_failure(acc, error)
+      stream_failure(acc, error, value)
     }
     _ -> malformed(acc, "event_unsupported")
   }
@@ -893,20 +893,31 @@ fn identity(
 fn stream_failure(
   acc: Accumulator,
   error: JsonValue,
+  event: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   let #(code, description) = error_fields(error)
+  let error_advice = error_retry_after(error)
 
-  // Both sources describe this attempt; neither can shorten the other's wait.
-  let retry_after_ms = case acc.retry_after, error_retry_after(error) {
-    Some(left), Some(right) -> Some(int.max(left, right))
-    Some(_), None -> acc.retry_after
-    None, hint -> hint
+  // For capacity errors only advice from the failed event authorizes another
+  // attempt. The HTTP 200 headers belong to a successfully opened stream.
+  let #(stream_code, retry_after_ms) = case code {
+    "server_is_overloaded" | "policy_capacity_unavailable" -> #(
+      "responses." <> code,
+      option.lazy_or(error_advice, fn() { error_retry_after(event) }),
+    )
+
+    // Other stream failures keep the larger valid HTTP and error delays.
+    _ -> #(code, case error_advice, acc.retry_after {
+      Some(left), Some(right) -> Some(int.max(left, right))
+      Some(_), None -> error_advice
+      None, _ -> acc.retry_after
+    })
   }
 
   fail(
     acc,
     stream.StreamError(
-      code,
+      stream_code,
       description
         <> "; error_code="
         <> error_label(error, "code")
@@ -983,9 +994,10 @@ fn error_fields(value: JsonValue) -> #(String, String) {
       "context_length_exceeded",
       "maximum context length exceeded",
     )
-    "server_is_overloaded" | "policy_capacity_unavailable" -> #(
-      "overloaded_error",
-      "Responses provider reported a transient failure",
+    "server_is_overloaded" -> #(code, "Selected model is at capacity")
+    "policy_capacity_unavailable" -> #(
+      code,
+      "Capacity is unavailable under the selected provider policy",
     )
     "responses_error" -> #(
       "responses_error",
@@ -1023,7 +1035,19 @@ fn http_error(acc: Accumulator, status: Int) -> stream.ProviderError {
     |> result.try(wire.field(_, "error"))
     |> result.unwrap(json.Null)
   let #(code, description) = error_fields(value)
-  stream.HttpError(status, code, description, acc.retry_after)
+
+  // This policy change is for errors inside an opened stream. Keep the
+  // existing HTTP error classification and diagnostics.
+  case code {
+    "server_is_overloaded" | "policy_capacity_unavailable" ->
+      stream.HttpError(
+        status,
+        "overloaded_error",
+        "Responses provider reported a transient failure",
+        acc.retry_after,
+      )
+    _ -> stream.HttpError(status, code, description, acc.retry_after)
+  }
 }
 
 // Item publication reserves both identities before any deltas are accepted.

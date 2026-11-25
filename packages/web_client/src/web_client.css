@@ -767,7 +767,10 @@
   .inbox-send{margin:0;}
   .inbox-hold{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .inbox-outbox{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  .inbox-outbox-bar{position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
+  /* The bar does not shrink: in the reading pane's column it would otherwise give
+     up its height to the body, and a bar whose words wrap (a phone's) would draw
+     them below its own edge. */
+  .inbox-outbox-bar{flex:0 0 auto;position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
   .inbox-outbox-to{flex:1 1 0;min-width:0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);overflow-wrap:anywhere;}
   .inbox-outbox-to b{color:var(--color-fg);font-weight:600;}
   .inbox-outbox-items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px;}
@@ -2704,9 +2707,10 @@
     :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
     :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
     loom-shell.loom-inbox .session-head .workspace{display:none;}
-    loom-shell.loom-inbox:not(.loom-home) .session-head .home-who{display:none;}
-    loom-shell.loom-home .session-head .home-who{display:flex;min-width:0;}
-    loom-shell.loom-home .session-head .home-who-button{min-height:36px;max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    /* The final design's phone bar is the brand, the crumb and the need pill: the
+       role chip is hidden on every page, Home's included. The owner's menu and
+       Admin stay in the sidebar's foot. */
+    loom-shell.loom-inbox .session-head .home-who{display:none;}
     loom-shell.loom-inbox .session-head{gap:0 10px;padding-right:12px;}
     loom-shell.loom-session:not(.loom-home) .session-head{padding-left:16px;}
     loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
