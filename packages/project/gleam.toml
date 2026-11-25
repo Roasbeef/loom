@@ -7,7 +7,7 @@ description = "Project mode's engine: a pure, replayable state machine over trig
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 evalstat = { path = "../evalstat" }
-jevelin = { path = "../../../jevelin" }
+jevelin = { git = "https://github.com/Roasbeef/jevelin.git", ref = "493a1b4207d5f935f351f64f258a50a01bd29779" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

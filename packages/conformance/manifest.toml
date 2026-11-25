@@ -46,7 +46,7 @@ packages = [
   { name = "host", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "envoy", "filepath", "glaml", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_regexp", "gleam_stdlib", "gleam_time", "simplifile", "stratus", "weft"], source = "local", path = "../host" },
   { name = "houdini", version = "1.2.1", build_tools = ["gleam"], requirements = [], otp_app = "houdini", source = "hex", outer_checksum = "6F8AC2F12974567FB744BEA66AC93CEB76AAEA19AD28564623F76CDA9BC26A85" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
-  { name = "jevelin", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "local", path = "../../../jevelin" },
+  { name = "jevelin", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/jevelin.git", commit = "493a1b4207d5f935f351f64f258a50a01bd29779" },
   { name = "json_codec", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../json_codec" },
   { name = "khepri", version = "0.19.3", build_tools = ["rebar3", "mix"], requirements = ["horus", "ra"], otp_app = "khepri", source = "hex", outer_checksum = "A969A53FB91934130223A5E7DB2A46DD200B5FAB5C617DB154857D0FB1F96B14" },
   { name = "kryptos", version = "1.5.0", build_tools = ["gleam"], requirements = ["bigi", "gleam_stdlib", "gleam_time"], otp_app = "kryptos", source = "hex", outer_checksum = "0707A1492E8585CEC8218315C69A182B43CD25E22C216CB530330C94F5D62944" },
