@@ -54,6 +54,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/composer
 import session_view/step_words
 import session_view/tool_activity
 import session_view/transcript_lines
@@ -62,9 +63,10 @@ import session_view/transcript_lines
 /// (`docs/design-notes/session-timeline.md`, section 9).
 pub const default_step_limit = 40
 
-/// The most cards a strand closes through landmarks that are not a turn's own
-/// edges. Past it, only a prompt, an answer, an ask and a compaction close a
-/// span, so a very long strand stops producing cards of its own accord.
+/// The most cards a strand closes on a command, a sub-agent's result or the step
+/// limit. A prompt, an answer, an ask and a compaction are not counted, and past
+/// the cap they still close a span, so a very long strand stops producing cards
+/// of its own accord while keeping the edges of every turn.
 pub const card_cap = 400
 
 /// The fewest steps a span of a command or a result needs to close on it.
@@ -78,11 +80,18 @@ pub const named_files = 6
 /// The most children one card names.
 pub const named_children = 3
 
-/// The most characters of a prompt or an answer a card keeps.
-pub const excerpt_chars = 160
+/// The most bytes of a prompt or an answer a card keeps.
+pub const excerpt_bytes = 160
 
-/// The most characters of a reduced command a card keeps.
-pub const command_chars = 120
+/// The most bytes of a reduced command a card keeps.
+pub const command_bytes = 120
+
+/// The most bytes of a path a card keeps. A longer path keeps its end, which is
+/// the part that tells two files apart.
+pub const path_bytes = 400
+
+/// The most bytes of a sub-agent's purpose a card keeps.
+pub const purpose_bytes = 60
 
 /// What closed a card, which is also what it is about.
 pub type Kind {
@@ -199,7 +208,9 @@ type State {
   State(
     step_limit: Int,
     cards: List(Card),
-    count: Int,
+    /// How many cards closed on a command, a result or the step limit, which is
+    /// what `card_cap` counts.
+    bounded_count: Int,
     turn_seq: Int,
     draft: Option(Draft),
     pending: Dict(String, message.ToolCall),
@@ -249,7 +260,7 @@ fn step(state: State, value: Entry) -> State {
 /// frame is the harness's, and a message from a peer or a sibling strand stays
 /// inside the span as a count.
 fn prompted(state: State, value: Entry, sent: message.AgentMessage) -> State {
-  let harness = transcript_lines.advisor_payload(sent) != None
+  let harness = harness_written(sent)
 
   // The origin and the harness's own frames decide whether this is a prompt, a count or nothing.
   case sent {
@@ -272,6 +283,22 @@ fn prompted(state: State, value: Entry, sent: message.AgentMessage) -> State {
     | message.AssistantMessage(..)
     | message.ToolResultMessage(..)
     | message.CustomMessage(..) -> touch(state, value)
+  }
+}
+
+/// Whether the harness wrote a user message: an advisor frame, the strand's notes
+/// at the start of a run, or the memory context it attaches to a prompt. None of
+/// them is something a person asked, so none starts a turn.
+fn harness_written(sent: message.AgentMessage) -> Bool {
+  // The three frames the transcript itself draws as nothing a person said.
+  transcript_lines.advisor_payload(sent) != None
+  || transcript_lines.agent_notes_payload(sent) != None
+  || case sent {
+    message.UserMessage(content:, ..) ->
+      composer.memory_context_lines(user_text(content)) != None
+    message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> False
   }
 }
 
@@ -341,9 +368,10 @@ fn landmark(
   sent: message.AgentMessage,
   source: EntryId,
 ) -> State {
-  let failed = tool_failed(sent)
+  let failed = tool_failed(sent) || nonzero_exit(sent)
 
-  // A failed call counts against the span whatever the call was.
+  // A failed call counts against the span once, whatever the call was and
+  // whether the result said so by its error flag or by its exit status.
   let state = case failed {
     True ->
       update(state, fn(draft) { Draft(..draft, failed: draft.failed + 1) })
@@ -354,7 +382,7 @@ fn landmark(
   case call.name {
     "fs_edit" | "fs_write" -> wrote(state, call, sent, source)
     "bash" -> ran(state, call, sent)
-    "agent_wait" if !failed -> bounded(state, Reported, blank())
+    "agent_wait" if !failed -> reported(state, sent)
     _ -> state
   }
 }
@@ -373,6 +401,16 @@ fn wrote(
   }
 }
 
+/// Reads an `agent_wait` result. A child that returned closes the span; a wait
+/// that ran out its deadline with children still working says nothing returned.
+fn reported(state: State, sent: message.AgentMessage) -> State {
+  // A pending answer is no card.
+  case still_pending(sent) {
+    True -> state
+    False -> bounded(state, Reported, blank())
+  }
+}
+
 /// Reads a command's result. A command that recorded an exit status closes the
 /// span when it failed, or when the span has already written files, which is
 /// how a run of edits meets the command that tries them.
@@ -385,12 +423,11 @@ fn ran(
   case exit_status(sent), field_text(call.arguments, "command") {
     Some(code), Some(text) -> {
       let fact = Command(reduced(text), code)
-      let failed = update(state, fn(draft) { failed_by(draft, code) })
 
       // A failed command, or one that follows edits, is a landmark.
-      case code != 0 || wrote_any(failed) {
-        True -> bounded(failed, Ran, Facts(..blank(), command: Some(fact)))
-        False -> failed
+      case code != 0 || wrote_any(state) {
+        True -> bounded(state, Ran, Facts(..blank(), command: Some(fact)))
+        False -> state
       }
     }
 
@@ -452,24 +489,25 @@ fn settle(state: State, kind: Kind) -> State {
 }
 
 /// Closes the span on a landmark the strand may choose not to honour: it joins
-/// the next span when it holds too few steps, and when the strand already holds
-/// `card_cap` cards.
+/// the next span when it holds too few steps, or when the strand already closed
+/// `card_cap` cards this way.
 fn bounded(state: State, kind: Kind, facts: Facts) -> State {
-  case steps_of(state) >= least_steps && state.count < card_cap {
-    True -> close(state, kind, facts)
+  // Too few steps, or a strand at its cap, leaves the span open.
+  case steps_of(state) >= least_steps && state.bounded_count < card_cap {
+    True ->
+      State(..close(state, kind, facts), bounded_count: state.bounded_count + 1)
     False -> state
   }
 }
 
-/// Turns the open span into a closed card of `kind` and counts it, so the next
-/// record opens a new span. With no open span there is nothing to close.
+/// Turns the open span into a closed card of `kind`, so the next record opens a
+/// new span. With no open span there is nothing to close.
 fn close(state: State, kind: Kind, extra: Facts) -> State {
   case state.draft {
     Some(draft) ->
       State(
         ..state,
         cards: [card_of(state, draft, kind, extra), ..state.cards],
-        count: state.count + 1,
         draft: None,
       )
     None -> state
@@ -523,13 +561,6 @@ fn wrote_any(state: State) -> Bool {
   }
 }
 
-fn failed_by(draft: Draft, code: Int) -> Draft {
-  case code {
-    0 -> draft
-    _ -> Draft(..draft, failed: draft.failed + 1)
-  }
-}
-
 /// Adds a file to a span, keeping one entry per path and summing the lines of
 /// its edits, so a file edited ten times is one fact.
 fn add_file(draft: Draft, file: FileFact) -> Draft {
@@ -574,7 +605,7 @@ fn noted(state: State, call: message.ToolCall) -> State {
       steps: draft.steps + 1,
       reads: draft.reads + read_count(call.name),
       spawned: case spawned {
-        Some(purpose) -> [clip(purpose, 60), ..draft.spawned]
+        Some(purpose) -> [clip(purpose, purpose_bytes), ..draft.spawned]
         None -> draft.spawned
       },
     )
@@ -663,12 +694,12 @@ fn user_text(content: List(message.UserBlock)) -> String {
 fn excerpt(text: String) -> Option(String) {
   case string.trim(text) {
     "" -> None
-    words -> Some(clip(words, excerpt_chars))
+    words -> Some(clip(words, excerpt_bytes))
   }
 }
 
-/// The first line of `text`, cut at `limit` characters with an ellipsis when it
-/// was longer, so a card never carries a paragraph.
+/// The first line of `text`, cut so that it and its ellipsis fit in `limit`
+/// bytes, at a character boundary, so a card never carries a paragraph.
 fn clip(text: String, limit: Int) -> String {
   // The first line is the card's words; an empty text has none.
   let line = case string.split(text, "\n") {
@@ -677,9 +708,61 @@ fn clip(text: String, limit: Int) -> String {
   }
 
   // A line over the limit is cut and marked as cut.
-  case string.drop_start(line, limit) {
-    "" -> line
-    _ -> string.slice(line, 0, limit) <> "…"
+  case string.byte_size(line) > limit {
+    True -> take_bytes(string.to_graphemes(line), limit - 3, "") <> "…"
+    False -> line
+  }
+}
+
+/// The characters of `graphemes`, in order, as many as fit in `budget` bytes.
+fn take_bytes(graphemes: List(String), budget: Int, kept: String) -> String {
+  // Characters are taken until the next one would not fit.
+  case graphemes {
+    [next, ..rest] ->
+      case string.byte_size(next) <= budget {
+        True -> take_bytes(rest, budget - string.byte_size(next), kept <> next)
+        False -> kept
+      }
+    [] -> kept
+  }
+}
+
+/// A path cut to `limit` bytes keeping its end, which is the part that tells two
+/// files apart.
+fn clip_path(path: String) -> String {
+  // A path within the limit is kept whole.
+  case string.byte_size(path) > path_bytes {
+    True ->
+      "…"
+      <> take_bytes(list.reverse(string.to_graphemes(path)), path_bytes - 3, "")
+      |> string.to_graphemes
+      |> list.reverse
+      |> string.concat
+    False -> path
+  }
+}
+
+/// Whether a result recorded a nonzero exit status, which `bash` also reports as
+/// an error but a fixture or another tool may not.
+fn nonzero_exit(sent: message.AgentMessage) -> Bool {
+  // No recorded status is no failure.
+  case exit_status(sent) {
+    Some(code) -> code != 0
+    None -> False
+  }
+}
+
+/// Whether an `agent_wait` result says some child had not answered when the
+/// deadline passed. That is an answer, but no sub-agent returned.
+fn still_pending(sent: message.AgentMessage) -> Bool {
+  // The result's details say so in a `pending` flag.
+  case sent {
+    message.ToolResultMessage(details: Some(details), ..) ->
+      field(details, "pending") == Some(json.Bool(True))
+    message.UserMessage(..)
+    | message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> False
   }
 }
 
@@ -719,7 +802,7 @@ fn path_written(
   case sent {
     message.ToolResultMessage(is_error: False, details: Some(details), ..) ->
       case field_text(details, "path") {
-        Some(path) -> Some(file_fact(path, call, sent, source))
+        Some(path) -> Some(file_fact(clip_path(path), call, sent, source))
         None -> None
       }
     message.UserMessage(..)
@@ -768,42 +851,71 @@ pub fn reduced(command: String) -> String {
   let segments =
     command
     |> string.replace("&&", ";")
+    |> string.replace("||", ";")
+    |> string.replace("|", ";")
     |> string.replace("\n", ";")
     |> string.split(";")
     |> list.map(string.trim)
-    |> list.filter(fn(segment) { segment != "" && !setup(segment) })
+    |> list.filter(fn(segment) { segment != "" })
 
-  // The first segment that is not setup is the command; with none, the text is clipped whole.
-  case segments {
-    [first, ..] -> words_of(first)
-    [] -> clip(command, command_chars)
+  // The first segment that is not setup is the command. When every segment is
+  // setup, only the executable of the first is kept, never its arguments.
+  case list.filter(segments, fn(segment) { !setup(segment) }), segments {
+    [first, ..], _ -> words_of(first)
+    [], [first, ..] -> words_of(first) |> first_word
+    [], [] -> ""
   }
 }
 
+/// Whether a segment only prepares the environment for the one after it.
 fn setup(segment: String) -> Bool {
   string.starts_with(segment, "cd ")
   || string.starts_with(segment, "export ")
   || string.starts_with(segment, "set ")
 }
 
-/// The first word of a command segment, and the second when it is not a flag or
-/// a path, after leading assignments.
+/// The words before the first space, which is the executable of a reduced
+/// command.
+fn first_word(words: String) -> String {
+  // A reduced command is the executable and at most one subcommand.
+  case string.split(words, " ") {
+    [first, ..] -> first
+    [] -> ""
+  }
+}
+
+/// The first word of a command segment, and the second when it looks like a
+/// subcommand, after leading assignments and an `env` prefix. A second word that
+/// holds `=`, a slash, a digit or a capital is an argument, and is left out
+/// because an argument can be a token.
 fn words_of(segment: String) -> String {
   let words =
     string.split(segment, " ")
     |> list.filter(fn(word) { word != "" })
-    |> list.drop_while(fn(word) { string.contains(word, "=") })
+    |> list.drop_while(fn(word) { string.contains(word, "=") || word == "env" })
 
-  // Two words give the executable and a subcommand unless the second is a flag or a path.
+  // Two words give the executable and a subcommand when the second reads as one.
   case words {
     [first, second, ..] ->
-      case string.starts_with(second, "-") || string.contains(second, "/") {
-        True -> clip(first, command_chars)
-        False -> clip(first <> " " <> second, command_chars)
+      case subcommand(second) {
+        True -> clip(first <> " " <> second, command_bytes)
+        False -> clip(first, command_bytes)
       }
-    [first] -> clip(first, command_chars)
+    [first] -> clip(first, command_bytes)
     [] -> ""
   }
+}
+
+/// Whether a word reads as a subcommand: lowercase letters, `-` and `_`, and
+/// short. A flag, a path, an assignment and a token do not.
+fn subcommand(word: String) -> Bool {
+  let allowed = string.to_graphemes("abcdefghijklmnopqrstuvwxyz-_")
+
+  string.byte_size(word) <= 24
+  && !string.starts_with(word, "-")
+  && list.all(string.to_graphemes(word), fn(letter) {
+    list.contains(allowed, letter)
+  })
 }
 
 // --- JSON ---------------------------------------------------------------------

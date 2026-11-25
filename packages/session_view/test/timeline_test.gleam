@@ -14,7 +14,9 @@ import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import qcheck
+import session_view/composer
 import session_view/timeline.{Asked, Compacted, Prompted, Ran, Reported, Worked}
 
 const sweep_seed = 20_261_124
@@ -168,8 +170,46 @@ fn bash_step(n: Int, command: String, exit: Int) -> List(Body) {
       "bash",
       call_id,
       json.Object([#("exit_code", json.Int(exit))]),
+      exit != 0,
+    ),
+  ]
+}
+
+// A bash result whose error flag disagrees with its status, as another tool's
+// or an old record's might.
+fn bash_unflagged(n: Int, command: String, exit: Int) -> List(Body) {
+  let call_id = "u" <> int.to_string(n)
+
+  [
+    call("bash", call_id, json.Object([#("command", json.String(command))])),
+    finished(
+      "bash",
+      call_id,
+      json.Object([#("exit_code", json.Int(exit))]),
       False,
     ),
+  ]
+}
+
+fn wait_step(n: Int, details: json.JsonValue) -> List(Body) {
+  let call_id = "w" <> int.to_string(n)
+
+  [
+    call("agent_wait", call_id, json.Object([])),
+    finished("agent_wait", call_id, details, False),
+  ]
+}
+
+fn spawn_step(n: Int, purpose: String) -> List(Body) {
+  let call_id = "s" <> int.to_string(n)
+
+  [
+    call(
+      "agent_spawn",
+      call_id,
+      json.Object([#("purpose", json.String(purpose))]),
+    ),
+    finished("agent_spawn", call_id, json.Object([]), False),
   ]
 }
 
@@ -340,13 +380,19 @@ fn op_bodies(op: Int, n: Int) -> List(Body) {
     6 -> [Compact(n)]
     7 -> [call("ask", "k" <> int.to_string(n), json.Object([]))]
     8 -> [peer()]
+    9 -> wait_step(n, json.Object([#("pending", json.Bool(n % 2 == 0))]))
+    10 -> spawn_step(n, "child")
+    11 -> [
+      finished("fs_read", "orphan" <> int.to_string(n), json.Object([]), False),
+    ]
+    12 -> list.append(read_step(n), edit_step(n + 1000, "g"))
     _ -> [Custom]
   }
 }
 
 fn generator() {
   qcheck.generic_list(
-    elements_from: qcheck.bounded_int(from: 0, to: 9),
+    elements_from: qcheck.bounded_int(from: 0, to: 13),
     length_from: qcheck.bounded_int(0, 60),
   )
 }
@@ -445,4 +491,172 @@ pub fn the_card_cap_stops_landmark_cards_test() {
   let cut = timeline.cut(place(many), 40)
 
   assert list.length(cut.cards) == timeline.card_cap
+}
+
+// A failed bash is one failed call whether its result carries the error flag, as
+// the tool sets it, or only a nonzero status.
+pub fn a_failed_command_counts_once_test() {
+  let flagged =
+    place(list.flatten([read_step(1), read_step(2), bash_step(3, "make", 2)]))
+  let unflagged =
+    place(
+      list.flatten([read_step(1), read_step(2), bash_unflagged(3, "make", 2)]),
+    )
+
+  assert failed_of(timeline.cut(flagged, 40)) == [1]
+  assert failed_of(timeline.cut(unflagged, 40)) == [1]
+}
+
+fn failed_of(cut: timeline.Cut) -> List(Int) {
+  list.map(cut.cards, fn(card) { card.facts.failed })
+}
+
+// A sub-agent's result closes a span of three steps, and a wait that ran out its
+// deadline with children still working does not.
+pub fn a_pending_wait_is_not_a_result_test() {
+  let ready =
+    place(
+      list.flatten([
+        read_step(1),
+        read_step(2),
+        wait_step(3, json.Object([#("pending", json.Bool(False))])),
+      ]),
+    )
+  let pending =
+    place(
+      list.flatten([
+        read_step(1),
+        read_step(2),
+        wait_step(3, json.Object([#("pending", json.Bool(True))])),
+      ]),
+    )
+
+  assert kinds(timeline.cut(ready, 40)) == [Reported]
+  assert kinds(timeline.cut(pending, 40)) == []
+}
+
+// The memory context the daemon attaches to a run is not a prompt, so it starts
+// no turn, and a sibling strand's message is a count like a peer's.
+pub fn harness_messages_start_no_turn_test() {
+  let memory =
+    composer.memory_attribution_lead
+    <> "sessions.\n\n```loom-memory\n- (fact) a\n```"
+  let records = place([prompt(memory), prompt("a real question")])
+  let cut = timeline.cut(records, 40)
+
+  assert kinds(cut) == [Prompted]
+
+  let assert [card] = cut.cards
+
+  assert card.turn_seq == 2
+  assert card.facts.excerpt == Some("a real question")
+}
+
+pub fn a_sibling_strands_message_is_a_count_test() {
+  let sibling =
+    Msg(message.UserMessage(
+      [message.UserText("hi", None)],
+      0,
+      Some(message.StrandOrigin("sub")),
+    ))
+  let cut = timeline.cut(place([sibling]), 40)
+
+  assert cut.cards == []
+  assert option.map(cut.open, fn(card) { card.facts.peers }) == Some(1)
+}
+
+// A card names at most six files and three sub-agents, keeps a prompt to 160
+// bytes at a character boundary, and keeps the end of a long path.
+pub fn a_card_is_bounded_in_what_it_names_test() {
+  let many_files =
+    list.flatten(
+      list.map(upto(1, 9), fn(n) { edit_step(n, "dir/f" <> int.to_string(n)) }),
+    )
+  let children =
+    list.flatten(
+      list.map(upto(1, 5), fn(n) { spawn_step(n, "child " <> int.to_string(n)) }),
+    )
+  let long = string.repeat("é", 200)
+  let records =
+    place(
+      list.flatten([
+        [prompt(long)],
+        many_files,
+        children,
+        edit_step(20, string.repeat("d/", 400) <> "end.gleam"),
+        bash_step(21, "make", 1),
+      ]),
+    )
+  let cut = timeline.cut(records, 100)
+  let assert [first, work] = cut.cards
+
+  assert string.byte_size(option.unwrap(first.facts.excerpt, "")) <= 160
+  assert string.ends_with(option.unwrap(first.facts.excerpt, ""), "…")
+  assert list.length(work.facts.files) == 6
+  assert work.facts.files_total == 10
+  assert list.length(work.facts.spawned) == 3
+
+  let assert Ok(path) = list.find(work.facts.files, fn(_) { True })
+  assert string.byte_size(path.path) <= 400
+}
+
+// Reduced commands keep the executable and a subcommand, and nothing that could
+// be a token, whatever the shape of the line.
+pub fn a_reduced_command_never_keeps_a_secret_test() {
+  assert timeline.reduced("export GITHUB_TOKEN=ghp_abc123") == "export"
+  assert timeline.reduced("env API_KEY=sk-abc make deploy") == "make deploy"
+  assert timeline.reduced("echo ghp_abc123 | gh auth login --with-token")
+    == "echo"
+  assert timeline.reduced("curl --user a:b https://x") == "curl"
+  assert timeline.reduced("git push origin main") == "git push"
+  assert timeline.reduced("X=1 Y=2 make check-storage") == "make check-storage"
+  assert timeline.reduced("set -e\nexport A=b") == "set"
+  assert timeline.reduced("") == ""
+}
+
+// Prompts and answers do not use up the cap on bounded cards.
+pub fn the_cap_counts_only_bounded_cards_test() {
+  let turns =
+    list.flat_map(upto(1, 450), fn(n) {
+      list.flatten([
+        [prompt("p")],
+        read_step(n * 10),
+        read_step(n * 10 + 1),
+        read_step(n * 10 + 2),
+        bash_step(n * 10 + 3, "make", 1),
+        [answer("a")],
+      ])
+    })
+  let cut = timeline.cut(place(turns), 40)
+  let commands = list.count(kinds(cut), fn(kind) { kind == Ran })
+
+  assert commands == timeline.card_cap
+  assert list.count(kinds(cut), fn(kind) { kind == Prompted }) == 450
+}
+
+// A span of no step is taken into the card that follows it and makes none.
+pub fn a_span_of_no_step_makes_no_card_test() {
+  let cut = timeline.cut(place([peer(), peer(), answer("done")]), 40)
+
+  assert kinds(cut) == [timeline.Answered]
+}
+
+// An unknown record anywhere in a strand changes no card's kind or facts, only
+// the sequences the cards cover.
+pub fn an_unknown_record_anywhere_changes_no_facts_test() {
+  qcheck.run(config(), generator(), fn(ops) {
+    let bodies = bodies_of(ops)
+    let plain = facts_of(timeline.cut(place(bodies), 5))
+
+    list.each(upto(0, list.length(bodies)), fn(at) {
+      let extended =
+        list.flatten([list.take(bodies, at), [Custom], list.drop(bodies, at)])
+
+      assert facts_of(timeline.cut(place(extended), 5)) == plain
+    })
+  })
+}
+
+fn facts_of(cut: timeline.Cut) -> List(#(timeline.Kind, timeline.Facts)) {
+  list.map(cut.cards, fn(card) { #(card.kind, card.facts) })
 }
