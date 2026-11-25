@@ -81,6 +81,7 @@ import web_view/thread_send.{type Outbox}
 import web_view/view/brief_view
 import web_view/view/heading
 import web_view/view/inbox_parts as parts
+import web_view/view/update_card
 
 /// The thread the reading pane shows, and how it came to.
 pub type Pick {
@@ -90,6 +91,15 @@ pub type Pick {
 
   /// The owner pressed its row.
   Pressed(session: String)
+}
+
+/// What the reading pane shows when no thread is pressed.
+pub type Watch {
+  /// The pane shows the selected thread.
+  WatchOne
+
+  /// The pane shows the "Watch all" board: one live card for each working session.
+  WatchAll
 }
 
 /// What the inbox draws from, and the messages its buttons send.
@@ -161,6 +171,16 @@ pub type Offer(message) {
     name_of: fn(String) -> String,
     /// The press that opens the open ask of a session, when it has one.
     ask_of: fn(String) -> Option(message),
+    /// Whether the reading pane shows the "Watch all" board.
+    watch: Watch,
+    /// What the "Watch all" control sends: show the board, or go back to a thread.
+    toggle_watch: message,
+    /// The sessions whose Updates card is open, held by the page and never stored.
+    expanded: Set(String),
+    /// What a card's disclosure sends, given its session.
+    toggle_card: fn(String) -> message,
+    /// The executor a session's workspace is on, when it is not this machine.
+    machine_of: fn(String) -> Option(String),
   )
 }
 
@@ -273,13 +293,27 @@ type Part {
 /// // inbox.view(inbox.Offer(folder: inbox_rule.Everything, groups:, selected: None, opening: None, pick:, open:, back:, all_sessions:, new_session: None, presses: 0, field: None, attention: None, review: None, checking: [], sized: [], waited: []))
 /// ```
 pub fn view(offer: Offer(message)) -> Element(message) {
-  html.section([attribute.class("inbox")], [
-    threads_list(offer),
-    case offer.attention {
-      Some(Threads(pane: Some(open), ..)) -> open
-      Some(Threads(pane: None, ..)) | None -> reading_pane(offer)
-    },
-  ])
+  html.section([attribute.class("inbox")], [threads_list(offer), pane(offer)])
+}
+
+/// The reading pane: the "Watch all" board while the person asked for it and some
+/// session is working, the open attention thread, the board again when no thread
+/// is selected and some session is working, and otherwise the selected session's
+/// thread. The board that stands in for an empty pane is marked so a phone, where
+/// the list is the page until a press, leaves it out.
+fn pane(offer: Offer(message)) -> Element(message) {
+  // The board needs cards: with no working session the pane is what it would be
+  // without the board, so a stale "Watch all" never leaves it empty.
+  let cards = updates_of(offer)
+
+  // The board wins while asked for, then an open attention thread, then it fills
+  // an empty pane, and otherwise the selected session's thread is drawn.
+  case offer.watch, cards, offer.attention, offer.selected {
+    WatchAll, [_, ..], _, _ -> board(offer, parts.ByPress)
+    _, _, Some(Threads(pane: Some(open), ..)), _ -> open
+    _, [_, ..], _, None -> board(offer, parts.ByDefault)
+    _, _, _, _ -> reading_pane(offer)
+  }
 }
 
 /// What the inbox says when every thread has gone while it is shown: the page
@@ -366,6 +400,8 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   }
 
   html.div([attribute.class("inbox-list")], [
+    watch_bar(offer),
+
     // In the Projects folder the section is the head of the list: it lists each
     // project and the tickets that wait in it, so the tickets are not drawn a
     // second time as a band, and the empty sentence is its own.
@@ -397,6 +433,91 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
     },
     all_sessions(offer),
   ])
+}
+
+/// The view control above the list: "Watch all", which puts the board of live
+/// cards in the reading pane, or takes it away again. It is drawn while some
+/// session is working, and while the board is asked for, so there is always a way
+/// to switch it off.
+fn watch_bar(offer: Offer(message)) -> Element(message) {
+  case updates_of(offer), offer.watch {
+    [], WatchOne -> element.none()
+    [_, ..], _ | [], WatchAll ->
+      html.div([attribute.class("inbox-viewbar")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("inbox-watch"),
+            attribute.attribute("aria-pressed", case offer.watch {
+              WatchAll -> "true"
+              WatchOne -> "false"
+            }),
+            event.on_click(offer.toggle_watch),
+          ],
+          [html.text("Watch all")],
+        ),
+      ])
+  }
+}
+
+/// The sessions in the Updates group, the only ones that have a card.
+fn updates_of(offer: Offer(message)) -> List(Thread) {
+  case list.key_find(offer.groups, inbox_rule.Updates) {
+    Ok(found) -> found
+    Error(Nil) -> []
+  }
+}
+
+/// One session's card, drawn from what the page holds of it. The same card is the
+/// Updates group's row and the board's tile, so the two cannot disagree.
+fn card(thread: Thread, offer: Offer(message)) -> Element(message) {
+  let dated = list.key_find(offer.dated, thread.id) |> option.from_result
+
+  update_card.view(update_card.Card(
+    thread:,
+    state: option.then(dated, fn(each) { each.state }),
+    age: option.then(dated, fn(each) { each.age }),
+    brief: offer.briefs(thread.id),
+    machine: offer.machine_of(thread.id),
+    reading: parts.reading(offer.opened, thread.id),
+    density: case set.contains(offer.expanded, thread.id) {
+      True -> update_card.Expanded
+      False -> update_card.Collapsed
+    },
+    pick: offer.pick(thread.id),
+    open: offer.open(thread.id),
+    toggle: offer.toggle_card(thread.id),
+  ))
+}
+
+/// The "Watch all" board: a grid of the same cards, one for each working session,
+/// in the order the Updates group lists them (by name), so the list and the board
+/// agree on which sessions come first. Each card is keyed by its session, so a
+/// card keeps its place and its disclosure as the others come and go. A press on a
+/// card's head opens its thread, and the pane's back control returns to the list.
+fn board(offer: Offer(message), opening: parts.Opening) -> Element(message) {
+  let ordered = updates_of(offer)
+
+  parts.pane_with(
+    opening,
+    offer.back,
+    [
+      parts.title("Watch all"),
+      case ordered {
+        [] ->
+          html.p([attribute.class("inbox-meta")], [
+            html.text("No session is working right now."),
+          ])
+        [_, ..] ->
+          keyed.div(
+            [attribute.class("upd-board")],
+            list.map(ordered, fn(thread) { #(thread.id, card(thread, offer)) }),
+          )
+      },
+    ],
+    [],
+    element.none(),
+  )
 }
 
 /// The tickets alone, when the "Projects" folder is chosen.
@@ -442,7 +563,19 @@ fn band_group(
   threads: List(Thread),
   offer: Offer(message),
 ) -> Element(message) {
-  let rows = list.append(extra, list.map(threads, row(_, which, offer)))
+  let rows =
+    list.append(
+      extra,
+      list.map(threads, fn(thread) {
+        case which {
+          inbox_rule.Updates -> html.li([], [card(thread, offer)])
+          inbox_rule.NeedsYou
+          | inbox_rule.ToReview
+          | inbox_rule.Waiting
+          | inbox_rule.Quiet -> row(thread, which, offer)
+        }
+      }),
+    )
 
   // A group with no row has no band.
   case rows {
