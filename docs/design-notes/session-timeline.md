@@ -409,3 +409,28 @@ density control that shows only the landmark kinds by default, and the 40-step
 ruling stands because nothing here argues for another. Slice 0's last exit
 criterion, that the owner reads the cards of three sessions and says whether they
 could tell what the agent did, is the owner's to give and is not yet.
+
+## 11. Slice 1, as built (2026-11-24)
+
+`sessions.timeline` reads a running session's newest 2,000 records of `main`,
+cuts them, and answers a page of at most 20 cards with a cursor and the open
+span (protocol-change/134). Home reads the newest page with a thread's brief and
+an older page when the person presses "Earlier cards", and draws the cards above
+the review pane in a session's thread, which serves the review and update
+threads. It differs from the note in these places.
+
+- **One allowance.** The read spends the brief's allowance and takes none of its
+  own, so an open thread spends two of the six reads in four seconds.
+- **A density control the note did not have.** The census showed a card for about
+  every three steps, so the thread starts at the landmark kinds (prompts, answers,
+  asks, compactions, sub-agent results, failed commands) and offers "All cards" and
+  "With detail". The idea came from the owner's reference image, which had a
+  low, medium and high density.
+- **No span read yet.** A card's "Open the session" opens the session's page. It
+  does not open the span: the lane's fold opens a whole turn from its last record
+  and keeps 100 rows, so a card deep in a long turn needs the new "show this
+  span" read of section 5, which is not built.
+- **Where it is** says how many steps ran since the last card and how long ago
+  the last record was written. It does not say what the strand is doing now,
+  because the open span has no title until slice 3.
+- **No approval or commit card**, for the reasons in section 10.

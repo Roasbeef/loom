@@ -116,8 +116,9 @@ pub fn the_command_decodes_with_its_bounds_test() {
   let envelope = fn(body: String) {
     "{\"v\":2,\"id\":1,\"cmd\":\"sessions.timeline\",\"body\":" <> body <> "}"
   }
+  let minted = ids.mint_session(ids.generator(clock.fixed(1000), 7)).0
   let session =
-    "\"session\":\"0198aaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"epoch\":\"e\""
+    "\"session\":\"" <> ids.session_id_to_string(minted) <> "\",\"epoch\":\"e\""
 
   assert protocol.decode(envelope("{" <> session <> "}")) |> is_ok
   assert protocol.decode(envelope("{" <> session <> ",\"limit\":20}")) |> is_ok

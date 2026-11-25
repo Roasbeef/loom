@@ -821,7 +821,7 @@
   .timeline-head{display:flex;gap:8px;align-items:baseline;width:100%;box-sizing:border-box;padding:8px 12px 0 12px;border:0;background:transparent;color:var(--color-fg);font:13px/1.5 var(--font-sans);text-align:left;cursor:pointer;}
   div.timeline-head{cursor:default;}
   .timeline-kind{flex:0 0 auto;padding:0 6px;border:1px solid var(--color-divider);border-radius:6px;color:var(--color-fg-quiet);font:11px/18px var(--font-mono);}
-  .timeline-time{flex:0 0 auto;color:var(--color-fg-faint);font-size:12px;}
+  .timeline-time{flex:0 0 auto;color:var(--color-fg-quiet);font-size:12px;}
   .timeline-words{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}
   .timeline-words code{font:12px/1.5 var(--font-mono);}
   .timeline-chips{display:flex;gap:6px;flex-wrap:wrap;padding:6px 12px 8px 12px;}
