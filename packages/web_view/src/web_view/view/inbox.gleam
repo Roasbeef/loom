@@ -161,6 +161,9 @@ pub type Offer(message) {
     name_of: fn(String) -> String,
     /// The press that opens the open ask of a session, when it has one.
     ask_of: fn(String) -> Option(message),
+    /// A session's timeline section, or nothing when none was read
+    /// (`web_view/view/timeline_view`).
+    timelines: fn(String) -> Element(message),
   )
 }
 
@@ -628,6 +631,7 @@ fn reading(
           Some(_) -> element.none()
           None -> coordinator(kind, brief)
         },
+        offer.timelines(thread.id),
         reviewed(thread, offer),
       ],
       [acts(thread, kind, offer)],

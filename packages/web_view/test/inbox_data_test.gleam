@@ -226,6 +226,7 @@ fn start(
           process.send(calls, #(session, since))
           deliver(Ok(the_brief()))
         },
+        timeline: fn(_, _, _, _) { Nil },
       ),
     ),
     create: None,

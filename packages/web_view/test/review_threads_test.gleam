@@ -239,6 +239,7 @@ fn start_for(
         review_pause_ms: 5,
         act:,
         brief: fn(_, _, _) { Nil },
+        timeline: fn(_, _, _, _) { Nil },
       ),
     ),
     create: None,

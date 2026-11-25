@@ -334,6 +334,8 @@ import web_view/signins.{type Signin}
 import web_view/thread_send
 import web_view/thread_words
 import web_view/ticket_rule
+import web_view/timeline_feed
+import web_view/timeline_rule
 import web_view/view/archiving
 import web_view/view/attention_thread
 import web_view/view/brief_view
@@ -359,6 +361,7 @@ import web_view/view/sidebar
 import web_view/view/signins as signins_view
 import web_view/view/switch
 import web_view/view/ticket_thread
+import web_view/view/timeline_view
 import web_view/view/your_name
 import web_view/watch_rule
 
@@ -857,6 +860,18 @@ pub type Attention {
     /// the credential's brief allowance for it.
     brief: fn(String, Int, fn(Result(session_brief.Brief, String)) -> Nil) ->
       Nil,
+    /// Starts the read of a running session's timeline cards
+    /// (protocol-change/134) and returns at once: the session, the `from_seq`
+    /// the cards must be older than (none for the newest page), the most cards
+    /// wanted and the function the daemon's answer goes to. The answer is its
+    /// page or its fixed words and arrives as `TimelineRead`. It reads and never
+    /// writes, and the daemon spends the credential's brief allowance for it.
+    timeline: fn(
+      String,
+      Option(Int),
+      Int,
+      fn(Result(timeline_feed.Feed, String)) -> Nil,
+    ) -> Nil,
     /// Starts the read of a running session's worktree as a review
     /// (protocol-change/123) and returns at once. The answer is the daemon's
     /// review or its fixed words for why there is none, and arrives as
@@ -1054,6 +1069,14 @@ pub opaque type Model {
     /// it wanted, so a thread draws them only under a label they fit
     /// (`brief_rule.shown`).
     brief_since: Dict(String, Int),
+    /// The timeline cards the page has read of each session whose thread was
+    /// shown, by session (protocol-change/134).
+    timelines: Dict(String, timeline_rule.Held),
+    /// How much of a timeline the person chose to see. One choice serves every
+    /// thread.
+    timeline_density: timeline_rule.Density,
+    /// The cards whose detail the person opened, by session and `from_seq`.
+    timeline_open: Set(#(String, Int)),
     /// The open item thread and what is staged in it.
     item: item_pane.State,
     /// How many item threads have been opened, which keys their forms so each
@@ -1335,6 +1358,23 @@ pub type Msg {
     since: Int,
     read: Result(session_brief.Brief, String),
   )
+
+  /// The daemon's answer to the read of a session's timeline page. `before` is the
+  /// `from_seq` the page asked the cards to be older than, none for the newest.
+  TimelineRead(
+    session: String,
+    before: Option(Int),
+    read: Result(timeline_feed.Feed, String),
+  )
+
+  /// A density was chosen for every timeline.
+  TimelineDensityChosen(density: timeline_rule.Density)
+
+  /// A card's head was pressed: open its detail, or close it.
+  TimelineCardToggled(session: String, from_seq: Int)
+
+  /// "Earlier cards" was pressed in a session's timeline.
+  TimelineOlderAsked(session: String)
 
   /// The daemon's answer to the read of a session's approval evidence.
   ApprovalsRead(
@@ -1938,6 +1978,9 @@ pub fn new(start: Start) -> Model {
     briefs: dict.new(),
     brief_reads: dict.new(),
     brief_since: dict.new(),
+    timelines: dict.new(),
+    timeline_density: timeline_rule.starting_density,
+    timeline_open: set.new(),
     item: item_pane.closed(),
     item_presses: 0,
     reviews: dict.new(),
@@ -2439,6 +2482,71 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             )
             Error(_), Ok(session_brief.Seen(_)) -> #(model, effect.none())
           }
+      }
+
+    // A timeline read joins what the page held for that session: the newest page
+    // replaces it and an older page goes in front. It is kept for each session
+    // whose thread was shown, so it is bounded by the sessions viewed, and a
+    // refusal keeps the cards the page already has.
+    TimelineRead(session:, before:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(
+            ..model,
+            timelines: dict.insert(
+              model.timelines,
+              session,
+              timeline_rule.merged(
+                option.from_result(dict.get(model.timelines, session)),
+                before,
+                read,
+              ),
+            ),
+          ),
+          effect.none(),
+        )
+      }
+
+    // The density is a choice about what to show, so it asks the daemon nothing.
+    TimelineDensityChosen(density:) -> #(
+      Model(..model, timeline_density: density),
+      effect.none(),
+    )
+
+    // A card's detail opens and closes on its head's press, and no read follows.
+    TimelineCardToggled(session:, from_seq:) -> #(
+      Model(
+        ..model,
+        timeline_open: case
+          set.contains(model.timeline_open, #(session, from_seq))
+        {
+          True -> set.delete(model.timeline_open, #(session, from_seq))
+          False -> set.insert(model.timeline_open, #(session, from_seq))
+        },
+      ),
+      effect.none(),
+    )
+
+    // "Earlier cards" reads the page before the oldest card held, for a page
+    // that reads the feed and has a cursor to ask from.
+    TimelineOlderAsked(session:) ->
+      case model.start.attention, dict.get(model.timelines, session) {
+        Some(reads), Ok(timeline_rule.Held(older: Some(before), ..)) -> #(
+          model,
+          effect.from(fn(dispatch) {
+            reads.timeline(
+              session,
+              Some(before),
+              timeline_feed.default_limit,
+              fn(read) { dispatch(TimelineRead(session, Some(before), read)) },
+            )
+          }),
+        )
+        Some(_), Ok(timeline_rule.Held(older: None, ..))
+        | Some(_), Error(Nil)
+        | None, _
+        -> #(model, effect.none())
       }
 
     // The evidence replaces what the page held for that session. It is kept
@@ -6376,11 +6484,21 @@ fn briefing(
               brief_rule.Read(started: now, since:),
             ),
           ),
-          effect.from(fn(dispatch) {
-            reads.brief(session, since, fn(read) {
-              dispatch(BriefRead(session, since, read))
-            })
-          }),
+          effect.batch([
+            effect.from(fn(dispatch) {
+              reads.brief(session, since, fn(read) {
+                dispatch(BriefRead(session, since, read))
+              })
+            }),
+            effect.from(fn(dispatch) {
+              reads.timeline(
+                session,
+                None,
+                timeline_feed.default_limit,
+                fn(read) { dispatch(TimelineRead(session, None, read)) },
+              )
+            }),
+          ]),
         )
         True, _ | False, False -> #(model, effect.none())
       }
@@ -6924,8 +7042,38 @@ fn inbox_page(model: Model) -> Element(Msg) {
       sized: sized_reviews(model),
       dated: dated_threads(model),
       briefs: fn(session) { shown_brief(model, session) },
+      timelines: fn(session) { timeline_section(model, session) },
       name_of: session_name(model, _),
       ask_of: fn(session) { ask_press(model, session) },
+    ),
+  )
+}
+
+/// A session's timeline section for its thread: the cards the page holds, at the
+/// density the person chose, with the controls only a page that reads the feed
+/// has. Nothing before a read answers.
+fn timeline_section(model: Model, session: String) -> Element(Msg) {
+  timeline_view.pane(
+    timeline_view.Offer(
+      held: option.from_result(dict.get(model.timelines, session)),
+      density: model.timeline_density,
+      opened: set.fold(model.timeline_open, set.new(), fn(found, key) {
+        case key.0 == session {
+          True -> set.insert(found, key.1)
+          False -> found
+        }
+      }),
+      now: model.start.now(),
+      handlers: case model.start.attention {
+        Some(_) ->
+          Some(timeline_view.Handlers(
+            density: TimelineDensityChosen,
+            toggle: TimelineCardToggled(session, _),
+            older: TimelineOlderAsked(session),
+            open: Opening(session),
+          ))
+        None -> None
+      },
     ),
   )
 }

@@ -985,6 +985,7 @@ pub fn upgrade_home(
   // daemon's own door, which reads authority from the registry at each press;
   // the page's submit is admitted by the rule that admits the message form.
   let brief_of = attachment.brief
+  let timeline_of = attachment.timeline
   let home_attention =
     home_attention_capability(
       attachment.principal,
@@ -1009,6 +1010,12 @@ pub fn upgrade_home(
         brief: fn(session, since, deliver) {
           read_task(deliver, fn() {
             brief_of(session, since)
+            |> result.map_error(fn(refusal) { refusal.words })
+          })
+        },
+        timeline: fn(session, before, limit, deliver) {
+          read_task(deliver, fn() {
+            timeline_of(session, before, limit)
             |> result.map_error(fn(refusal) { refusal.words })
           })
         },
