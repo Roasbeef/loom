@@ -66,6 +66,11 @@ it is pinned for release.
   still receives. It sends nothing, holds no key and has no authority: a
   decision names a ticket the request listed, or new work, or a decline, or a
   fallback, and `route.route` still checks it.
+- `project/jev_verdict` is what a live verdict over Jev reads from its trials:
+  `health` counts how they ended (decided, abstained, failed), `sweep`
+  redecides the recorded answers at each attach bar for coverage and agreement,
+  and `silver` compares Jev with the router's record. It reports and gates
+  nothing. `judge.judge` gates the composed decider.
 - `Judgement` (in `project/model`) is what Jev answered for a trigger, in basis
   points. `Routed` and `RoutedIgnore` carry it as an optional field, the engine
   keeps it on the stored trigger, and `AgentChosen` records the catalogue agent
