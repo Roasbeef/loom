@@ -271,7 +271,9 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       check_path: "",
     )
   let served = [workspaces.shared("proj", checkout)]
-  use trees <- result.try(executor_plane.worktrees_of(machine, served))
+  use trees <- result.try(
+    executor_plane.worktrees_with(machine, served, fn() { Error(Nil) }),
+  )
   let config =
     host.Config(
       name: address.default(),
@@ -326,7 +328,9 @@ pub fn worktree_host(directory: String) -> Result(TreesHandle, String) {
   let served = [
     workspaces.Workspace("proj", repository, workspaces.Worktree("main")),
   ]
-  use trees <- result.try(executor_plane.worktrees_of(machine, served))
+  use trees <- result.try(
+    executor_plane.worktrees_with(machine, served, fn() { Error(Nil) }),
+  )
   let config =
     host.Config(
       name: address.default(),

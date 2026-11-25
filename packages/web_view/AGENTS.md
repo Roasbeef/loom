@@ -2470,3 +2470,13 @@ Things that break if changed carelessly:
   of the counts, and a margin on the dock keeps the stream in place.
 - **Folders.** The session page's rail folders are buttons only where
   `component.can_go_home` holds, and text otherwise.
+
+## Worktree toggle
+
+`composer.State.worktree` (`InFolder` or `InTree`) is set by `ToggledWorktree`, honoured only
+for a folder on this daemon's machine (`Folder`, `TypedFolder`, `Picked`, agent `Here`).
+`Intent.Create.worktree` is `Some("HEAD")` for a tree and reaches the daemon through the
+`creating` capability's extra `Option(String)` argument (protocol-change/133).
+`view/new_session.worktree_toggle` draws it beside the chips with the existing `place-chip`
+classes; `component.Label.branch` is the session's `loom/<id>` branch, which `stream_head`
+adds to its place words.

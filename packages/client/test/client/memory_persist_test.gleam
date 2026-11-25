@@ -383,6 +383,7 @@ fn settings(
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
+    released: None,
   )
 }
 

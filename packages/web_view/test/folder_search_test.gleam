@@ -393,7 +393,7 @@ fn silent(
     manage: None,
     thread_send: None,
     attention: None,
-    create: Some(fn(_, _, _, _, _: agency_limits.AgencyLimits, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _: agency_limits.AgencyLimits, _, _, _) { Nil }),
     folders: Some(
       home.Folders(
         recent: fn(_) { Nil },

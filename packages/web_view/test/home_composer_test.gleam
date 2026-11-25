@@ -73,10 +73,11 @@ fn recording(
   creations.Sharing,
   creations.Roles,
   agency_limits.AgencyLimits,
+  option.Option(String),
   String,
   fn(creations.Answer) -> Nil,
 ) -> Nil {
-  fn(place, name, sharing, roles, _, prompt, _) {
+  fn(place, name, sharing, roles, _, _, prompt, _) {
     process.send(asked, #(place, name, sharing, roles, prompt))
   }
 }

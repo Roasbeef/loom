@@ -1300,6 +1300,7 @@ fn settings(
     advisor: None,
     go_caches: None,
     project: None,
+    released: None,
   )
 }
 

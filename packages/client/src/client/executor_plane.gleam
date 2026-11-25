@@ -363,7 +363,23 @@ pub fn worktrees_of(
   machine: Machine,
   configured: List(Workspace),
 ) -> Result(Worktrees, String) {
-  worktrees.start(
+  worktrees_with(machine, configured, install.git_cow)
+}
+
+/// `worktrees_of`, with the lookup of the `git-cow` that makes a tree named, so
+/// that a test does not depend on whether one is on the machine's `PATH`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.worktrees_with(machine, workspaces, fn() { Error(Nil) })
+/// ```
+pub fn worktrees_with(
+  machine: Machine,
+  configured: List(Workspace),
+  cow: worktrees.Cow,
+) -> Result(Worktrees, String) {
+  worktrees.start_with(
     worktrees.Config(
       state_root: machine.state_root,
       ledger_path: ledger_path(machine.state_root),
@@ -374,6 +390,7 @@ pub fn worktrees_of(
       logger: machine.logger,
     ),
     configured,
+    cow,
   )
 }
 

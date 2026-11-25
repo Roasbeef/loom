@@ -131,7 +131,9 @@ fn rig_over(
   establish(state)
   let served = [workspaces.shared("proj", checkout)]
   let assert Ok(trees) =
-    executor_plane.worktrees_of(machine(state, seed), served)
+    executor_plane.worktrees_with(machine(state, seed), served, fn() {
+      Error(Nil)
+    })
     as "the worktrees start"
   let factory = executor_plane.factory(machine(state, seed), served, trees)
   let assert Ok(started) =

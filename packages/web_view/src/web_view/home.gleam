@@ -493,6 +493,7 @@ pub type Start {
         Sharing,
         creations.Roles,
         agency_limits.AgencyLimits,
+        Option(String),
         String,
         fn(creations.Answer) -> Nil,
       ) -> Nil,
@@ -3239,6 +3240,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 creations.Shareable,
                 roles,
                 agency_limits.empty,
+                None,
                 "",
               ),
             )
@@ -3263,6 +3265,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 sharing,
                 roles,
                 agency_limits.empty,
+                None,
                 "",
               ),
             )
@@ -3655,6 +3658,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 sharing,
                 roles,
                 agency_limits.empty,
+                None,
                 "",
               ),
             )
@@ -4528,6 +4532,7 @@ fn acted(
     creations.Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -4542,9 +4547,18 @@ fn acted(
     composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
     composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
       founding(model, orchestrator, place, roles, prompt)
-    composer.Create(place:, name:, prompt:, roles:, agency:) -> #(
+    composer.Create(place:, name:, prompt:, roles:, agency:, worktree:) -> #(
       Model(..model, note: None),
-      creating(ask, place, name, creations.Private, roles, agency, prompt),
+      creating(
+        ask,
+        place,
+        name,
+        creations.Private,
+        roles,
+        agency,
+        worktree,
+        prompt,
+      ),
     )
     composer.Depart(path:) -> #(
       Model(..model, departure: Some(path)),
@@ -4854,6 +4868,7 @@ fn creating(
     Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -4862,10 +4877,11 @@ fn creating(
   sharing: Sharing,
   roles: creations.Roles,
   agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
   prompt: String,
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, roles, agency, prompt, fn(answer) {
+  ask(place, name, sharing, roles, agency, worktree, prompt, fn(answer) {
     dispatch(Created(answer))
   })
 }
@@ -7973,6 +7989,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       leave_browser: Composed(composer.ClosedBrowser),
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
       toggle_limits: Composed(composer.ToggledLimits),
+      toggle_worktree: Composed(composer.ToggledWorktree),
       start_with_limits: fn(name, typed, limits) {
         Composed(composer.StartedWithLimits(name, typed, limits))
       },

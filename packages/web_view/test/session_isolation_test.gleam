@@ -73,6 +73,7 @@ fn page_of(
         workspace: "/work/" <> marker,
         executor: "",
         pool: "",
+        branch: "",
       )),
     )
   let #(model, _) =

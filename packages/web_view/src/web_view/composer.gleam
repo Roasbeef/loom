@@ -354,7 +354,20 @@ pub type State {
     unsent: Option(String),
     /// Whether the optional subagent limits disclosure is expanded.
     limits: LimitsDisclosure,
+    /// Whether the session works in its folder or in a worktree of it, as the
+    /// Worktree toggle left it (protocol-change/133).
+    worktree: Worktree,
   )
+}
+
+/// Where a session on this daemon works.
+pub type Worktree {
+  /// In the folder itself.
+  InFolder
+
+  /// In a Git worktree of the folder, on a branch of its own, started from
+  /// `HEAD`.
+  InTree
 }
 
 /// Everything a person can do to the composer. None carries text the page did
@@ -421,6 +434,11 @@ pub type Msg {
   /// Toggle the optional subagent limits disclosure on the local machine.
   ToggledLimits
 
+  /// The Worktree toggle was pressed: the next session works in its own Git
+  /// worktree of the folder, or in the folder again. It is honoured only for a
+  /// folder on this daemon's machine.
+  ToggledWorktree
+
   /// Submit the composer carrying optional subagent limits fields.
   StartedWithLimits(prompt: String, typed: Typed, limits: LimitsInput)
 
@@ -469,6 +487,9 @@ pub type Intent {
     roles: creations.Roles,
     /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
+    /// The commit-ish the session's own worktree starts from, or `None` for a
+    /// session in the folder (protocol-change/133).
+    worktree: Option(String),
   )
 
   /// Ask the daemon to start a session on another orchestrator and send it its
@@ -569,6 +590,7 @@ pub fn new() -> State {
     refusal: None,
     unsent: None,
     limits: LimitsClosed,
+    worktree: InFolder,
   )
 }
 
@@ -611,6 +633,7 @@ pub fn update(
     ChosePicked -> #(chose_picked(state, offers), Stay)
     ClosedBrowser -> #(State(..state, browser: Closed), Stay)
     ToggledLimits -> #(toggled_limits(state), Stay)
+    ToggledWorktree -> #(toggled_worktree(state, offers, recent), Stay)
     Started(prompt:, typed:) ->
       started(state, offers, recent, prompt, typed, default_limits_input)
     StartedWithLimits(prompt:, typed:, limits:) ->
@@ -1665,9 +1688,42 @@ fn started(
         )
         True, False, Ok(place), Ok(agency) -> #(
           State(..state, sending: Out, refusal: None, unsent: None),
-          to_create(state.agent, place, prompt, state.roles, agency),
+          to_create(
+            state.agent,
+            place,
+            prompt,
+            state.roles,
+            agency,
+            state.worktree,
+          ),
         )
       }
+  }
+}
+
+/// Flips the Worktree toggle when the agent is this daemon and the target is a
+/// folder on it. An executor's or a pool's workspace chooses its own mode, and
+/// another orchestrator's folders are out of this daemon's reach, so for those
+/// the press changes nothing.
+fn toggled_worktree(
+  state: State,
+  offers: Offers,
+  recent: List(Recent),
+) -> State {
+  // The target in force counts, whether the person chose it or it is the
+  // default the page drew, so the toggle works on the folder the chip shows.
+  case state.agent, chosen(state, offers, recent) {
+    Here, Some(Folder(_)) | Here, Some(TypedFolder) | Here, Some(Picked(_)) ->
+      State(..state, worktree: case state.worktree {
+        InFolder -> InTree
+        InTree -> InFolder
+      })
+    Here, Some(Project(..))
+    | Here, Some(OnExecutor(..))
+    | Here, Some(InPool(..))
+    | Here, None
+    | Orchestrator(_), _
+    -> state
   }
 }
 
@@ -1736,6 +1792,7 @@ fn to_create(
   prompt: String,
   roles: creations.Roles,
   agency: AgencyLimits,
+  worktree: Worktree,
 ) -> Intent {
   // Dispatch between local and relayed session creation.
   case agent {
@@ -1746,6 +1803,11 @@ fn to_create(
         prompt: string.trim(prompt),
         roles:,
         agency:,
+        worktree: case worktree, place {
+          InTree, creations.Drawn(_) | InTree, creations.Typed(_) ->
+            Some("HEAD")
+          InTree, _ | InFolder, _ -> None
+        },
       )
     Orchestrator(name:) ->
       CreateOn(orchestrator: name, place:, prompt: string.trim(prompt), roles:)

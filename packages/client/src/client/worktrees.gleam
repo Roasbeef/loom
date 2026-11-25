@@ -65,6 +65,7 @@
 
 import broker/exec.{type EnforcementDemand}
 import client/goalcheck
+import client/install
 import client/remote/protocol
 import client/workspaces.{type Workspace}
 import client/worktree_git.{type Git, type Output}
@@ -111,6 +112,7 @@ pub opaque type Worktrees {
     git: Option(Git),
     checks: Option(Git),
     gates: List(#(String, Gate)),
+    cow: Cow,
   )
 }
 
@@ -194,7 +196,7 @@ type Phase {
 // Everything one job needs, made inside the job so that the ledger connection
 // lives and dies in the gate's process.
 type Env {
-  Env(git: Git, ledger: Ledger, config: Config)
+  Env(git: Git, ledger: Ledger, config: Config, cow: Cow)
 }
 
 // The names and paths one session's tree has.
@@ -237,11 +239,39 @@ pub fn start(
   config: Config,
   served: List(Workspace),
 ) -> Result(Worktrees, String) {
+  start_with(config, served, install.git_cow)
+}
+
+/// Where the `git-cow` that makes a tree is looked for, asked once for each
+/// creation so that a `PATH` that changes is noticed. `start` uses
+/// `install.git_cow`; a test passes its own.
+pub type Cow =
+  fn() -> Result(String, Nil)
+
+/// `start`, with the lookup of `git-cow` named. A creation that finds a program
+/// runs `git-cow add` in the sandbox in place of `git worktree add`, so the tree
+/// is a copy-on-write copy that carries the checkout's ignored files, build
+/// output among them, and starts faster. A creation that finds none, or whose
+/// `git-cow` refuses with exit 2 (a dirty source, or `GIT_DIR` and its kin set)
+/// or 3 (no copy-on-write support), runs plain `git worktree add` and logs why.
+/// Any other failure of `git-cow` is the creation's failure: there is no silent
+/// fallback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.start_with(config, served, fn() { Error(Nil) })
+/// ```
+pub fn start_with(
+  config: Config,
+  served: List(Workspace),
+  cow: Cow,
+) -> Result(Worktrees, String) {
   let wanted = list.filter(served, is_worktree)
 
   // Decide how to handle wanted {.
   case wanted {
-    [] -> Ok(Worktrees(config:, git: None, checks: None, gates: []))
+    [] -> Ok(Worktrees(config:, git: None, checks: None, gates: [], cow:))
     _ -> {
       use state_root <- result.try(bootstrap.canonical_directory(
         config.state_root,
@@ -276,11 +306,11 @@ pub fn start(
       )
       use gates <- result.map(
         list.try_map(wanted, fn(workspace) {
-          gate_for(config, git, workspace)
+          gate_for(config, git, cow, workspace)
           |> result.map(fn(gate) { #(workspace.name, gate) })
         }),
       )
-      Worktrees(config:, git: Some(git), checks: Some(checks), gates:)
+      Worktrees(config:, git: Some(git), checks: Some(checks), gates:, cow:)
     }
   }
 }
@@ -787,11 +817,12 @@ pub fn unrecorded(worktrees: Worktrees, served: List(Workspace)) -> Int {
 fn gate_for(
   config: Config,
   git: Git,
+  cow: Cow,
   workspace: Workspace,
 ) -> Result(Gate, String) {
   let prepare = fn() {
     use root <- result.try(canonical_root(workspace))
-    with_env(config, git, fn(env) { reconcile(env, workspace, root) })
+    with_env(config, git, cow, fn(env) { reconcile(env, workspace, root) })
   }
   actor.new(Unreconciled(prepare))
   |> actor.on_message(run_job)
@@ -855,10 +886,11 @@ fn through(
   ))
   let reply = process.new_subject()
   let config = worktrees.config
+  let cow = worktrees.cow
   process.send(
     gate,
     Job(
-      work: fn() { process.send(reply, with_env(config, git, work)) },
+      work: fn() { process.send(reply, with_env(config, git, cow, work)) },
       refuse: fn(reason) { process.send(reply, Error(reason)) },
     ),
   )
@@ -876,10 +908,11 @@ fn through(
 fn with_env(
   config: Config,
   git: Git,
+  cow: Cow,
   work: fn(Env) -> Result(a, String),
 ) -> Result(a, String) {
   with_ledger(config.ledger_path, fn(ledger) {
-    work(Env(git:, ledger:, config:))
+    work(Env(git:, ledger:, config:, cow:))
   })
 }
 
@@ -951,7 +984,9 @@ fn canonical_root(workspace: Workspace) -> Result(String, String) {
 
 // The names and paths of one session's tree, judged before anything touches
 // the disk. The session id arrives from a peer, so it is checked as a path
-// component, and the base is the configured one, never the peer's.
+// component, and the base comes from the workspace the caller passes: the
+// configured one for an executor's workspace, the session's own for a local
+// folder, and never one a peer sent.
 
 /// Establishes spec of for the caller, keeping its validation and result policy at this boundary.
 fn spec_of(
@@ -1157,14 +1192,153 @@ fn recreate(env: Env, spec: Spec) -> Result(Nil, String) {
 
 /// Establishes add for the caller, keeping its validation and result policy at this boundary.
 fn add(env: Env, spec: Spec, arguments: List(String)) -> Result(Nil, String) {
-  // Decide how to handle git_ok(env, spec.root, writing(spec), arguments) {.
-  case git_ok(env, spec.root, writing(spec), arguments) {
+  // Decide how to handle created(env, spec, arguments) {.
+  case created(env, spec, arguments) {
     Ok(_output) -> record(env, spec, exec_ledger.Present)
     Error(reason) -> {
       let _undone = undo(env, spec)
       Error(reason)
     }
   }
+}
+
+/// The command that makes the tree: `git-cow add` with the arguments of `git
+/// worktree add` when a `git-cow` is found, and `git worktree add` itself
+/// otherwise. The lookup is made here, once for each creation.
+fn created(
+  env: Env,
+  spec: Spec,
+  arguments: List(String),
+) -> Result(Output, String) {
+  // Only the `worktree add` of a creation has a copy-on-write form.
+  case env.cow(), arguments {
+    Ok(program), ["worktree", "add", ..rest] ->
+      copied(env, spec, program, rest, arguments)
+    _, _ -> git_ok(env, spec.root, writing(spec), arguments)
+  }
+}
+
+/// Runs `git-cow add` in the sandbox. Its environment is the helper's fixed one,
+/// which holds no `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or
+/// `GIT_COMMON_DIR` whatever the daemon's own holds, so the exit 2 that those
+/// variables cause cannot come from here; a dirty source can. Exit 2 is
+/// `git-cow` declining (without `--require-cow` it falls back to plain Git itself
+/// when the file system has no copy-on-write, and exits 0), and the creation falls back to plain Git after
+/// removing anything the refused call left, logging why the tree is not a
+/// copy. Any other exit is a failure and is reported as one.
+fn copied(
+  env: Env,
+  spec: Spec,
+  program: String,
+  rest: List(String),
+  plain: List(String),
+) -> Result(Output, String) {
+  use output <- result.try(worktree_git.run_program(
+    env.git,
+    program,
+    worktree_git.Run(directory: spec.root, writable: writing(spec), arguments: [
+      "add",
+      ..rest
+    ]),
+    worktree_git.checkout_within_ms,
+  ))
+  let said = said_by(output)
+
+  // Zero made the copy; 2 declined it; anything else is a failure.
+  case output.code {
+    0 -> {
+      drop_foreign_links(spec.path)
+      Ok(output)
+    }
+    2 -> {
+      log.warn(env.config.logger, "executor.worktree_not_copy_on_write", [
+        field.ident(key: "session", value: spec.session),
+        field.count("exit", output.code),
+        field.text(
+          key: "reason",
+          value: worktree_git.printable(said, protocol.max_worktree_reason),
+        ),
+      ])
+      use Nil <- result.try(forget_directory(spec))
+      git_ok(env, spec.root, writing(spec), plain)
+    }
+    code ->
+      Error(worktree_git.printable(
+        "git cow add exited " <> int.to_string(code) <> ": " <> said,
+        protocol.max_worktree_reason,
+      ))
+  }
+}
+
+/// A copy-on-write copy carries the checkout's build output, and a `priv`
+/// link in it that points at the source checkout would make a program that
+/// reads `priv` read the wrong tree. Each such link under a `build/dev/erlang`
+/// of the new tree, at its top or one `packages/<name>` down, is removed when it
+/// resolves outside the tree, so the next build links it again. A link inside
+/// the tree, or no link, is left alone.
+fn drop_foreign_links(tree: String) -> Nil {
+  let roots = [
+    tree,
+    ..directory_entries(tree <> "/packages")
+    |> list.map(fn(name) { tree <> "/packages/" <> name })
+  ]
+  list.each(roots, fn(root) {
+    let erlang = root <> "/build/dev/erlang"
+
+    // A `build` or `erlang` that is itself a link out of the tree would make
+    // every path below it the source's, so nothing under one is touched.
+    case within(tree, erlang) {
+      True ->
+        list.each(directory_entries(erlang), fn(package) {
+          case within(tree, erlang <> "/" <> package) {
+            True -> drop_if_foreign(tree, erlang <> "/" <> package <> "/priv")
+            False -> Nil
+          }
+        })
+      False -> Nil
+    }
+  })
+}
+
+/// Whether a directory resolves, links followed, to a place under `tree`.
+fn within(tree: String, directory: String) -> Bool {
+  case bootstrap.canonical_directory(directory) {
+    Ok(target) -> string.starts_with(target, tree <> "/")
+    Error(_) -> False
+  }
+}
+
+/// Deletes one `priv` path if it is a link that resolves outside `tree`, or
+/// nowhere.
+fn drop_if_foreign(tree: String, link: String) -> Nil {
+  // Where the link resolves decides whether it is the tree's own.
+  let inside = case bootstrap.canonical_directory(link) {
+    Ok(target) -> string.starts_with(target, tree <> "/")
+    Error(_) -> False
+  }
+
+  // A link that stays in the tree, and anything that is not a link, is kept.
+  case simplifile.is_symlink(link), inside {
+    Ok(True), False -> {
+      let _removed = simplifile.delete(link)
+      Nil
+    }
+    Ok(True), True | Ok(False), _ | Error(_), _ -> Nil
+  }
+}
+
+/// What a call said: its error text, or its output when that is empty.
+fn said_by(output: Output) -> String {
+  // Git writes its refusals to standard error; a program may use standard output.
+  case string.trim(output.stderr) {
+    "" -> string.trim(output.stdout)
+    message -> message
+  }
+}
+
+/// The names in a directory, or none when it cannot be read.
+fn directory_entries(path: String) -> List(String) {
+  simplifile.read_directory(path) |> result.unwrap([])
 }
 
 /// Establishes undo for the caller, keeping its validation and result policy at this boundary.

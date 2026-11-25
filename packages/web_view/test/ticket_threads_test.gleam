@@ -820,7 +820,7 @@ pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
     home.Start(
       ..start_with(home.OperatorCeiling, Some(quiet_projects(asked))),
       sessions: fn(deliver) { deliver(home.Listed([])) },
-      create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
     )
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
   let calm = drawn(model)

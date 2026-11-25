@@ -175,6 +175,7 @@ fn with_rig(
               "",
               "",
               agency_limits.empty,
+              None,
             ),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),

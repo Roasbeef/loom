@@ -128,6 +128,7 @@ fn create(
       executor: "",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     )
   let assert Ok(view) =
     manager.create(

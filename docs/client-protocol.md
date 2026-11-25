@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:5457`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:5482`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -682,6 +682,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 | `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
+| `worktree` | object | optional | Create the session in its own Git worktree of `workspace`, on a branch `loom/<session id>`. The object holds one optional member, `base`, the commit-ish the branch starts from (default `HEAD`; not empty, at most 255 bytes, not starting with `-`, no space or control character). `{}` asks for a worktree from `HEAD`. Only a path on the daemon's host has one: with `executor` or `pool` the request is malformed. The folder must be the top of a primary checkout, a directory with a `.git` directory, or the daemon refuses `not_a_repository`. A retry under the same `request_key` must repeat it. The reply, `sessions.get` and each `sessions.list` record then carry `"worktree":{"base","branch"}`, and `workspace` stays the folder. See [protocol-change/133](../protocol-change/133-session-worktree.md). |
 | `agency` | object | optional | Per-session subagent limits (`fan_out` integer in `1..10000`, `session_strands` integer in `1..10000` with `fan_out <= session_strands`, `depth_cap` integer in `1..256` or `"unlimited"`). Omitted keys inherit the daemon/Agency defaults (`100`, `256`, `1`). Unknown keys or out-of-range values are refused as `bad_request`. See [protocol-change/113](../protocol-change/113-session-agency-limits.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
@@ -705,11 +706,13 @@ the profile is judged first when both are wrong;
 `unusable_configuration` when a profile or a model is named and that configuration
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
+`not_a_repository` when `worktree` is asked of a folder that is not the top
+of a primary checkout (before anything is reserved);
 `executor_unknown` when `executor` names no `[executors.<name>]` of the
 daemon's configuration, and `pool_unknown` when `pool` names no
 `[pools.<name>]`, each before anything is reserved; `conflict` when
 the key was reused with different metadata, a different `profile`,
-`model`, `executor`, `pool` or `agency` included; `unavailable`.
+`model`, `executor`, `pool`, `agency` or `worktree` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 On a session directory member, a session with an `executor` or a `pool` is
@@ -1258,7 +1261,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1829`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1877`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -4661,6 +4664,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `unavailable` | The daemon is draining, or a durable read failed. | Retry later. |
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
+| `not_a_repository` | `sessions.create` asked for a `worktree` of a folder that is not the top of a primary Git checkout (no `.git` directory: a subdirectory, a linked worktree, or not a repository). | Choose the repository's top directory, or create the session without `worktree`. |
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |

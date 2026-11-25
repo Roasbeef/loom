@@ -749,7 +749,7 @@ fn creating_from_home(
     Ok(chosen) -> Some(chosen)
     Error(Nil) -> None
   }
-  let ask = fn(place, name, sharing, roles, _agency, prompt, deliver) {
+  let ask = fn(place, name, sharing, roles, _agency, _worktree, prompt, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -796,6 +796,7 @@ fn creating_from_home(
         sharing,
         creations.Roles(profile:, model:),
         agency_limits.empty,
+        None,
         "",
         fn(answer) { process.send(answers, answer) },
       )
@@ -1682,6 +1683,7 @@ fn create_session_in(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
@@ -4153,6 +4155,7 @@ fn create_shared_session(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
@@ -8601,6 +8604,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1231),
@@ -8643,6 +8647,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1241),

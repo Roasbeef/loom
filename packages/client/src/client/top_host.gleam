@@ -478,6 +478,7 @@ fn create(
       executor: place.executor,
       pool: place.pool,
       agency: agency_limits.empty,
+      worktree: None,
     )
   use reserved <- result.try(
     manager.reserve_relayed(

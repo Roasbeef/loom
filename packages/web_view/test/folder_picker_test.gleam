@@ -234,7 +234,7 @@ fn owner(asked: Subject(creations.Place), browsed: Subject(List(String))) {
     manage: None,
     thread_send: None,
     attention: None,
-    create: Some(fn(place, _, _, _, _: agency_limits.AgencyLimits, _, _) {
+    create: Some(fn(place, _, _, _, _: agency_limits.AgencyLimits, _, _, _) {
       process.send(asked, place)
     }),
     folders: Some(

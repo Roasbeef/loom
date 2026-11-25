@@ -330,3 +330,43 @@ differences are these.
   of trees, or none for a read.
 - **Failure types.** A factory reports `host.PlaneFailure` (`NoPlaneBuilt` or
   `WorktreeNotMade`) so the host can answer `NoPlane` or `WorktreeFailed`.
+
+## Addendum: a session's own worktree on a local folder (2026-11-24)
+
+[133](133-session-worktree.md) lets a session created in a folder on the
+daemon's own machine ask for a worktree of that folder, with a base of its own.
+It reuses this proposal's lifecycle unchanged: `client/local_trees` starts a
+`client/worktrees` service for each folder, named `local-<digest of the folder>`,
+and the daemon's session builder and instance retirement call `open` and `close`.
+Nothing here changes. The two differences are that the base belongs to the session
+and not to a table, and that a kept tree is found with `git worktree list` in the
+folder, because `loomd executor release --worktrees` settles only the workspaces an
+executor's `loom.toml` serves.
+
+## Addendum: a tree is made with `git cow add` when there is one (2026-11-24)
+
+`client/worktrees` makes every tree, for an executor's worktree workspace and for a
+session's own worktree of a local folder ([133](133-session-worktree.md)), with `git
+cow add` when a `git-cow` is found and with `git worktree add` otherwise. There is no
+configuration key: the lookup is `install.git_cow` (the copy beside the running
+server, then the first `git-cow` on the daemon's `PATH`), made once for each creation,
+so a changed `PATH` is noticed. `git-cow add` takes the arguments of `git worktree add`
+and runs in the same sandbox, so the tree is a copy-on-write copy that carries the
+checkout's ignored files, build output among them, and starts faster.
+
+- Exit 2 (a dirty source, or `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or
+  `GIT_COMMON_DIR` set) is `git-cow` declining. A file system without copy-on-write is
+  not a refusal: without `--require-cow`, `git-cow` falls back to plain Git itself and
+  exits 0, so Loom has no case for exit 3. On exit 2 the creation removes what the call left, runs plain `git worktree add` and logs
+  `executor.worktree_not_copy_on_write` with the session, the exit and git-cow's
+  message. A repository with uncommitted changes therefore gets a plain tree.
+- Any other exit fails the creation with `git cow add exited N: <message>`. There is no
+  silent fallback.
+- The sandbox's environment is a fixed list that holds no `GIT_*` repository variable,
+  so the daemon's own cannot reach `git-cow`.
+- After a copy, a `priv` link under `build/dev/erlang/<package>/` of the tree (at its top
+  or under `packages/<name>`) that resolves outside the tree is deleted, provided that
+  `build`, `erlang` and `<package>` themselves resolve inside the tree, so the next
+  build links it again: a copied link points at the source checkout, and a program that
+  reads `priv` would read the wrong tree.
+

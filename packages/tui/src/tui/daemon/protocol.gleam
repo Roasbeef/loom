@@ -236,6 +236,11 @@ pub type Command {
     pool: String,
     /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
+    /// The commit-ish a Git worktree of `workspace` branches from, or `None`
+    /// for a session that works in the directory itself. Sent as
+    /// `{"worktree": {"base": ...}}`, and only beside a path on the daemon's
+    /// host (protocol-change/133).
+    worktree: Option(String),
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -600,6 +605,11 @@ pub type Session {
     /// frame has no such member, and so does an older daemon's. A present value
     /// that is not a bounded string reads as absent, as the subtitle does.
     executor: Option(String),
+    /// The branch of the session's own Git worktree (protocol-change/133),
+    /// present only for a session created with one. An older daemon's frames
+    /// have none, which is how a launch that asked for a worktree learns the
+    /// daemon ignored it.
+    worktree: Option(String),
   )
 }
 
@@ -1158,6 +1168,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       executor,
       pool,
       agency,
+      worktree,
     ) -> {
       use fields <- result.try(
         text_fields([
@@ -1197,11 +1208,27 @@ fn command_fields(command: Command, epoch: Epoch) {
 
       let agency_fields = encode_agency_field(agency)
 
+      // A creation in the directory itself carries no `worktree` key, so a
+      // daemon that predates worktrees receives exactly the request it always
+      // did.
+      let worktree_fields = case worktree {
+        Some(base) -> [
+          #("worktree", json.Object([#("base", json.String(base))])),
+        ]
+        None -> []
+      }
+
       [
         #("configuration", json.String(configuration)),
         ..list.append(
           fields,
-          list.flatten([profile, executor, pool, agency_fields]),
+          list.flatten([
+            profile,
+            executor,
+            pool,
+            agency_fields,
+            worktree_fields,
+          ]),
         )
       ]
     }
@@ -1734,7 +1761,17 @@ fn session(body: json.JsonValue) {
     moving_status(body, status),
     subtitle_of(body),
     executor_of(body),
+    worktree_of(body),
   )
+}
+
+// The optional `worktree` member's branch. A member that is not an object with
+// a bounded `branch` reads as absent, like the other display aids.
+/// Reads the branch of a session's own worktree from a session record.
+fn worktree_of(body: json.JsonValue) -> Option(String) {
+  field(body, "worktree")
+  |> result.try(text_at(_, "branch", 256))
+  |> option.from_result
 }
 
 // The optional `moving` member, which reads over the `saved` the daemon reports

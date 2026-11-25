@@ -610,12 +610,18 @@ deliberate recovery-blocked boundary.
 ## The session's Git working tree
 
 A session works in the operator's own directory, and Loom neither creates
-nor removes Git worktrees, with one exception: a workspace registered on an
+nor removes Git worktrees, with two exceptions. A workspace registered on an
 executor in `mode = "worktree"` gets a linked worktree for each session, which
 the executor makes, adopts and removes (see
-[distributed](distributed.md#worktree-workspaces)). Everywhere else the
-workspace is the absolute path the catalogue recorded when the session was
-created. What Loom adds around it
+[distributed](distributed.md#worktree-workspaces)). And a local session created
+with the `worktree` choice (protocol-change 133, `loom --worktree`, the web
+form's Worktree checkbox) works in a linked worktree of its folder, which the
+daemon makes, adopts and removes by the same rules (`client/local_trees` over
+`client/worktrees`): the session builder makes the tree before it resolves the
+session's settings, so the settings are those of the tree, and the instance's
+retirement settles it once the helpers have stopped. The registration keeps the
+folder for display and grouping. Everywhere else the workspace is the absolute
+path the catalogue recorded when the session was created. What Loom adds around it
 is three things, all prepared during assembly on every open: a sandbox
 policy that lets `git commit` work in a linked worktree, a Git identity
 for commits made by tools, and a durable starting revision that the diff

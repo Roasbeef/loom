@@ -127,6 +127,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       5000,
     )
@@ -145,6 +146,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       "",
       "",
       agency_limits.empty,
+      None,
     )
   let assert Error(daemon.Refused("capacity", _)) =
     daemon.request(first.control, request, 5000)
