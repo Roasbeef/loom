@@ -6,9 +6,7 @@
 //// who may ask and how often, and nothing else. It runs no tool, opens no saved
 //// session and writes nothing.
 ////
-//// ## Flow
-////
-//// `read_typed` → `read` → `reserved`
+//// ## How a read runs
 ////
 //// 1. `read_typed` calls `read` and decodes the reply with the page's own
 ////    decoder.

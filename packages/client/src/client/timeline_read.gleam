@@ -10,9 +10,7 @@
 //// open. A strand longer than the scan starts its cards inside a turn, and the
 //// first card it can make says so by having `turn_seq` zero.
 ////
-//// ## Flow
-////
-//// `read` → `build` → `window` → `page` → `fit`
+//// ## How a read runs
 ////
 //// 1. `read` answers `build`'s page as the reply object.
 //// 2. `window` reads main's newest records of every kind, oldest first.
@@ -122,11 +120,13 @@ fn window(runtime: api.Runtime) -> Result(List(Entry), String) {
 /// The newest `wanted` cards older than `before`, oldest first, the cursor for
 /// the cards still older, and the open span when this is the first page.
 fn page(cut: timeline.Cut, before: Option(Int), wanted: Int) -> Feed {
+  // A cursor leaves the cards at or after it out.
   let older_cards = case before {
     Some(from_seq) ->
       list.filter(cut.cards, fn(card) { card.from_seq < from_seq })
     None -> cut.cards
   }
+
   let skipped = int.max(0, list.length(older_cards) - wanted)
   let cards = list.drop(older_cards, skipped)
 

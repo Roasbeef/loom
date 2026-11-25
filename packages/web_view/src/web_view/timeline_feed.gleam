@@ -323,6 +323,7 @@ fn file(fields: List(#(String, JsonValue))) -> Result(File, Nil) {
 /// A command and its exit status. The status may be negative, as a signal is.
 fn command(fields: List(#(String, JsonValue))) -> Result(Command, Nil) {
   use words <- result.try(text(fields, "text"))
+
   // The status is an integer of either sign.
   case list.key_find(fields, "exit") {
     Ok(json.Int(exit)) -> Ok(Command(session_brief.untrusted(words), exit))
