@@ -1045,8 +1045,10 @@ pub opaque type Model {
     /// The approval evidence read for the sessions whose thread was shown, by
     /// session, replaced by each read.
     evidence: Dict(String, approval_evidence.Seen),
-    /// The brief of each session whose thread was shown, by session, replaced by
-    /// each read (protocol-change/125).
+    /// The brief of the open thread's session and of each session in Updates, by
+    /// session, replaced by each read (protocol-change/125). A session that is in
+    /// neither is dropped at the next card read (`pruned`), so the three briefs
+    /// maps stay bounded by what the page draws.
     briefs: Dict(String, session_brief.Seen),
     /// The last brief read the page started of each session, which
     /// `brief_rule.due` counts the next read from.
@@ -1056,8 +1058,13 @@ pub opaque type Model {
     /// (`brief_rule.shown`).
     brief_since: Dict(String, Int),
     /// The sessions whose Updates card is open. It is the page's own and is never
-    /// stored: a reload closes every card.
+    /// stored: a reload closes every card, and a session that leaves Updates is
+    /// dropped from it (`pruned`).
     expanded: Set(String),
+    /// The timer that starts the next card read (`CardTicked`), made by the
+    /// runtime, and whether one is set.
+    card_timer: Option(Subject(Nil)),
+    card_rearm: Rearm,
     /// Whether the reading pane shows the "Watch all" board of live cards.
     watch: inbox_view.Watch,
     /// The open item thread and what is staged in it.
@@ -1830,6 +1837,13 @@ pub type Msg {
   /// the reading pane, or take it away.
   WatchAllToggled
 
+  /// The runtime made the timer that starts the next Updates card read.
+  CardTimerReady(timer: Subject(Nil))
+
+  /// The card timer fired: read the briefs of the Updates cards that are due, and
+  /// set the timer again while any card is on screen.
+  CardTicked
+
   /// The reading pane's back control on a narrow screen: show the list. It
   /// closes the open thread's pane, so a thread's own state is dropped as a press
   /// on another thread drops it.
@@ -1954,6 +1968,8 @@ pub fn new(start: Start) -> Model {
     brief_reads: dict.new(),
     brief_since: dict.new(),
     expanded: set.new(),
+    card_timer: None,
+    card_rearm: Unscheduled,
     watch: inbox_view.WatchOne,
     item: item_pane.closed(),
     item_presses: 0,
@@ -2038,15 +2054,20 @@ fn wire() -> Effect(Msg) {
   let relay_timer = process.new_subject()
   let side_timer = process.new_subject()
   let review_timer = process.new_subject()
+  let card_timer = process.new_subject()
+
+  // Each subject is handed to `update`, which arms it when the page needs it.
   dispatch(TimerReady(timer))
   dispatch(RelayTimerReady(relay_timer))
   dispatch(SideTimerReady(side_timer))
   dispatch(ReviewTimerReady(review_timer))
+  dispatch(CardTimerReady(card_timer))
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked })
   |> process.select_map(relay_timer, fn(_) { RelayTicked })
   |> process.select_map(side_timer, fn(_) { SideTicked })
   |> process.select_map(review_timer, fn(_) { ReviewTicked })
+  |> process.select_map(card_timer, fn(_) { CardTicked })
 }
 
 /// Applies one message.
@@ -2317,6 +2338,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
+    // The card timer is made once. A page that shows cards starts reading them.
+    CardTimerReady(timer:) ->
+      card_arming(Model(..model, card_timer: Some(timer)))
+
+    // The timer fires once for each interval while a card is on screen: read what
+    // is due, then set it again.
+    CardTicked ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> {
+          let #(read, reads) =
+            card_briefing(Model(..model, card_rearm: Unscheduled))
+          let #(armed, arm) = card_arming(read)
+          #(armed, effect.batch([reads, arm]))
+        }
+      }
+
     // The board is a view of the same cards; pressing the control again returns
     // to the thread the pane showed before.
     WatchAllToggled -> #(
@@ -2447,8 +2485,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
-    // The brief replaces what the page held for that session, kept for each
-    // session whose thread was shown and so bounded by the sessions viewed. A
+    // The brief replaces what the page held for that session, which is the open
+    // thread's session or one in Updates and so bounded by them (`pruned`). A
     // refusal leaves a brief the page already holds, since the daemon allows six
     // reads in four seconds and a refused read says nothing about what the
     // session did.
@@ -2661,6 +2699,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             briefing(
               Model(
                 ..model,
+                watch: inbox_view.WatchOne,
                 item: state,
                 item_presses: model.item_presses + 1,
                 opened: set.insert(model.opened, attention_rule.opened_key(key)),
@@ -2922,6 +2961,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           reading_ticket_thread(
             Model(
               ..model,
+              watch: inbox_view.WatchOne,
               item: item_pane.closed(),
               opened: set.insert(model.opened, ticket_rule.opened_key(key)),
               ticket: Some(thread_reopened(model.ticket, key)),
@@ -6330,21 +6370,44 @@ fn approval_session(model: Model) -> Option(String) {
 }
 
 /// Starts the reads of the shown session that its thread draws: its pending
-/// approvals and its brief. Both return at once and answer later. The model
-/// comes back with the time the brief read was started, which the next read
-/// counts from.
+/// approvals and its brief, and, when the page's own refresh asks, the briefs of
+/// the Updates cards that are due. All return at once and answer later. The model
+/// comes back with the time each brief read was started, which the next read
+/// counts from. Opening a thread reads that thread and no card: the cards have
+/// their own timer.
 fn approving(
   model: Model,
   trigger: brief_rule.Trigger,
 ) -> #(Model, Effect(Msg)) {
   let #(model, brief) = briefing(model, trigger)
-  let #(model, cards) = card_briefing(model)
+
+  // A card read follows a refresh and the card timer, and never an opening.
+  let #(model, cards) = case trigger {
+    brief_rule.Refreshed -> {
+      let #(read, reads) = card_briefing(model)
+      let #(armed, arm) = card_arming(read)
+      #(armed, effect.batch([reads, arm]))
+    }
+    brief_rule.Opened -> #(model, effect.none())
+  }
+
   #(model, effect.batch([approval_read(model), brief, cards]))
 }
 
-/// How many Updates cards the page reads a brief for. A page with more working
-/// sessions than this draws the rest without one, so the reads stay bounded.
-const card_limit = 8
+/// How many Updates cards the page reads a brief for: the first sessions of the
+/// group, in the order it lists them (by name), so the list and the board agree on
+/// which come first. A page with more working sessions draws the rest without a
+/// brief, so the reads stay bounded.
+pub const card_limit = 8
+
+/// How many card reads one tick starts. The daemon allows six brief reads in four
+/// seconds for each credential, and a tick is `card_tick_ms` long, so two reads a
+/// tick is a rate of 1.6 reads in four seconds, which leaves room for the open
+/// thread's read and for a refresh.
+pub const card_per_tick = 2
+
+/// How long the card timer waits between ticks, in milliseconds.
+pub const card_tick_ms = 5000
 
 /// The sessions in the Updates group, as the inbox's list holds them.
 fn updates_threads(model: Model) -> List(inbox_rule.Thread) {
@@ -6354,52 +6417,104 @@ fn updates_threads(model: Model) -> List(inbox_rule.Thread) {
   }
 }
 
-/// Starts the read of one Updates card's brief and returns at once. At most one
-/// read starts each time, for the session whose last read is oldest among those
-/// that are due (`brief_rule.due`, fifteen seconds), and only for the first
-/// `card_limit` sessions of the group. The daemon allows six brief reads in four
-/// seconds for each credential and the open thread reads too, so a card never
-/// reads faster than one a call: with eight cards that is eight reads in fifteen
-/// seconds at most. A page that reads no feed or is not connected reads none.
+/// Sets the card timer, once, while a connected page that reads the feed has
+/// Updates cards to draw. The timer is the page's own (`CardTimerReady`) and fires
+/// as `CardTicked`; a timer already set, a page with no cards and one that has
+/// ended set none, so the ticks stop by themselves when the last card goes.
+fn card_arming(model: Model) -> #(Model, Effect(Msg)) {
+  // The timer is set only for a page that shows cards and has not set one.
+  case
+    model.card_timer,
+    model.card_rearm,
+    model.status,
+    model.start.attention,
+    updates_threads(model)
+  {
+    Some(timer), Unscheduled, Connected, Some(_), [_, ..] -> #(
+      Model(..model, card_rearm: Scheduled),
+      {
+        use _ <- effect.from
+        let _ = process.send_after(timer, card_tick_ms, Nil)
+        Nil
+      },
+    )
+    _, _, _, _, _ -> #(model, effect.none())
+  }
+}
+
+/// Starts the reads of the Updates cards' briefs and returns at once. At most
+/// `card_per_tick` start, for the sessions whose last read is oldest among those
+/// that are due (`brief_rule.card_due`, ten seconds), and only among the first
+/// `card_limit` sessions of the group. The open thread's session is left to the
+/// thread's own read, so two readers never alternate on one session's entry. A page
+/// that reads no feed or is not connected reads none. Sessions that left Updates
+/// are dropped from what the page holds first (`pruned`).
 fn card_briefing(model: Model) -> #(Model, Effect(Msg)) {
+  let model = pruned(model)
   let now = model.start.now()
+  let open = brief_session(model)
   let due =
     updates_threads(model)
     |> list.take(card_limit)
     |> list.filter(fn(thread) {
-      brief_rule.due(
+      Some(thread.id) != open
+      && brief_rule.card_due(
         option.from_result(dict.get(model.brief_reads, thread.id)),
         now,
-        0,
-        brief_rule.Refreshed,
       )
     })
 
   // The session read longest ago goes first; a session never read is first of all.
-  let oldest =
+  let chosen =
     list.sort(due, fn(a, b) {
       int.compare(read_time(model, a.id), read_time(model, b.id))
     })
+    |> list.take(card_per_tick)
 
-  // Only a connected page that reads the feed, with a session due, reads one.
-  case model.start.attention, model.status, oldest {
-    Some(reads), Connected, [thread, ..] -> #(
+  // Only a connected page that reads the feed starts a read.
+  case model.start.attention, model.status {
+    Some(reads), Connected -> #(
       Model(
         ..model,
-        brief_reads: dict.insert(
-          model.brief_reads,
-          thread.id,
-          brief_rule.Read(started: now, since: 0),
-        ),
+        brief_reads: list.fold(chosen, model.brief_reads, fn(held, thread) {
+          dict.insert(held, thread.id, brief_rule.Read(started: now, since: 0))
+        }),
       ),
-      effect.from(fn(dispatch) {
-        reads.brief(thread.id, 0, fn(read) {
-          dispatch(BriefRead(thread.id, 0, read))
-        })
-      }),
+      effect.batch(
+        list.map(chosen, fn(thread) {
+          use dispatch <- effect.from
+          reads.brief(thread.id, 0, fn(read) {
+            dispatch(BriefRead(thread.id, 0, read))
+          })
+        }),
+      ),
     )
-    Some(_), _, _ | None, _, _ -> #(model, effect.none())
+    Some(_), _ | None, _ -> #(model, effect.none())
   }
+}
+
+/// The model with what it holds for sessions that no card and no open thread draw
+/// dropped: their briefs, the times of their reads and the times those reads named,
+/// and their open cards. A page that has watched many sessions come and go keeps
+/// only the ones it draws.
+fn pruned(model: Model) -> Model {
+  let updating = list.map(updates_threads(model), fn(thread) { thread.id })
+
+  // The open thread's session is kept too, whatever group it is in.
+  let kept =
+    set.from_list(case brief_session(model) {
+      Some(open) -> [open, ..updating]
+      None -> updating
+    })
+  let keep = fn(key: String) { set.contains(kept, key) }
+
+  Model(
+    ..model,
+    briefs: dict.filter(model.briefs, fn(key, _) { keep(key) }),
+    brief_reads: dict.filter(model.brief_reads, fn(key, _) { keep(key) }),
+    brief_since: dict.filter(model.brief_since, fn(key, _) { keep(key) }),
+    expanded: set.filter(model.expanded, keep),
+  )
 }
 
 /// When the last read of a session's brief was started, or zero for a session
@@ -6416,7 +6531,8 @@ fn read_time(model: Model, session: String) -> Int {
 /// session stopped, and a session's thread draws its approval's peer messages,
 /// its latest message and steps, or its review's last command. A stuck strand,
 /// a find, a ticket, a failed run and a session with nothing to say draw no
-/// brief, so none is read for them, and no thread that is not open is read.
+/// brief, so none is read for them. A session in Updates has its brief read for
+/// its card by `card_briefing`, which is not this thread's read.
 fn brief_session(model: Model) -> Option(String) {
   // An open item thread decides first, then an open ticket, then the session
   // thread the list shows.
@@ -7048,6 +7164,30 @@ fn inbox_page(model: Model) -> Element(Msg) {
       machine_of: fn(session) { machine_of(model, session) },
     ),
   )
+}
+
+/// Whether the reading pane is asked to show the "Watch all" board. A press on a
+/// thread of any kind (a session, an ask, a find, a stuck strand or a ticket)
+/// returns it to `WatchOne`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.board_asked(home.new(start)) == inbox_view.WatchOne
+/// ```
+pub fn board_asked(model: Model) -> inbox_view.Watch {
+  model.watch
+}
+
+/// The sessions whose Updates card is open, in no particular order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.open_cards(home.new(start)) == []
+/// ```
+pub fn open_cards(model: Model) -> List(String) {
+  set.to_list(model.expanded)
 }
 
 /// The executor a session's workspace is registered on, when it has one: the

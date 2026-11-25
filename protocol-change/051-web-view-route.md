@@ -5639,25 +5639,42 @@ words differ.
 
 The inbox's Updates group draws each working session as a card
 (`view/update_card`), and a "Watch all" control puts a board of the same cards in
-the reading pane. This adds two page messages and one bounded read, and no route,
-no event and no wire field.
+the reading pane. This adds three page messages (`CardToggled`, `WatchAllToggled`,
+and the card timer's `CardTicked`) and one bounded read, and no route, no event and
+no wire field.
 
 **Click paths.** `CardToggled(session)` opens or closes one card, and
 `WatchAllToggled` shows or hides the board. Both are clicks beneath the table's
 path, as a thread's press is, so the socket admits nothing new. `CardToggled` is
 honoured only for a session the Updates group holds. The set of open cards and the
-board's state live in the page model and are never stored.
+board's state live in the page model and are never stored; a session that leaves
+Updates is dropped from the set. Pressing any thread (a session, an ask, a find, a
+stuck strand or a ticket) turns the board off, and the board is drawn only while
+some session is working, so with none the pane is what it would be without it and
+the control stays drawn while it is asked for.
 
 **The read.** A card draws what the reading pane's update thread reads: the
-session's brief (protocol-change/125). The page reads it for the sessions in
-Updates only, at most eight, and starts at most one read each time it refreshes,
-for the session read longest ago among those whose last read is fifteen seconds old
-or older (`home.card_briefing`, paced by `brief_rule.due`). That is at most eight
-reads in fifteen seconds, inside the daemon's six in four seconds for a
-credential, and it leaves the open thread's own read its turn. A card draws at most
-five steps. No daemon field is added.
+session's brief (protocol-change/125). The page reads it for the first eight
+sessions of Updates in the order the list shows them (by name), on a timer of its
+own: the page's runtime makes a timer subject (`CardTimerReady`) as it does for the
+other reads, it fires every five seconds while Updates has a card (`CardTicked`),
+and a tick starts at most two reads, for the sessions whose last read is oldest
+among those ten seconds old or older (`brief_rule.card_due`). A refresh also asks
+for a tick's worth, and opening a thread asks for none. The open thread's session
+is left to the thread's own read, so the two never alternate on one session's
+entry. That is at most two card reads every five seconds, which is 1.6 in the four
+seconds the daemon allows six for, and leaves the open thread's read and the
+refresh their room. Each card is therefore refreshed about every twenty seconds
+when eight are on screen, and about every ten when there are fewer, and the first
+eight fill in over twenty seconds after a load. A card draws at most four steps,
+the bound the brief holds (`session_brief.max_steps`). No daemon field is added.
+The page drops the briefs, the read times and the open cards of sessions that are
+neither in Updates nor the open thread's, so what it holds stays bounded by what it
+draws.
 
-**Text.** Everything a model, a peer or the host wrote (the message, a step's tool
-and words, a strand's name, a command, a machine's name) is a text node under a
-label that says it is untrusted, and none reaches an attribute. `update_card_test`
-pins that markup in a message is escaped and that no attribute holds it.
+**Text.** Everything a model, a peer or the host wrote is a text node, and none
+reaches an attribute. The agent's message is under a label that says it is
+untrusted (`latest message`, or `last finished message` before the brief is read);
+a step, a strand, a command and a machine's name are plain text lines, as the
+reading pane draws them. `update_card_test` pins that markup in a message is
+escaped and that no attribute holds it.

@@ -4,7 +4,6 @@
 //// the last command, that the board holds one card for each working session, and
 //// that the page's own state decides which cards are open.
 
-import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import lustre/element
@@ -41,8 +40,6 @@ fn brief() -> session_brief.Brief {
       step("fs_edit", "Edit a.gleam +3 −1", session_brief.Succeeded),
       step("fs_read", "Read b.gleam", session_brief.Succeeded),
       step("bash", "Ran make lint", session_brief.Failed),
-      step("fs_read", "Read c.gleam", session_brief.Succeeded),
-      step("fs_read", "Read d.gleam", session_brief.Succeeded),
     ],
     strands: [
       session_brief.Strand("main", session_brief.Working, None),
@@ -116,6 +113,10 @@ pub fn the_disclosure_adds_the_steps_and_the_last_command_test() {
   let collapsed = drawn(update_card.Collapsed)
   let open = drawn(update_card.Expanded)
 
+  // The running step is drawn once: as its own line when collapsed, and as the
+  // first entry of the list when open.
+  assert string.contains(collapsed, "class=\"upd-step\"")
+  assert !string.contains(open, "class=\"upd-step\"")
   assert !string.contains(collapsed, "upd-more")
   assert !string.contains(collapsed, "Edit a.gleam")
   assert string.contains(open, "upd-more")
@@ -124,9 +125,9 @@ pub fn the_disclosure_adds_the_steps_and_the_last_command_test() {
   assert string.contains(open, "sub:mock-a: working")
   assert string.contains(open, "aria-expanded=\"true\"")
 
-  // At most five steps, however many the brief holds.
-  assert !string.contains(open, "Read d.gleam")
-  assert list.length(string.split(open, "<li>")) - 1 >= 5
+  // The steps the brief holds, which is at most four, each with how it stands.
+  assert string.contains(open, "Ran make lint")
+  assert string.contains(open, "failed")
 }
 
 // What the session wrote is a text node: markup in it is escaped, and no
@@ -153,6 +154,10 @@ pub fn a_card_before_its_brief_is_read_falls_back_to_the_last_message_test() {
     ))
 
   assert string.contains(html, "Reading.")
+
+  // The stand-in is the last finished message and is not claimed to be the latest.
+  assert string.contains(html, "last finished message, untrusted text")
+  assert !string.contains(html, "latest message, untrusted text")
   assert !string.contains(html, "upd-step")
   assert !string.contains(html, "upd-line")
 }

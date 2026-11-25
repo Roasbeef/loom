@@ -968,7 +968,7 @@ pub fn the_updates_group_draws_cards_and_a_watch_all_control_test() {
   let html = drawn(opened(start(home.OperatorCeiling, reports())))
 
   assert string.contains(html, "upd-card")
-  assert string.contains(html, "latest message, untrusted text")
+  assert string.contains(html, "last finished message, untrusted text")
   assert string.contains(html, ">Watch all<")
   assert string.contains(html, "aria-pressed=\"false\"")
 }
@@ -1001,4 +1001,18 @@ pub fn watch_all_draws_the_board_and_a_disclosure_opens_one_card_test() {
     drawn(run(model, home.CardToggled("B"))),
     "aria-expanded=\"true\"",
   )
+}
+
+// With no session working the board has no card to draw, so the pane is what it
+// would be without it, and the "Watch all" control stays drawn and pressed so it
+// can be turned off.
+pub fn an_empty_board_leaves_the_pane_and_keeps_its_control_test() {
+  let quiet = list.filter(reports(), fn(row) { row.0 != "C" })
+  let model = opened(start(home.OperatorCeiling, quiet))
+  let html = drawn(run(model, home.WatchAllToggled))
+
+  assert !string.contains(html, "upd-board")
+  assert string.contains(html, "inbox-reading")
+  assert string.contains(html, ">Watch all<")
+  assert string.contains(html, "aria-pressed=\"true\"")
 }

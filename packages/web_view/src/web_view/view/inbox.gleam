@@ -64,7 +64,6 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order
 import gleam/set.{type Set}
 import gleam/string
 import lustre/attribute
@@ -297,16 +296,23 @@ pub fn view(offer: Offer(message)) -> Element(message) {
   html.section([attribute.class("inbox")], [threads_list(offer), pane(offer)])
 }
 
-/// The reading pane: the "Watch all" board while the person asked for it, the open
-/// attention thread, the board again when no thread is selected, and otherwise the
-/// selected session's thread. The board that stands in for an empty pane is marked
-/// so a phone, where the list is the page until a press, leaves it out.
+/// The reading pane: the "Watch all" board while the person asked for it and some
+/// session is working, the open attention thread, the board again when no thread
+/// is selected and some session is working, and otherwise the selected session's
+/// thread. The board that stands in for an empty pane is marked so a phone, where
+/// the list is the page until a press, leaves it out.
 fn pane(offer: Offer(message)) -> Element(message) {
-  case offer.watch, offer.attention, offer.selected {
-    WatchAll, _, _ -> board(offer, parts.ByPress)
-    WatchOne, Some(Threads(pane: Some(open), ..)), _ -> open
-    WatchOne, _, None -> board(offer, parts.ByDefault)
-    WatchOne, _, Some(_) -> reading_pane(offer)
+  // The board needs cards: with no working session the pane is what it would be
+  // without the board, so a stale "Watch all" never leaves it empty.
+  let cards = updates_of(offer)
+
+  // The board wins while asked for, then an open attention thread, then it fills
+  // an empty pane, and otherwise the selected session's thread is drawn.
+  case offer.watch, cards, offer.attention, offer.selected {
+    WatchAll, [_, ..], _, _ -> board(offer, parts.ByPress)
+    _, _, Some(Threads(pane: Some(open), ..)), _ -> open
+    _, [_, ..], _, None -> board(offer, parts.ByDefault)
+    _, _, _, _ -> reading_pane(offer)
   }
 }
 
@@ -430,12 +436,13 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
 }
 
 /// The view control above the list: "Watch all", which puts the board of live
-/// cards in the reading pane, or takes it away again. It is drawn only while some
-/// session is working, since the board has nothing to show otherwise.
+/// cards in the reading pane, or takes it away again. It is drawn while some
+/// session is working, and while the board is asked for, so there is always a way
+/// to switch it off.
 fn watch_bar(offer: Offer(message)) -> Element(message) {
-  case updates_of(offer) {
-    [] -> element.none()
-    [_, ..] ->
+  case updates_of(offer), offer.watch {
+    [], WatchOne -> element.none()
+    [_, ..], _ | [], WatchAll ->
       html.div([attribute.class("inbox-viewbar")], [
         html.button(
           [
@@ -484,20 +491,12 @@ fn card(thread: Thread, offer: Offer(message)) -> Element(message) {
 }
 
 /// The "Watch all" board: a grid of the same cards, one for each working session,
-/// the most recently started turn first. The order is by when the turn began, which
-/// holds still while the turn runs, and each card is keyed by its session, so a
+/// in the order the Updates group lists them (by name), so the list and the board
+/// agree on which sessions come first. Each card is keyed by its session, so a
 /// card keeps its place and its disclosure as the others come and go. A press on a
 /// card's head opens its thread, and the pane's back control returns to the list.
 fn board(offer: Offer(message), opening: parts.Opening) -> Element(message) {
-  let ordered =
-    list.sort(updates_of(offer), fn(a, b) {
-      case a.report.turn_started_at, b.report.turn_started_at {
-        Some(x), Some(y) if x != y -> int.compare(y, x)
-        Some(_), None -> order.Lt
-        None, Some(_) -> order.Gt
-        _, _ -> string.compare(a.id, b.id)
-      }
-    })
+  let ordered = updates_of(offer)
 
   parts.pane_with(
     opening,

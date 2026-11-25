@@ -2,7 +2,8 @@
 //// reads it holds: an approval's age, its policy rows and the peer messages
 //// that reached it, an update's latest message and steps, an ask's coordinator
 //// card, a stuck strand's failure, and the reads of a session's brief, which are
-//// made for the open thread only (protocol-change/120, 124 and 125).
+//// made for the open thread and the Updates cards only (protocol-change/120, 124
+//// and 125).
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -475,7 +476,7 @@ pub fn a_code_that_is_not_in_the_table_gets_the_generic_words_test() {
   assert !string.contains(html, "rate limit")
 }
 
-pub fn only_the_open_thread_is_read_and_a_refresh_waits_fifteen_seconds_test() {
+pub fn a_card_and_the_open_thread_read_their_briefs_and_a_refresh_waits_fifteen_seconds_test() {
   let #(model, clock, calls) = fresh(full_evidence(), None)
 
   // The working session is in Updates, so its card reads its brief at the first

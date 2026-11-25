@@ -8,13 +8,14 @@
 //// the turn has gone on, the agent's latest message, the step that is running, one
 //// compact line for its strands, a failed last command and the machine it runs on
 //// when that is not this one, and the way to watch it live. Opening the disclosure
-//// adds the whole message, the last few steps with how each stands, the strands and
-//// the last command with its exit.
+//// adds the whole message, the steps the brief holds (at most four, the daemon's
+//// bound) with how each stands, the strands and the last command with its exit.
 ////
-//// Every word that a model, a peer or the host wrote is a text node under a label
-//// that says it is untrusted: the message, a step's tool and words, a strand's
-//// name, a command, a machine's name. None reaches an attribute, a class or a key
-//// (protocol-change/051). The card holds no state: whether it is open is the
+//// Every word that a model, a peer or the host wrote is a text node, and none
+//// reaches an attribute, a class or a key (protocol-change/051). The agent's
+//// message is under a label that says it is untrusted, as the reading pane's quote
+//// is; a step, a strand, a command and a machine's name are drawn as the reading
+//// pane draws them, as plain text lines. The card holds no state: whether it is open is the
 //// page's (`Density`), and the brief behind it is read by the page for the
 //// sessions in Updates alone, a few steps each.
 ////
@@ -41,14 +42,10 @@ pub type Density {
   /// The head, the message cut to three lines, the running step and one line.
   Collapsed
 
-  /// Everything the card holds: the whole message, the last few steps, the
+  /// Everything the card holds: the whole message, the steps the brief holds, the
   /// strands and the last command.
   Expanded
 }
-
-/// How many steps an expanded card, and so the board's, draws. The brief holds
-/// no more than the daemon's own bound, and a card never draws more than this.
-pub const expanded_steps = 5
 
 /// What a card draws and the messages its buttons send.
 pub type Card(message) {
@@ -104,7 +101,12 @@ pub fn view(card: Card(message)) -> Element(message) {
     [
       head(card),
       said(card),
-      running(card.brief),
+      // An open card lists its steps with how each stands, the running one first,
+      // so the separate running-step line would draw it twice.
+      case card.density {
+        Collapsed -> running(card.brief)
+        Expanded -> element.none()
+      },
       compact(card),
       case card.density {
         Collapsed -> element.none()
@@ -142,19 +144,23 @@ fn head(card: Card(message)) -> Element(message) {
 
 /// The agent's latest message under the words that say whose they are. Before the
 /// brief is read the session's last finished message stands in, which is the head
-/// the row used to say.
+/// the row used to say; it is not claimed to be the latest, since the turn now
+/// running may have said more.
 fn said(card: Card(message)) -> Element(message) {
   // The brief's latest text wins; the stand-in is only for a card not yet read.
-  let words = case card.brief {
-    Some(session_brief.Brief(assistant: Some(latest), ..)) ->
-      session_brief.untrusted_text(latest.text)
-    Some(_) | None -> inbox_rule.thread_head(card.thread)
+  let #(label, words) = case card.brief {
+    Some(session_brief.Brief(assistant: Some(latest), ..)) -> #(
+      "latest message, untrusted text",
+      session_brief.untrusted_text(latest.text),
+    )
+    Some(_) | None -> #(
+      "last finished message, untrusted text",
+      inbox_rule.thread_head(card.thread),
+    )
   }
 
   html.p([attribute.class("upd-said")], [
-    html.span([attribute.class("upd-src")], [
-      html.text("latest message, untrusted text"),
-    ]),
+    html.span([attribute.class("upd-src")], [html.text(label)]),
     html.span([attribute.class("upd-text")], [html.text(words)]),
   ])
 }
@@ -300,7 +306,7 @@ fn more(thread: Thread, brief: Option(Brief)) -> Element(message) {
 
   html.div([attribute.class("upd-more")], [
     // The steps, newest first, cut to the card's bound.
-    case list.take(held.steps, expanded_steps) {
+    case list.take(held.steps, session_brief.max_steps) {
       [] -> element.none()
       listed ->
         html.ul(
