@@ -20,24 +20,26 @@ For one candidate trigger the daemon sends one request. It holds up to six quest
 | --- | --- | --- | --- |
 | `asks_for_work` | Noul | the trigger is inferred | Does the message ask for work to be done? A low value means decline. |
 | `clear_alone` | Noul | always | Can the message be acted on without reading the rest of its thread? A low value means the model router decides. |
-| `continues_listed_ticket` | Noul | tickets are listed | Does the message continue one of the listed tickets? A high value means attach, a low one means new work. |
-| `which_ticket` | Choice over tickets only | tickets are listed | "If this continues one of the listed tickets, which one?" Read only when the Noul above is high. |
+| `continues_listed_ticket` | Noul | tickets are listed | Does the message continue one of the tickets in `state.tickets`? A high value means attach, a low one means new work. |
+| `which_ticket` | Choice over tickets only | two or more tickets are listed | "If this continues one of the tickets in `state.tickets`, which one?" Read only when the Noul above is high. With one ticket listed the Choice would carry no information, so it is skipped and that ticket is the target. |
 | `decline_reason` | Choice over `off_topic`, `nothing_to_do` | the trigger is inferred | "If this asks for no work, why not?" Read only on a decline. |
-| `agent` | Choice over catalogue entries only | the catalogue has two or more entries | "If this were started as new work, which agent fits?" A top probability below its bar means the default agent. |
+| `agent` | Choice over catalogue entries only | the catalogue has two or more entries | "If this were started as new work, which agent fits?" A `confidence` below its bar means the default agent. |
 
-None of the Choices has an `other`, `unclear`, `new` or `default` option. Those meanings are carried by a Noul or by a low top probability, which gives each action its own threshold and a middle band that falls back. Each question judges one thing, which the documentation recommends, and the host combines them.
+None of the Choices has an `other`, `unclear`, `new` or `default` option. Those meanings are carried by a Noul or by a low top probability, which gives each action its own threshold and a middle band that falls back. Each question judges one thing, which the documentation recommends, and the host combines them. Each question sees only `state` and its own criteria, so the tickets are in `state.tickets` (section 3) for the Noul as well as in the descriptions of the `which_ticket` options.
 
-`which_ticket` offers an index label (`ticket_1`, `ticket_2`, ...) into the list the host built for this request, not a ticket id. The host keeps that list and maps the label back, so the only ids that can come out of a response are ids the host had just put in. `agent` likewise offers `agent_1`, `agent_2`, ...
+`which_ticket` offers an index label (`ticket_1`, `ticket_2`, ...) into the list the host built for this request, not a ticket id. The host keeps that list and maps the label back, so the only ids that can come out of a response are ids the host had just put in. `agent` likewise offers `agent_1`, `agent_2`, ... A catalogue of exactly one entry asks no question: that entry is used for all new work, and the `[roles]` default is then never used for new work. An empty catalogue asks no question and new work uses the default.
 
 ### How the answers combine
 
 The combination is a pure function in `project/jev` with fixed bars. They are starting values, which the offline sweep of section 9 may change, and they are part of the request-shape version of section 7.1. One configured number, `jev_min_probability` (called B below, default 80), sets how sure Jev must be to attach a message to an existing ticket.
 
 1. `clear_alone` below 0.50 gives `Fallback(LowClarity)`.
-2. For an inferred trigger, `asks_for_work` at or below 0.30 is a decline, with the reason read from `decline_reason`. A message that asks for no work is dropped only when Jev is that sure.
-3. If tickets are listed and `continues_listed_ticket` is at least B and the top `which_ticket` probability is at least B, the decision is `Existing`: `attach` when that ticket is open and `resume` when it has ended.
-4. New work needs `continues_listed_ticket` at or below 0.30, or no tickets listed, and, for an inferred trigger, `asks_for_work` at least 0.70. The agent is the top `agent` label when its probability is at least 0.50, and the default agent otherwise.
+2. Attach: tickets are listed, `continues_listed_ticket` is at least B, and, when two or more are listed, the top `which_ticket` probability is at least B. For an inferred trigger it also needs `asks_for_work` at least 0.70, the same as new work. The decision is `Existing`: `attach` when that ticket is open and `resume` when it has ended.
+3. Decline, for an inferred trigger only: `asks_for_work` at or below 0.30 and rule 2's ticket test not met, with the reason read from `decline_reason`. A message that asks for no work is dropped only when Jev is that sure. If `asks_for_work` is at or below 0.30 while `continues_listed_ticket` is at least B, the answers disagree, and the result is `Fallback(LowProbability)`, not a decline.
+4. New work needs `continues_listed_ticket` at or below 0.30, or no tickets listed, and, for an inferred trigger, `asks_for_work` at least 0.70. The agent is the top `agent` label when the Choice's `confidence` is at least 0.50, and the default agent otherwise. The bar is on `confidence` and not on the raw probability, because with two entries the top probability is never below 0.50.
 5. Anything else is `Fallback(LowProbability)`.
+
+The function is total and single-valued: every combination of probabilities gives exactly one result.
 
 An explicit trigger never receives `asks_for_work` or `decline_reason`, so it cannot be declined. Nothing in this table can produce a `stop`.
 
@@ -53,16 +55,17 @@ The extra questions cost input tokens only. Jev's output tokens are free, and th
 
 ## 3. What Jev is shown
 
-`state` is an object with two named fields, which Jev's documentation recommends over a string, and the questions' instructions name them:
+`state` is an object with named fields, which Jev's documentation recommends over a string, and the questions' instructions name them:
 
 ```json
 {"message": "<the trigger's text, at most 4096 code points>",
- "source": "a comment on a pull request, not addressed to the agent"}
+ "source": "a comment on a pull request, not addressed to the agent",
+ "tickets": {"ticket_1": {"stage": "working", "title": "..."}, "ticket_2": {"stage": "queued"}}}
 ```
 
-`source` is a fixed phrase for the trigger's source and relation drawn from the gate's own vocabulary. It never holds the sender's login. The other inputs are:
+`source` is a fixed phrase for the trigger's source and relation drawn from the gate's own vocabulary. It never holds the sender's login. `tickets` is present when tickets are listed, and the instruction of `continues_listed_ticket` names `state.tickets`, since a Noul sees nothing else. The other inputs are:
 
-- Each listed ticket as an `Alternative.description` object `{stage, title}`. `stage` is the `stage.of` word. `title` is present only for a ticket whose mandate is explicit, since a person wrote what it was derived from. A ticket opened from an inferred trigger is described by its stage word alone, never by the stranger's first line, so one stranger's text cannot reach the request of another's trigger.
+- Each listed ticket, in `state.tickets` and again as an `Alternative.description` of `which_ticket`, as the object `{stage, title}`. `stage` is the `stage.of` word. `title` is present only for a ticket whose mandate is explicit, since a person wrote what it was derived from. A ticket opened from an inferred trigger is described by its stage word alone, never by the stranger's first line, so one stranger's text cannot reach the request of another's trigger.
 - Each agent as `{use_for}`, the operator's own text from `loom.toml`.
 
 It is never shown a secret, an environment value, the configuration, a path, a clone, a worker's transcript, the text of any other trigger or thread entry, or any session text beyond what 106 lets the router read. The router can open a thread through `project_read`; Jev gets the one trigger and nothing around it. That is less context than the router has, which is a cost (section 11) and also bounds a leak: the text leaves the machine once, and only that text.
@@ -96,7 +99,7 @@ It uses the transport model providers and the Codex sign-in already use: `provid
 - **Origin.** `jevelin.origin`, fixed in code. It is not a configuration key, so a mistaken or hostile file cannot point a bearer key at another host. Tests inject a fake transport instead.
 - **Key.** `Authorization: Bearer <key>` is attached at the transport boundary. The daemon has no daemon-level secret store (`provider/secret.SecretStore` is a type that `client/secrets` fills per session), so `client/jev` resolves the key once when the daemon starts, from the variable named by `[jev] api_key_env` (default `JEV_API_KEY`) in the daemon's environment. A restart of the daemon picks up a rotated key. The key appears only in the header value. An unset key is not a boot failure: the daemon logs a one-line warning and every candidate falls back with the reason `no_key`.
 - **Bounds.** Per request: `[jev] timeout_ms` (default 3000) for the whole exchange, a 64 KiB response limit, and UTF-8 validated before `HttpResponse` is built. Jev's measured latency is 0.07 to 0.25 s per request in its own cookbook, so a long default only delays the fallback. There are no retries. The service does send retry guidance on 429 and 529, and its SDKs honour it, but a retry would delay a candidate that the model router can decide now, and `codex/network`'s `Response` carries no headers to read it from. The whole pass over a batch has one fixed bound of 45 s, well under `router_turn_ms`, and the first `unavailable` ends it: the remaining candidates go to the router without a call. One request in flight per project, in the order the candidates were offered. At this latency, sending serially is fast enough.
-- **Total decoding.** `jevelin.send` decodes with the request-bound decoder: unknown labels, probabilities outside [0, 1], extra or missing answers and negative token counts are errors, never values. jevelin also requires the probabilities of a Choice to total one within 0.001. That is its own policy and stricter than the service's "approximately one", and the 40-ticket Choice may be rejected on rounding alone. The Go client allows 0.01 per label. [Roasbeef/jevelin PR 1](https://github.com/Roasbeef/jevelin/pull/1) makes the same change, and the routing slice depends on it. The first live check is a request whose `which_ticket` has 40 alternatives. The host then maps each label through the list it built, and a label outside it is a decode failure of ours.
+- **Total decoding.** `jevelin.send` decodes with the request-bound decoder: unknown labels, probabilities outside [0, 1], extra or missing answers and negative token counts are errors, never values. jevelin also checks that the probabilities of a Choice total one. Until [Roasbeef/jevelin PR 1](https://github.com/Roasbeef/jevelin/pull/1) its tolerance was 0.001 in total, which is stricter than the service's "approximately one", and a 40-ticket Choice could be rejected on rounding alone. After that PR the tolerance is 0.01 per label, as in the Go client, and a distribution far from one is still rejected. The routing slice depends on it. The first live check is a request whose `which_ticket` has 40 alternatives. The host then maps each label through the list it built, and a label outside it is a decode failure of ours.
 - **Rule Zero.** Nothing from Jev is code, a tool call or text for a model. A decision is a set of probabilities over labels the host supplied, decoded in the harness VM. The one string in a response that is not a label is `Evaluation.model`, which is validated before it is kept: at most 64 characters of `[A-Za-z0-9._-]`, and a response with any other value is treated as `invalid`.
 
 ## 6. How a decision is recorded
@@ -127,7 +130,7 @@ All of them hold because Jev's decision goes through the same code as the router
 
 ### 7.1 The pin
 
-A verdict is pinned to the policy version, the router's pack digest and its profile and model key. With `router = "jev"` the pin is the policy version, `jev`, the resolved Jev model name, and one digest over everything that changes what a request asks or how its answers combine: the question texts and criteria wording, the description template, the ordering rule for tickets, the 40-ticket and 4096-code-point caps, the fixed bars, `jev_min_probability`, a request-shape version number that the implementation raises with any of these, the router's pack digest and the router's model key. The router's two parts stay in the digest because the model router still decides every fallback, so a change to either decider changes what the project does and demotes `auto` rules.
+A verdict is pinned to the policy version, the router's pack digest and its profile and model key. With `router = "jev"` the pin is the policy version, `jev`, the resolved Jev model name, and one digest over everything that changes what a request asks or how its answers combine: the question texts and criteria wording, the description template, the `state.tickets` template, the ordering rule for tickets, the 40-ticket and 4096-code-point caps, the fixed bars, `jev_min_probability`, a request-shape version number that the implementation raises with any of these, the router's pack digest and the router's model key. The router's two parts stay in the digest because the model router still decides every fallback, so a change to either decider changes what the project does and demotes `auto` rules.
 
 The start-time `pin_router` announcement is not sent in Jev mode, since the resolved model name is not known until a call returns. The first successful call announces it through the existing `RouterPinSet`, which writes nothing when it is unchanged, and the pass commits that event before the decisions of the call that produced it. A decision is therefore never recorded under a pin that the same call has just changed.
 
@@ -147,6 +150,7 @@ Properties with qcheck, with fixed seeds, and `statem` where a sequence matters:
 - A response with any label outside the request fails decoding.
 - The fallback batch is exactly the triggers whose fate is still `Offered` after the pass.
 - The combination is monotone: raising `continues_listed_ticket` never turns an attach into new work.
+- The combination is total and single-valued: for every assignment of probabilities to the questions asked, it returns exactly one of `Existing`, `New`, `Decline` or `Fallback`, and never fails to return.
 
 A model-based test extends the existing project machine with the Jev pass in front of `route`, checking that `offered_at_ms` is 0 for the whole pass, that `tick` ends no turn during it, and that `RouterTurnEnded` accounting leaves no trigger `Offered` without an offer. A fixed set of adversarial messages is checked offline for placement only (the text occurs in `state.message` and nowhere else in any request). The live check on a throwaway daemon with its own state directory and port runs only when `JEV_API_KEY` is set in the environment, never prints it, and reports the flip rate of the adversarial set.
 
@@ -176,8 +180,8 @@ The service's keys sit in a `[jev]` table, because they belong to Jev and not to
 | `[jev] model` | string | `"jev-latest"` | The model or alias sent with each request. A version id keeps verdicts stable across Jev's releases (section 7.1). |
 | `[jev] timeout_ms` | integer, 500 to 30000 | 3000 | The bound on one request. The whole pass has a fixed bound of 45 s. |
 | `[project] router` | `"model"` or `"jev"` | `"model"` | Who decides first. |
-| `[project] jev_min_probability` | integer percent, 50 to 100 | 80 | How sure Jev must be to attach a message to an existing ticket. The other bars are fixed in code and are part of the request-shape version. |
-| `[[project.agent]]` | at most 16 tables, none or at least two | none | `name` (1 to 40 characters), `use_for` (1 to 200 characters), and `profile` and/or `model`, each naming an entry that exists. An empty list means no `agent` question. A single entry is refused when the file is read, since a question over one option always returns it. |
+| `[project] jev_min_probability` | integer percent, 51 to 100 | 80 | How sure Jev must be to attach a message to an existing ticket. The other bars are fixed in code and are part of the request-shape version. |
+| `[[project.agent]]` | at most 16 tables | none | `name` (1 to 40 characters), `use_for` (1 to 200 characters), and `profile` and/or `model`, each naming an entry that exists. An empty list means no `agent` question and new work uses the `[roles]` default. A single entry means no question either, and that entry is used for all new work, so the default is never used. |
 
 The addendum to 106 is **additive**. It affects: the ledger events `Routed` and `RoutedIgnore` (one optional `judgement` field each, which is display-only. A build before this change ignores an unknown field of a known event, as `codec.gleam` decodes it, so it reads such a ledger and drops the field. No state lives in that field); one new `host` line (`jev_fallback`); a new event tag that records the agent chosen for a trigger, committed before its `Routed`, which a build that does not know it refuses, so an older build cannot start a ticket on the wrong agent, as it could if the agent rode in an optional field; the snapshot, by `judgement` on a trigger record; the `projects.board` decision entry (`decider`, the probability and reason, additive under section 1.5 of `client-protocol.md`) and `projects.verdict` (`router`); the router pin; and `loom.toml` by the keys above. No change to a Part 1 interface, a session's tools or the jail. A ticket gains `agent`, set from that event when it opens and read by `start_worker` for `Creation.profile` and `Creation.model`.
 
