@@ -663,6 +663,7 @@ fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
       True -> Some(Observed(component.GoingHome))
       False -> None
     },
+    getting_started: None,
     administering: None,
     managing: None,
     who: "",

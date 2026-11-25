@@ -1209,6 +1209,7 @@ fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
               narrowing: Narrowing,
               widening: Widening,
               starting: None,
+              getting_started: None,
               administering: None,
               managing: None,
               who: model.start.name,

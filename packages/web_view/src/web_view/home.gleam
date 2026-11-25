@@ -308,6 +308,7 @@ import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
 import web_view/folder_browse
+import web_view/get_started
 import web_view/inbox_rule
 import web_view/item_pane
 import web_view/landing_rule
@@ -342,6 +343,7 @@ import web_view/view/create.{type Create}
 import web_view/view/elsewhere as elsewhere_view
 import web_view/view/ended
 import web_view/view/folders as folders_view
+import web_view/view/get_started as get_started_view
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
@@ -1117,6 +1119,8 @@ pub opaque type Model {
     /// where it goes: a completed action, or why one could not be done. It is
     /// drawn beside the row or heading it is about and never moves the list.
     note: Option(Note),
+    /// Whether the first-session hint may still be drawn.
+    suggestion: Suggestion,
     /// The running session whose open is out, if one is. It is set when a press
     /// asks the daemon, so its row can say `Opening…`, and a second press while
     /// it is set asks nothing. A ticket leaves it set, since the page is about
@@ -1273,6 +1277,17 @@ pub type Selection {
   Pressed(session: String)
 }
 
+/// Whether the first-session hint may be drawn. The page holds this for its own
+/// life only; a later slice moves it to the client so a dismissal survives a
+/// reload.
+pub type Suggestion {
+  /// The hint may be drawn when its facts hold.
+  Suggesting
+
+  /// The person pressed "Not now".
+  Declined
+}
+
 /// Which centre the home shows. The composer is where a session is started and
 /// is the owner's default; the list is the page that held every control before
 /// the sidebar took over listing, and stays reachable for the controls that have
@@ -1286,6 +1301,10 @@ pub type Pane {
   /// The owner is making a project (`view/project_create`): a folder, the
   /// daemon's proposal for its check and setup, and the confirmation.
   ProjectCreating(creation: project_create.Creation)
+
+  /// The "Get started" checklist (`view/get_started`): what setup has been done
+  /// and what is left, read from what the page already holds.
+  GettingStarted
 
   /// The new-session composer (`view/new_session`).
   NewSession
@@ -1631,6 +1650,17 @@ pub type Msg {
   /// one. Only a page that holds the projects capability at the owner's ceiling
   /// takes it.
   ProjectCreationOpened
+
+  /// The rail's "Get started" entry, or the hint's button, was pressed: show the
+  /// checklist.
+  GettingStartedOpened
+
+  /// The checklist's "Done" was pressed: return to where the page rests.
+  GettingStartedClosed
+
+  /// The first-session hint's "Not now" was pressed. The page forgets it was
+  /// ever offered until it is loaded again.
+  SuggestionDeclined
 
   /// A folder was chosen for the new project: a button of the list, whose text
   /// is a folder the server drew, or the typed field, whose text is the
@@ -1998,6 +2028,7 @@ pub fn new(start: Start) -> Model {
     reads: 0,
     departure: None,
     note: None,
+    suggestion: Suggesting,
     opening: None,
     resuming: None,
     creating: create.Idle,
@@ -3388,6 +3419,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ticket_heard(model, open, read)
         Ticketed(_)
         | ProjectCreating(_)
+        | GettingStarted
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3409,6 +3441,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Ticketed(_), Some(_), Ended(_)
         | Ticketed(_), None, _
         | ProjectCreating(_), _, _
+        | GettingStarted, _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3425,6 +3458,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Ticketed(_), Some(_), Ended(_)
         | Ticketed(_), None, _
         | ProjectCreating(_), _, _
+        | GettingStarted, _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3439,6 +3473,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           close_settled(model, open, closing)
         Ticketed(_)
         | ProjectCreating(_)
+        | GettingStarted
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3475,6 +3510,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         ProjectCreating(_), Some(_), Connecting
         | ProjectCreating(_), Some(_), Ended(_)
         | ProjectCreating(_), None, _
+        | GettingStarted, _, _
         | Ticketed(_), _, _
         | NewSession, _, _
         | SessionList, _, _
@@ -3497,7 +3533,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ),
           effect.none(),
         )
-        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
+        Ticketed(_) | GettingStarted | NewSession | SessionList | Relayed(_) -> #(
           model,
           effect.none(),
         )
@@ -3512,6 +3548,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         ProjectCreating(_), Some(_), Connecting
         | ProjectCreating(_), Some(_), Ended(_)
         | ProjectCreating(_), None, _
+        | GettingStarted, _, _
         | Ticketed(_), _, _
         | NewSession, _, _
         | SessionList, _, _
@@ -3535,7 +3572,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               )),
             ),
           )
-        Ticketed(_) | NewSession | SessionList | Relayed(_) ->
+        Ticketed(_) | GettingStarted | NewSession | SessionList | Relayed(_) ->
           // The owner left the page while the daemon worked, and a project it
           // made is still to be listed, so the boards are read all the same.
           case made {
@@ -3550,6 +3587,21 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     ProjectCreationClosed ->
       reading_boards(Model(..model, pane: resting_pane(model)))
 
+    // The checklist opens for any page that lists projects or sessions, because
+    // it only reads what the page holds. Its one button, New project, still goes
+    // through `ProjectCreationOpened` and its capability check.
+    GettingStartedOpened -> #(
+      Model(..model, pane: GettingStarted, note: None),
+      effect.none(),
+    )
+
+    GettingStartedClosed -> #(
+      Model(..model, pane: resting_pane(model)),
+      effect.none(),
+    )
+
+    SuggestionDeclined -> #(Model(..model, suggestion: Declined), effect.none())
+
     // The daemon's word on an answer. A recorded one leaves an empty box, and a
     // refusal keeps the text and says why in words. Either way the ticket is read
     // again, so the page shows the question the daemon now has.
@@ -3559,6 +3611,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           settled(model, open, answer)
         Ticketed(_)
         | ProjectCreating(_)
+        | GettingStarted
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -5066,6 +5119,7 @@ fn relay_reading(
     | Some(_), SessionList
     | Some(_), Ticketed(_)
     | Some(_), ProjectCreating(_)
+    | Some(_), GettingStarted
     | None, _
     -> #(model, effect.none())
   }
@@ -5097,7 +5151,11 @@ fn relay_heard(model: Model, read: relayed.Read) -> Model {
         ..model,
         pane: Relayed(relayed_session.heard(state, read, model.start.now())),
       )
-    NewSession | SessionList | Ticketed(_) | ProjectCreating(_) -> model
+    NewSession
+    | SessionList
+    | Ticketed(_)
+    | ProjectCreating(_)
+    | GettingStarted -> model
   }
 }
 
@@ -5157,10 +5215,11 @@ fn relay_after(
   case model.pane {
     Relayed(state) ->
       relay_reading(Model(..model, pane: Relayed(apply(state))), RelayAnswered)
-    NewSession | SessionList | Ticketed(_) | ProjectCreating(_) -> #(
-      model,
-      effect.none(),
-    )
+    NewSession
+    | SessionList
+    | Ticketed(_)
+    | ProjectCreating(_)
+    | GettingStarted -> #(model, effect.none())
   }
 }
 
@@ -5468,6 +5527,7 @@ fn boards_heard(
             False -> #(model, effect.none())
           }
         ProjectCreating(_), _ -> #(model, effect.none())
+        GettingStarted, _ -> #(model, effect.none())
         NewSession, None | SessionList, None | Relayed(_), None -> #(
           model,
           effect.none(),
@@ -5552,7 +5612,8 @@ fn ticket_heard(
 /// own way back does.
 fn inbox_pane(model: Model) -> Pane {
   case model.pane {
-    Ticketed(_) | Relayed(_) | ProjectCreating(_) -> resting_pane(model)
+    Ticketed(_) | Relayed(_) | ProjectCreating(_) | GettingStarted ->
+      resting_pane(model)
     NewSession | SessionList -> model.pane
   }
 }
@@ -6013,6 +6074,7 @@ pub fn view(model: Model) -> Element(Msg) {
         SessionList, False -> "Sessions"
         Ticketed(_), _ -> "Ticket"
         ProjectCreating(_), _ -> "New project"
+        GettingStarted, _ -> "Get started"
         Relayed(_), _ -> "Session"
       },
       who: home_bar.account(
@@ -6068,8 +6130,29 @@ pub fn view(model: Model) -> Element(Msg) {
 fn centre_head(model: Model) -> Element(Msg) {
   // The peer strip belongs to the list alone, as it did before the section.
   case model.pane {
-    NewSession | Relayed(_) | Ticketed(_) | ProjectCreating(_) -> element.none()
-    SessionList -> elsewhere_view.strip(elsewhere_offer(model))
+    Relayed(_) | Ticketed(_) | ProjectCreating(_) | GettingStarted ->
+      element.none()
+    NewSession -> first_session_hint(model)
+    SessionList ->
+      element.fragment([
+        first_session_hint(model),
+        elsewhere_view.strip(elsewhere_offer(model)),
+      ])
+  }
+}
+
+/// The one line that suggests a project after a first session. It is drawn above
+/// the inbox only, only while the facts say a project is the person's next
+/// move, and not after "Not now".
+fn first_session_hint(model: Model) -> Element(Msg) {
+  case
+    model.suggestion,
+    get_started.hint(setup_facts(model)),
+    landed_inbox(model)
+  {
+    Suggesting, True, True ->
+      get_started_view.hint(GettingStartedOpened, SuggestionDeclined)
+    Suggesting, _, _ | Declined, _, _ -> element.none()
   }
 }
 
@@ -6423,6 +6506,7 @@ fn landed_inbox(model: Model) -> Bool {
     NewSession, Decided(InboxCentre) | SessionList, Decided(InboxCentre) -> True
     Ticketed(_), _
     | ProjectCreating(_), _
+    | GettingStarted, _
     | Relayed(_), _
     | NewSession, Awaiting
     | SessionList, Awaiting
@@ -7887,6 +7971,7 @@ fn inbox_return(model: Model) -> Option(Msg) {
     | SessionList, _, _
     | Ticketed(_), _, _
     | ProjectCreating(_), _, _
+    | GettingStarted, _, _
     | Relayed(_), _, _
     -> None
   }
@@ -7906,12 +7991,47 @@ fn running_sessions(model: Model) -> Int {
   })
 }
 
+/// What the page holds that bears on setup, which the checklist, the rail's
+/// entry and the hint are all derived from.
+fn setup_facts(model: Model) -> get_started.Facts {
+  get_started.Facts(
+    sessions: list.length(listing.entries(model.groups)),
+    folder: list.first(composer.folders_offered(
+      listing.entries(model.groups),
+      model.recent,
+    ))
+      |> option.from_result,
+    models: model.start.models,
+    projects: list.length(model.boards),
+    making: case model.start.projects, model.start.ceiling {
+      Some(_), OperatorCeiling -> get_started.MayMake
+      Some(_), _ | None, _ -> get_started.MayNot
+    },
+  )
+}
+
+/// The checklist's page.
+fn get_started_page(model: Model) -> Element(Msg) {
+  let facts = setup_facts(model)
+
+  get_started_view.view(get_started_view.Offer(
+    status: get_started.model_words(facts.models),
+    steps: get_started.checklist(facts),
+    new_project: case facts.making {
+      get_started.MayMake -> Some(ProjectCreationOpened)
+      get_started.MayNot -> None
+    },
+    back: GettingStartedClosed,
+  ))
+}
+
 /// The centre's body when the inbox is not it: the composer, a ticket's page,
 /// a relayed session or the list.
 fn centre_pane(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
     Ticketed(open), _ -> ticket_page(model, open)
+    GettingStarted, _ -> get_started_page(model)
     ProjectCreating(creation), _ ->
       project_create_view.view(project_create_view.Offer(
         creation:,
@@ -8567,6 +8687,10 @@ fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
     starting: case model.start.create {
       Some(_) -> Some(ShowingNew)
       None -> None
+    },
+    getting_started: case get_started.finished(setup_facts(model)) {
+      True -> None
+      False -> Some(GettingStartedOpened)
     },
     administering: case model.start.admin, model.status {
       Some(_), Connected -> Some(AdminRequested)

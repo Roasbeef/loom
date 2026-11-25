@@ -175,7 +175,7 @@ pub fn section(offer: Offer(message)) -> Element(message) {
             [] -> [
               html.p([attribute.class("home-empty")], [
                 html.text(
-                  "No project yet. A project is one router for one repository.",
+                  "No project yet. A project is one router for one repository. Choose a folder and Loom proposes how to check its work.",
                 ),
               ]),
             ]

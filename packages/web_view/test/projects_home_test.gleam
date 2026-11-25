@@ -888,6 +888,35 @@ pub fn back_returns_to_the_composer_or_the_list_test() {
   assert string.contains(drawn(back), "Projects")
 }
 
+// --- the checklist -----------------------------------------------------------
+
+pub fn the_rail_hides_get_started_once_the_readable_steps_are_done_test() {
+  // The fixture lists a session in a folder and a project, so the folder step
+  // and the project step are both done and the entry is not drawn.
+  let model = opened(serving(mixed()).0)
+
+  assert !string.contains(drawn(model), "Get started")
+}
+
+pub fn the_checklist_page_reads_what_the_page_holds_and_has_no_other_control_test() {
+  let model = run(opened(serving(mixed()).0), home.GettingStartedOpened)
+  let html = drawn(model)
+
+  assert string.contains(html, "Daemon ready")
+  assert string.contains(html, "Default folder")
+  assert string.contains(html, "First project")
+  assert string.contains(html, "GitHub publish")
+  assert string.contains(html, "not read here yet")
+  assert string.contains(html, "Nothing is written from this page.")
+}
+
+pub fn done_returns_to_where_the_page_rests_test() {
+  let model = run(opened(serving(mixed()).0), home.GettingStartedOpened)
+  let back = run(model, home.GettingStartedClosed)
+
+  assert !string.contains(drawn(back), "Nothing is written from this page.")
+}
+
 // --- the answer to a ticket that has gone ------------------------------------
 
 pub fn a_ticket_the_project_no_longer_holds_sends_the_person_back_test() {

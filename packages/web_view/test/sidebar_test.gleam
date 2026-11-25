@@ -72,6 +72,7 @@ fn plain_page() -> sidebar.Page(Nil) {
     narrowing: fn(_) { Nil },
     widening: Nil,
     starting: None,
+    getting_started: None,
     administering: None,
     managing: None,
     who: "",

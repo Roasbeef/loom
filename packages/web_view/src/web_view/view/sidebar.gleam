@@ -200,6 +200,9 @@ pub type Page(message) {
     /// The "New session" button's message, or `None` where the page may not
     /// create sessions or draws the button elsewhere.
     starting: Option(message),
+    /// The "Get started" entry's message, or `None` on a page that has no
+    /// checklist or whose checklist is finished.
+    getting_started: Option(message),
     /// The foot's "Admin" button's message, or `None` on a page that has no
     /// admin to open.
     administering: Option(message),
@@ -448,6 +451,7 @@ fn column(
     ],
     [
       html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
+      getting_started(page),
       folders_nav(folders),
       html.h3([attribute.class("rail-heading")], [html.text("Watch live")]),
       pills(all, page),
@@ -593,6 +597,30 @@ fn activity_of(suffix: Suffix) -> Dict(String, Activity) {
   case suffix {
     Doing(activity) -> activity
     Known(activity) -> activity
+  }
+}
+
+/// The "Get started" entry above the inbox's folders, or nothing on a page that
+/// has no checklist or whose checklist is finished. It is one line in the rail's
+/// folder style, so a new person finds setup where they look for everything else.
+fn getting_started(page: Page(message)) -> Element(message) {
+  case page.getting_started {
+    None -> element.none()
+    Some(press) ->
+      html.nav(
+        [attribute.class("rail-folders"), attribute.aria_label("Setup")],
+        [
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("folder"),
+              attribute.title("What is set up and what is left"),
+              event.on_click(press),
+            ],
+            [html.span([attribute.class("nm")], [html.text("Get started")])],
+          ),
+        ],
+      )
   }
 }
 
