@@ -99,8 +99,8 @@ pub fn feed(control: Option(project_start.Control)) -> Option(Feed) {
 }
 
 /// The `projects.board` reply body: the project, the ledger's newest sequence
-/// number as `revision`, the page, the total, the tickets and the router's
-/// queued replies. The control command and the page read the same body.
+/// number as `revision`, the page, the total, the tickets, the router's
+/// queued replies and the newest routing decisions. The control command and the page read the same body.
 ///
 /// ## Examples
 ///
@@ -118,6 +118,7 @@ pub fn board_body(project: String, shown: project_host.Board) -> JsonValue {
     #("unrouted", json.Array(shown.unrouted)),
     #("would_have_done", json.Array(shown.would_have_done)),
     #("sources", json.Array(shown.sources)),
+    #("decisions", json.Array(shown.decisions)),
   ])
 }
 

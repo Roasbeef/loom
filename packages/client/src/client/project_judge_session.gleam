@@ -284,7 +284,7 @@ fn trial(
       // trial is reported as failed even when the model answered.
       case answered, closed {
         Ok(#(choice, routing)), Ok(Nil) ->
-          Ok(Decision(choice:, routing:, spend: spent))
+          Ok(Decision(choice:, routing:, spend: spent, trial: None))
         Error(words), _ -> Error(Failure(words, spent))
         Ok(_), Error(_) ->
           Error(Failure("a scratch session did not stop cleanly.", spent))

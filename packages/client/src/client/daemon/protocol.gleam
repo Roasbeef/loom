@@ -290,7 +290,12 @@ pub type Command {
 
   /// Runs a verdict for one rule on a lane, `replay` or `live`, and records
   /// it. Owner-only.
-  RunProjectVerdict(project: String, rule: String, lane: Option(String))
+  RunProjectVerdict(
+    project: String,
+    rule: String,
+    lane: Option(String),
+    router: Option(String),
+  )
 
   /// A person's publish of a ticket's current commit past a failing or missing
   /// check, recorded with the principal. Owner-only, and refused while the
@@ -929,8 +934,9 @@ fn decode_fields(
     "projects.verdict" -> {
       use project <- result.try(text_field(fields, "project", 64))
       use rule <- result.try(text_field(fields, "rule", 64))
-      use lane <- result.map(optional_text_field(fields, "lane", 16))
-      RunProjectVerdict(project, rule, lane)
+      use lane <- result.try(optional_text_field(fields, "lane", 16))
+      use router <- result.map(optional_text_field(fields, "router", 16))
+      RunProjectVerdict(project, rule, lane, router)
     }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))

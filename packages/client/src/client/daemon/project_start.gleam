@@ -47,6 +47,7 @@ import broker/policy
 import client/daemon/manager
 import client/daemon/project_book.{type Book}
 import client/daemon/project_host
+import client/daemon/project_verdict
 import client/goalcheck
 import client/goalstate
 import client/install
@@ -133,6 +134,9 @@ pub type Control {
     /// is asked for only when a live verdict is, and answers a sentence when
     /// the router's model cannot be resolved.
     judge: fn(String) -> Result(project_judge.Judge, String),
+    /// What a verdict needs to measure Jev: the setting in force and the
+    /// transport with its key.
+    jev: project_verdict.Jev,
   )
 }
 

@@ -4048,9 +4048,9 @@ fn dispatch(
       project_command_in_words(config, principal, fn(control) {
         project_labels(control, project, rule)
       })
-    protocol.RunProjectVerdict(project, rule, lane) ->
+    protocol.RunProjectVerdict(project, rule, lane, router) ->
       project_command_in_words(config, principal, fn(control) {
-        project_verdict(control, project, rule, lane)
+        project_verdict(control, project, rule, lane, router)
       })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
@@ -4533,13 +4533,16 @@ fn project_verdict(
   project: String,
   rule: String,
   lane: Option(String),
+  router: Option(String),
 ) -> Result(#(String, JsonValue), Refused) {
   use handle <- result.try(
     project_book.get(control.book, project)
     |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   use chosen <- result.try(
-    project_verdict.lane_of(lane, fn() { control.judge(project) })
+    project_verdict.lane_of(lane, router, control.jev, fn() {
+      control.judge(project)
+    })
     |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
   )
 

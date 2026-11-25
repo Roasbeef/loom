@@ -67,6 +67,7 @@ pub fn a_complete_run_gives_samples_in_trigger_order_and_sums_its_spend_test() {
             False -> project_judge.Routed
           },
           spend: Spend(calls: 1, tokens: 10 + index),
+          trial: None,
         ))
       },
       limits: limits(),
@@ -110,6 +111,7 @@ pub fn the_first_failure_ends_the_run_and_the_trials_still_to_come_never_start_t
               judge.Take,
               project_judge.Routed,
               project_judge.no_spend,
+              None,
             ))
           }
         }
@@ -149,6 +151,7 @@ pub fn a_run_past_its_wall_limit_is_cut_off_and_says_how_far_it_got_test() {
               judge.Take,
               project_judge.Routed,
               project_judge.no_spend,
+              None,
             ))
           _ -> {
             process.sleep(10_000)
@@ -156,6 +159,7 @@ pub fn a_run_past_its_wall_limit_is_cut_off_and_says_how_far_it_got_test() {
               judge.Take,
               project_judge.Routed,
               project_judge.no_spend,
+              None,
             ))
           }
         }

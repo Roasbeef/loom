@@ -66,6 +66,7 @@ import client/daemon/profiles
 import client/daemon/project_book
 import client/daemon/project_host
 import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/restart
 import client/daemon/root
 import client/daemon/server
@@ -116,6 +117,7 @@ import client/peer_outbox_drain
 import client/peers
 import client/pools
 import client/profile_switch
+import client/project_jev_judge
 import client/project_settings
 import client/relayed_session
 import client/remote/address
@@ -4920,28 +4922,37 @@ fn project_control(
       case project_env(config, ready, book, logger) {
         Error(_) -> None
         Ok(env) ->
-          Some(
-            project_start.Control(
-              book:,
-              create: fn(workspace, name) {
-                project_start.create(env, workspace, name)
-              },
-              judge: fn(project) {
-                project_start.judge(
-                  env,
-                  fn(registration, selected) {
-                    serve.resolve_managed(
-                      config.session_defaults,
-                      registration,
-                      selected,
-                      ready.state_root,
-                    )
-                  },
-                  project,
-                )
-              },
+          Some(project_start.Control(
+            book:,
+            create: fn(workspace, name) {
+              project_start.create(env, workspace, name)
+            },
+            judge: fn(project) {
+              project_start.judge(
+                env,
+                fn(registration, selected) {
+                  serve.resolve_managed(
+                    config.session_defaults,
+                    registration,
+                    selected,
+                    ready.state_root,
+                  )
+                },
+                project,
+              )
+            },
+            jev: project_verdict.Jev(
+              default: config.projects.settings.router,
+              setting: project_jev_judge.Setting(
+                client: env.jev,
+                model: config.projects.settings.jev.model,
+                percent: config.projects.settings.jev_min_probability,
+                agents: list.map(config.projects.settings.agents, fn(agent) {
+                  agent.use_for
+                }),
+              ),
             ),
-          )
+          ))
       }
   }
 }
