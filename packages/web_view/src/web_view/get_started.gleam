@@ -203,6 +203,8 @@ pub fn skippable(step: Step) -> Bool {
 fn folder_step(facts: Facts) -> Step {
   let title = "Default folder"
 
+  // An unanswered session list says nothing yet; once it has answered, the
+  // folder last used decides between done and open.
   case facts.listing, facts.folder {
     Unheard, _ ->
       Step(
@@ -229,6 +231,8 @@ fn folder_step(facts: Facts) -> Step {
 fn project_step(facts: Facts) -> Step {
   let title = "First project"
 
+  // A project already made settles the step; with none, the page's right to
+  // make one and whether the boards have answered decide the rest.
   case facts.projects, facts.making, facts.boards {
     0, MayMake, Unheard ->
       Step(
