@@ -846,6 +846,28 @@ pub fn kind_word(kind: Kind) -> String {
   }
 }
 
+/// The kind a word names, the inverse of `kind_word`, or nothing for a word a
+/// host does not know.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert timeline.kind_of_word("prompt") == Ok(Prompted)
+/// ```
+pub fn kind_of_word(word: String) -> Result(Kind, Nil) {
+  // Each word is the one `kind_word` gives its kind.
+  case word {
+    "prompt" -> Ok(Prompted)
+    "work" -> Ok(Worked)
+    "command" -> Ok(Ran)
+    "result" -> Ok(Reported)
+    "ask" -> Ok(Asked)
+    "compaction" -> Ok(Compacted)
+    "answer" -> Ok(Answered)
+    _ -> Error(Nil)
+  }
+}
+
 /// The steps a card is about, for a host that totals them.
 pub fn total_steps(cards: List(Card)) -> Int {
   list.fold(cards, 0, fn(sum, card) { sum + card.facts.steps })
