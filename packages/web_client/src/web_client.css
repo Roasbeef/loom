@@ -767,7 +767,10 @@
   .inbox-send{margin:0;}
   .inbox-hold{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .inbox-outbox{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  .inbox-outbox-bar{position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
+  /* The bar does not shrink: in the reading pane's column it would otherwise give
+     up its height to the body, and a bar whose words wrap (a phone's) would draw
+     them below its own edge. */
+  .inbox-outbox-bar{flex:0 0 auto;position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
   .inbox-outbox-to{flex:1 1 0;min-width:0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);overflow-wrap:anywhere;}
   .inbox-outbox-to b{color:var(--color-fg);font-weight:600;}
   .inbox-outbox-items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px;}
