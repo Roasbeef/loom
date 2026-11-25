@@ -568,6 +568,10 @@ pub fn the_answer_form_is_keyed_by_ticket_and_question_test() {
   let first = drawn(picked(model, "t-ask"))
   let second = drawn(picked(model, "t-two"))
 
+  // The section is headed by what it is, not by the question's internal number.
+  assert string.contains(first, "s question</h2>")
+  assert !string.contains(first, "Question 7")
+
   assert string.contains(
     first,
     "data-lustre-key=\"ticket-answer-p1-t-ask-7-0\"",
