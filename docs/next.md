@@ -462,8 +462,10 @@ ticked, or that the drive's defects were unfixed, are out of date.
   (cross-node session messaging and presence), #1341 (orchestrator failover),
   and protocol-change/118 phase 1, chunked move transfer (draft PR #1297; no
   criterion depends on transfer speed).
-- **Still blocked on the owner:** criterion 3 on a pool of untrusted microVM
-  guests (#85).
+- **Not driven:** criterion 3 on a pool of untrusted microVM guests. The tier
+  it needs is complete (#85, closed 2026-11-19, with seeded children on guests
+  through `loom vm up --workspace-mode worktree`), so this is a drive still to
+  run, not a blocker.
 - **Building the web assets on macOS** no longer needs a hand re-sign of
   Tailwind: `scripts/web_assets.sh` re-signs the downloaded binary ad hoc and
   retries when its signature does not verify (#1381).
