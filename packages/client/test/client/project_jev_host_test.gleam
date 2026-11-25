@@ -45,6 +45,10 @@ type Service {
   Down
   SlowDown(ms: Int)
 
+  /// The body is chosen from the request's own, since the questions asked
+  /// depend on the tickets listed.
+  Chosen(pick: fn(String) -> String)
+
   /// A request whose body holds `text` takes `ms` and then fails. Any other
   /// fails at once.
   SlowFor(text: String, ms: Int)
@@ -57,6 +61,10 @@ const clear_body =
 
 // The same with a two-agent catalogue: the `agent` Choice is asked as well, and
 // answers `agent_2`.
+// The same when a ticket is listed: the continues Noul is asked as well.
+const listed_body =
+  "{\"model\":\"jev-1.14.0\",\"answers\":{\"clear_alone\":{\"type\":\"noul\",\"noul\":0.95},\"continues_listed_ticket\":{\"type\":\"noul\",\"noul\":0.05}},\"usage\":{\"input_tokens\":110,\"output_tokens\":6}}"
+
 const agent_body =
   "{\"model\":\"jev-1.14.0\",\"answers\":{\"clear_alone\":{\"type\":\"noul\",\"noul\":0.95},\"agent\":{\"type\":\"choice\",\"choice\":\"agent_2\",\"confidence\":0.8,\"probabilities\":{\"agent_2\":0.75,\"agent_1\":0.25}}},\"usage\":{\"input_tokens\":120,\"output_tokens\":7}}"
 
@@ -97,6 +105,7 @@ fn rig(
     process.send(seen, Fetching(authorization_of(request), request.body))
     let answered = case service {
       Answers(body) -> Ok(network.Response(200, body))
+      Chosen(pick) -> Ok(network.Response(200, pick(request.body)))
       Down -> Error("request_transport_failed")
       SlowDown(ms) -> {
         process.sleep(ms)
@@ -223,6 +232,47 @@ pub fn jev_settles_a_clear_trigger_before_the_router_is_offered_test() {
   let lines = ledger_lines(rig)
   assert list.any(lines, string.contains(_, "\"judgement\""))
   assert !list.any(lines, string.contains(_, "jev_fallback"))
+}
+
+pub fn the_jev_pin_is_announced_before_the_decisions_it_measures_test() {
+  let rig = rig("pin", Answers(clear_body), [])
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:router", "profile:default model:x")
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let _ = drain(rig.seen)
+  let lines = ledger_lines(rig)
+  let position = fn(needle: String) {
+    list.index_map(lines, fn(line, index) { #(index, line) })
+    |> list.find(fn(entry) { string.contains(entry.1, needle) })
+    |> option.from_result
+    |> option.map(fn(entry) { entry.0 })
+  }
+  let assert Some(pinned) = position("router_pin_set")
+  let assert Some(routed) = position("\"t\":\"routed\"")
+  assert pinned < routed
+
+  // The pin names the model the response reported, in the Jev form.
+  assert list.any(lines, string.contains(_, "jev/jev-1.14.0/"))
+}
+
+pub fn a_second_batch_reaches_jev_once_the_first_is_settled_test() {
+  let pick = fn(body: String) {
+    case string.contains(body, "ticket_") || string.contains(body, "tickets") {
+      True -> listed_body
+      False -> clear_body
+    }
+  }
+  let rig = rig("second", Chosen(pick), [])
+  let handle = start(rig)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok(_) = project_host.post(handle, "b", "fix b")
+  let seen = drain(rig.seen)
+
+  // Settling a batch whole ends the router's turn, so the second candidate is
+  // offered next, and the router is never involved.
+  assert list.map(started(seen), fn(request) { request.key })
+    == ["project:p1:t-a:1", "project:p1:t-b:1"]
+  assert to_router(seen) == []
 }
 
 pub fn an_unavailable_service_leaves_the_trigger_to_the_router_test() {

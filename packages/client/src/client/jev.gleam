@@ -62,10 +62,11 @@ pub const pass_bound_ms = 45_000
 pub type Fetch =
   fn(http.HttpRequest, Int, Int) -> Result(network.Response, String)
 
-/// A key, a bound and a way to fetch. It has no printable form that shows the
-/// key: `Client` is opaque and the key is read only by `evaluate`.
+/// A key, a bound and a way to fetch. The key is held as a function that
+/// returns it, so printing a `Client`, or a process's state that holds one,
+/// shows a function and not the key. Only `evaluate` calls it.
 pub opaque type Client {
-  Client(key: Option(String), timeout_ms: Int, fetch: Fetch)
+  Client(key: Option(fn() -> String), timeout_ms: Int, fetch: Fetch)
 }
 
 /// The key named by the settings, or none. A variable that is unset or holds
@@ -100,7 +101,7 @@ pub fn key_from(
 /// // jev.client(Some(key), 3000)
 /// ```
 pub fn client(key: Option(String), timeout_ms: Int) -> Client {
-  Client(key:, timeout_ms:, fetch: fn(request, limit, timeout) {
+  Client(key: hidden(key), timeout_ms:, fetch: fn(request, limit, timeout) {
     network.fetch_within(
       http.httpc_transport_with_timeout(timeout),
       request,
@@ -122,18 +123,12 @@ pub fn client_with(
   timeout_ms: Int,
   fetch: Fetch,
 ) -> Client {
-  Client(key:, timeout_ms:, fetch:)
+  Client(key: hidden(key), timeout_ms:, fetch:)
 }
 
-/// The bound on one request, in milliseconds.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert jev.timeout_ms(jev.client_with(None, 3000, scripted)) == 3000
-/// ```
-pub fn timeout_ms(from: Client) -> Int {
-  from.timeout_ms
+/// The key behind a function, so it does not print.
+fn hidden(key: Option(String)) -> Option(fn() -> String) {
+  option.map(key, fn(secret) { fn() { secret } })
 }
 
 /// Sends one prepared request and decodes the answer.
@@ -156,7 +151,7 @@ pub fn evaluate(
   // A client with no key never builds the request.
   case from.key {
     None -> Error(jev.NoKey)
-    Some(key) -> send(from, key, request)
+    Some(reveal) -> send(from, reveal(), request)
   }
 }
 

@@ -74,6 +74,11 @@ pub fn the_key_is_a_bearer_header_and_nowhere_else_test() {
   assert timeout == 3000
 }
 
+pub fn a_printed_client_does_not_show_the_key_test() {
+  let shown = string.inspect(client(answering(200, clear_body)))
+  assert !string.contains(shown, "sekret")
+}
+
 pub fn any_status_but_200_or_a_failed_exchange_is_unavailable_test() {
   list.each([401, 422, 429, 500, 529], fn(status) {
     assert transport.evaluate(client(answering(status, "{}")), request())

@@ -80,6 +80,7 @@ import client/project_watcher
 import client/template_state
 import core/json.{type JsonValue}
 import gleam/bit_array
+import gleam/bool
 import gleam/crypto
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -4208,8 +4209,16 @@ fn offer_with_jev(
   row: project_ledger.Effect,
   triggers: List(String),
 ) -> Host {
-  // A row whose pass has ended asks nothing again.
-  let asked = case set.contains(host.jev_done, row.key) {
+  // The router's turn clock is off from the moment the row runs, whatever
+  // batch last stamped it, so no tick ends a turn this row has not delivered.
+  let host = Host(..host, offered_at_ms: 0)
+
+  // A row whose pass has ended asks nothing again, and neither does one whose
+  // pass has given no answer in as many attempts as any other task is allowed,
+  // so a pass that dies cannot hold the batch and the turn clock off for good.
+  let asked = case
+    set.contains(host.jev_done, row.key) || row.attempts >= max_task_attempts
+  {
     True -> []
     False -> jev_candidates(host, triggers)
   }
@@ -4303,8 +4312,7 @@ fn start_pass(
 ) -> Host {
   let client = host.ports.jev
   let key = row.key
-  let quiet = Host(..host, offered_at_ms: 0)
-  in_task(quiet, row, transport.pass_bound_ms + pass_margin_ms, fn() {
+  in_task(host, row, transport.pass_bound_ms + pass_margin_ms, fn() {
     JevPassSettled(
       key:,
       results: transport.pass(
@@ -4330,12 +4338,11 @@ fn jev_settled(
   key: String,
   results: List(#(Candidate, transport.Attempt(jev.Answers))),
 ) -> Host {
-  // The settings bound the percent to what `jev.bars` accepts, so the default
-  // bars are the answer to a case the file cannot produce.
-  let bars = case jev.bars(host.config.policy.jev_min_probability) {
-    Ok(found) -> found
-    Error(Nil) -> jev.default_bars()
-  }
+  // A second answer for a key already settled is a pass the row started again
+  // while the first answer waited in the mailbox. It decides nothing twice.
+  use <- bool.guard(set.contains(host.jev_done, key), host)
+
+  let bars = configured_bars(host)
 
   let decided =
     list.fold(results, host, fn(so_far, each) {
@@ -4344,6 +4351,16 @@ fn jev_settled(
   let _due =
     project_ledger.defer(decided.ledger, "offer", key, decided.ports.now_ms())
   Host(..decided, jev_done: set.insert(decided.jev_done, key))
+}
+
+/// The attach bar the configured percent gives. The settings bound the percent
+/// to what `jev.bars` accepts, so the default bars answer a case the file cannot
+/// produce.
+fn configured_bars(host: Host) -> jev.Bars {
+  case jev.bars(host.config.policy.jev_min_probability) {
+    Ok(found) -> found
+    Error(Nil) -> jev.default_bars()
+  }
 }
 
 /// What one candidate's attempt comes to. A trigger Jev did not settle stays
@@ -4549,10 +4566,19 @@ fn router_pinned(
   prompt_revision: String,
   router_model: String,
 ) -> Host {
+  // In `jev` mode the Jev form is announced at once with the configured model,
+  // so a changed router model demotes at boot even when Jev never answers.
   case host.config.policy.router {
     ModelRouter -> pin_now(host, prompt_revision, router_model)
-    JevRouter ->
-      Host(..host, router_pin: Some(#(prompt_revision, router_model)))
+    JevRouter -> {
+      let held =
+        Host(..host, router_pin: Some(#(prompt_revision, router_model)))
+      announce_jev_pin(
+        held,
+        host.config.policy.jev_model,
+        configured_bars(held),
+      )
+    }
   }
 }
 

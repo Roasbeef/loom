@@ -704,7 +704,8 @@ opens a new ticket under `router = "jev"`. The ticket's worker then starts with 
 profile or model in place of the `[roles]` chain. Choosing an agent changes which models a
 worker uses and nothing about its jail, tools, approvals or network, which the ticket's
 mandate decides. With no entry, new work uses the `[roles]` chain. With one entry, that entry
-is used for all new work and Jev is not asked. With two or more, Jev is asked, and below a
+is used for all new work Jev opens and Jev is not asked. A ticket the router session opens
+uses the `[roles]` chain. With two or more, Jev is asked, and below a
 fixed confidence the `[roles]` chain is used.
 
 | Key | Type | Required, default | Allowed values | Meaning |
