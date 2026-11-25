@@ -6575,6 +6575,53 @@ pub fn the_folder_listing_is_answered_for_the_owners_operating_page_only_test() 
   })
 }
 
+// The folder index is answered for the owner's operating page alone
+// (protocol-change/132, the addendum on searching), by the same owner check as the
+// listing, and the home is read only after it.
+pub fn the_folder_index_is_answered_for_the_owners_operating_page_only_test() {
+  fixture(fn(ready, _, credential) {
+    let home = owners_home("index")
+    let assert Ok(Nil) = simplifile.create_directory_all(home <> "/code/loomy")
+      as "a folder to index"
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+
+    let assert Ok(index) =
+      ui_socket.index_for(standing, page_open, fn() { Ok(home) }, [])
+    assert list.contains(list.map(index.entries, fn(entry) { entry.trail }), [
+      "code",
+      "loomy",
+    ])
+
+    let refused = Error(folder_browse.NotAFolder)
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    assert ui_socket.index_for(readonly, page_open, fn() { Ok(home) }, [])
+      == refused
+    assert ui_socket.index_for(
+        standing,
+        fn() { Error(Nil) },
+        fn() { Ok(home) },
+        [],
+      )
+      == refused
+    let existing = create_session(ready, "index-known", 1125)
+    let grant = member(ready, "ui-index", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-index")
+    assert ui_socket.index_for(members, page_open, fn() { Ok(home) }, [])
+      == refused
+
+    // The home is never read for a page that fails the check.
+    let read = process.new_subject()
+    let watching = fn() {
+      process.send(read, Nil)
+      Ok(home)
+    }
+    assert ui_socket.index_for(readonly, page_open, watching, []) == refused
+    assert ui_socket.index_for(members, page_open, watching, []) == refused
+    assert process.receive(read, 0) == Error(Nil)
+  })
+}
+
 // The other orchestrators are read for the owner's operating page alone. A page
 // that has ended, one minted to read and a member's page are told of nothing, and
 // the daemon's read, which dials the other orchestrators, is never made for them.

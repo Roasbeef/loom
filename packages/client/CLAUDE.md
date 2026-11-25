@@ -1621,6 +1621,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   caps at `shown_limit` and stops at `depth_limit`; every refusal is a
   `folder_browse.Refusal`. `ui_socket.browse_for` runs it after `authorized_owner`
   and is the `browse` of the `home.Folders` the owner's page is handed.
+  The folder index (the addendum on searching): `folder_listing.index_in(home, seeds,
+  limits, now)` builds one `folder_browse.Index` of folder names: breadth first from
+  the seeds' parents (the remembered folders, each component checked as a real
+  visible directory) and then the home, following no symbolic link (`lstat`), skipping
+  hidden names and `Library`, listing below a Git checkout only folders that hold a
+  `.git`, not entering `node_modules`, `_build`, `build` or `target`, and stopping at
+  `folder_browse.index_depth`, `index_visit_limit`, `index_entry_limit` or `index_ms`.
+  `ui_socket.index_for` runs it after `authorized_owner`, under the same deadline as
+  `browse_within` (`within_deadline`), and it is the `index` of `home.Folders`.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential

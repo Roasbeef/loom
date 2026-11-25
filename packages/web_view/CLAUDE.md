@@ -28,6 +28,8 @@ page keys and nonces, and the relay into the session's gateway.
 
 **One frame on every page (2026-11-19):** the figures and placement chips moved from `view/heading` to `view/stream_head` (`view/figures`), so `component.context_refresh_path` is `0\t2\t7\t5\t0\t1\t0\t0` and the observer's centre keeps an empty node at index 5 to match the operator's. `heading.view` draws `loom`, `‹ Inbox` (`home_path` unchanged), the crumb, `● live`, the need pill and a role chip. `sidebar.view` takes `Folders` (counts optional, `way` a `Pick`, `Return` or `Text`: the admin page's folders are `<loom-back>` controls) and `Page.watching`, the second line of a Watch live row (`watch_rule`). The review pane's diff is `diff.view_review`, a variant of the shared drawer.
 
+**The Updates cards and the board** (protocol-change/051's addendum "the Updates cards"): `view/update_card` draws a working session as a card (name, state with time in turn, the latest message cut to three lines and marked untrusted, the running step, one compact line for delegates, a failed last command and the machine, and "Watch live"); `Density` is `Collapsed` or `Expanded`, and an open card adds the steps the brief holds (at most four), the strands and the last command. `view/inbox` draws the card for each Updates session and, for `Watch` (`WatchOne | WatchAll`), the "Watch all" board in the reading pane, in the list's order (by name), only while some session is working. `Model.expanded` and `Model.watch` are page-local (`CardToggled`, `WatchAllToggled`; any thread press turns the board off). The cards' briefs are read on the page's card timer (`CardTimerReady`, `CardTicked`, every `home.card_tick_ms`): `home.card_briefing` starts at most `card_per_tick` reads, for the first `card_limit` Updates sessions whose last read is ten seconds old (`brief_rule.card_due`), skipping the open thread's session, and `pruned` drops what the page holds for sessions in neither Updates nor the open thread.
+
 **The attention threads** (phase 1, protocol-change/051's addendum "the attention threads"): `Start.attention` is `Some(Attention(feed, saved, record, approvals, review, act))` on every page that reads the feed, and `act` (`Act(answer, close, dismiss_stuck, strand)`) is `Some` only for the owner's operating page (`ui_socket.home_attention_capability`). `attention_rule` (pure) flattens feed rows into `Item`s (`AskItem | FindItem | StuckItem`), ranks them by wait (`needs_you`, `finds`, unknown times last), words ages (`age_line`), keys a thread (`Key(sort, session, id)`, compared and never drawn) and tallies the headline across running and saved sessions. `answer_rule` (pure) reads an ask form's fields back into the wire object (a question is its key, an option its position, never a label) and asks `core/attention_answer.check` for validity. `item_pane` (pure) is the open thread's state: the record read, the one outbox (a staged answer and a staged note) and the send's progress. `view/attention_thread` draws rows and the pane; every word a session wrote is a text node. `Model` holds `feed`, `saved`, `item` and `item_presses`; the messages are `FeedRead`, `SavedRead`, `ItemPicked`, `RecordRead`, `ItemStaged`, `ItemNoted`, `ItemCleared`, `ItemSent`, `ItemClosed`, `ItemRetried`, `ItemDismissed`, `ItemActed`, `ItemNoteAnswered` and `ItemRetryAnswered`. `CentreChoice` stays `Awaiting` until the first round of reads is complete (`landing_rule`), so a summary, a ticket or an ask that counts something is weighed with the activity read whichever came first.
 
 **The review pane** (protocol-change/051's addendum "the review pane", [123](../../protocol-change/123-review-hunks.md)): `Attention.review` reads one session's worktree as a `review_feed.Review` and is `Some` for an operator's page (owner's or member's), never an observer's (`ui_socket.home_attention_capability`, `ui_socket.review_for`). `review_scan_rule` (pure) decides who is "To review" (every idle session with a last message whose tree is not known clean, so a session moves to "Waiting" only on a clean read): one read at a time, once for each last message, a `Seen` for each session and never the review, whose `verdict` (the last successful read, for the message it was read for) survives a read out, a failure and an allowance refusal, so a session does not flap between "To review" and "Waiting"; `inbox_rule.grouped_with` moves those idle sessions out of "Waiting". `review_pane` (pure) is the open thread: the `Loaded` review, the revisions of its finds, `review_stage_rule.Staging` (verdict, one comment for each file, find actions) and the Send as a machine (`send` → `closed_with` → `prompted`; a refused close halts it and no prompt goes). `review_outbox_rule` (pure) words the one prompt and refuses past `composer.prompt_limit` before any close. `review_pin_rule` (pure) anchors a find at a line a shown hunk holds, else loose in its file, else at the pane's top. `view/review_thread` draws it through `view/diff.view_with`, with every session word a text node and each form keyed by session, open count and position (a delivered Send raises the count, so the comment boxes empty). `Model` holds `reviews`, `review` and `review_presses`; the messages are `ReviewScanned`, `ReviewRead`, `ReviewFindRead`, `ReviewVerdictChosen`, `ReviewCommented`, `ReviewFindStaged`, `ReviewCleared`, `ReviewSent`, `ReviewClosed` and `ReviewPrompted`.
@@ -518,7 +520,7 @@ page keys and nonces, and the relay into the session's gateway.
   socket admits its clicks and its one submit there as before, and the code
   picker's search is the one `input` the owner's socket now admits
   (`ui_socket.home_event`), beneath that region only. The folder picker
-  (protocol-change/132) replaces that list while "Choose a folder…" has it open:
+  (protocol-change/132) replaces that list while "Open folder…" has it open:
   `composer.State.browser` (`Closed`, `Reading`, `Browsing`, `Failed`), the messages
   `OpenedBrowser`, `Descended(index)`, `Ascended(depth)`, `ChosePicked` and
   `ClosedBrowser`, the intent `Browse(trail)`, `composer.browsed` (applies the
@@ -527,7 +529,21 @@ page keys and nonces, and the relay into the session's gateway.
   vocabulary (`Listing`, `Child`, `Cut`, `Refusal`, the bounds, `component_ok`,
   `trail_ok`, `below`, `above`); `Folders.browse` is the home's read, answered as
   `FolderBrowsed`. A press names an index into the listing the page holds, never a
-  path. Every row is a button whose
+  path.
+  The Code list is also a search (protocol-change/132, the addendum on searching):
+  `composer.State.seek` (`Unindexed`, `Indexing`, `Indexed`, `Unindexable`) holds one
+  `folder_browse.Index` of folder names that the daemon builds when the list opens
+  (`composer.indexing` returns the seeds to ask with and the state that says a build is
+  out; `composer.indexed` applies the answer dated by `Offers.now`, and the page asks
+  again after `folder_browse.index_ttl_ms`). A keystroke asks for nothing:
+  `folder_browse.rank` ranks the index in memory (exact name, prefix, contains,
+  shallower first, twenty). `composer.choices` makes the `Recent`, found `Folders` and
+  `Projects` rows, each a `Choice` with a name and a shortened parent, a found row
+  carrying the index of its hit; `ChoseFound(index)`, `Entered` (Enter in the field's
+  own form chooses the first row) and `Target.Project(workspace)`, offered only when
+  `Offers.projects` holds it. `Folders.index` is the home's read, answered as
+  `FolderIndexed`. The list is drawn inside `<loom-picklist>`, which moves the focus
+  with the arrow keys and closes on Escape in the browser. Every row is a button whose
   message carries a value the server built; the form's decoder (`new_session.fields`)
   takes exactly the name field and the one more field the chosen target needs. The
   composer creates through `Start.create` with `creations.Private`, so the server

@@ -767,7 +767,10 @@
   .inbox-send{margin:0;}
   .inbox-hold{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .inbox-outbox{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  .inbox-outbox-bar{position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
+  /* The bar does not shrink: in the reading pane's column it would otherwise give
+     up its height to the body, and a bar whose words wrap (a phone's) would draw
+     them below its own edge. */
+  .inbox-outbox-bar{flex:0 0 auto;position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
   .inbox-outbox-to{flex:1 1 0;min-width:0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);overflow-wrap:anywhere;}
   .inbox-outbox-to b{color:var(--color-fg);font-weight:600;}
   .inbox-outbox-items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px;}
@@ -2357,6 +2360,12 @@
   .opt .opt-text > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .opt .opt-text small{overflow:hidden;color:var(--color-fg-quiet);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap;}
   .opt .opt-state{flex:0 0 auto;color:var(--color-fg-quiet);font-size:11.5px;}
+  loom-picklist{display:contents;}
+  .pop.places{width:440px;height:min(400px,60dvh);}
+  .pop.places .search{position:sticky;top:0;z-index:1;}
+  .opt .opt-line{display:flex;align-items:baseline;flex:1 1 auto;gap:8px;min-width:0;}
+  .opt .opt-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .opt .opt-dim{flex:1 1 0;min-width:0;overflow:hidden;color:var(--color-fg-quiet);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap;}
   .opt[aria-selected="true"] svg.i:last-child,.opt.on svg.i:last-child{margin-left:auto;color:var(--color-current);}
   .opt[aria-disabled="true"]{cursor:not-allowed;}
   .opt[aria-disabled="true"]:hover{background:transparent;}
@@ -2490,7 +2499,10 @@
     .place-chip{height:44px;}
     .pop,.pop.wide{position:fixed;z-index:21;top:auto;left:0;right:0;bottom:0;width:auto;min-width:0;max-width:none;max-height:82dvh;padding:12px 12px 20px 12px;border-width:1px 0 0 0;border-radius:18px 18px 0 0;overflow-y:auto;}
     .pop-scrim{z-index:20;background:rgba(0,0,0,.45);}
+    .pop.places{height:72dvh;}
     .opt{min-height:48px;}
+    .search{height:44px;}
+    .search-field{font-size:16px;}
     .pick-alt{min-height:44px;}
     .pick-use{min-height:44px;flex:1 1 100%;}
     .fp{height:36px;}
@@ -2695,9 +2707,10 @@
     :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
     :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
     loom-shell.loom-inbox .session-head .workspace{display:none;}
-    loom-shell.loom-inbox:not(.loom-home) .session-head .home-who{display:none;}
-    loom-shell.loom-home .session-head .home-who{display:flex;min-width:0;}
-    loom-shell.loom-home .session-head .home-who-button{min-height:36px;max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    /* The final design's phone bar is the brand, the crumb and the need pill: the
+       role chip is hidden on every page, Home's included. The owner's menu and
+       Admin stay in the sidebar's foot. */
+    loom-shell.loom-inbox .session-head .home-who{display:none;}
     loom-shell.loom-inbox .session-head{gap:0 10px;padding-right:12px;}
     loom-shell.loom-session:not(.loom-home) .session-head{padding-left:16px;}
     loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
@@ -2816,3 +2829,50 @@ loom-mermaid { display: block; min-width: 0; margin: 12px 0; }
      carries the call and what its result said, which can run to several lines,
      so an insight's head stops at two; the stream row holds the whole text. */
   li.lift:not(.lift-pinned) .lift-head{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;}
+
+  /* An Updates session is a card, and the "Watch all" board is a grid of the same
+     cards (view/update_card). The card is a tinted block with a hairline border,
+     as the inbox's other blocks are: no bar down an edge and no shadow. A card
+     that was opened is plain, as an opened row's dot is hollow. */
+  .inbox-viewbar{display:flex;justify-content:flex-end;padding:8px 14px;border-bottom:1px solid var(--color-divider);}
+  .inbox-watch{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:550 12px/1.45 var(--font-sans);cursor:pointer;}
+  .inbox-watch:hover{border-color:var(--color-fg-faint);color:var(--color-fg);}
+  .inbox-watch[aria-pressed="true"]{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));color:var(--color-fg);}
+  .inbox-watch:focus-visible,.upd-head:focus-visible,.upd-watch:focus-visible,.upd-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .upd-card{display:flex;flex-direction:column;gap:6px;min-width:0;margin:8px 10px;padding:10px 12px;border:1px solid var(--color-divider);border-radius:10px;background:color-mix(in srgb,var(--color-current) 6%,var(--color-bg-raised));}
+  .upd-card.upd-seen{background:var(--color-bg-raised);}
+  .upd-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;box-sizing:border-box;width:100%;margin:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
+  .upd-title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 13.5px/1.45 var(--font-sans);}
+  .upd-state{flex:1 1 0;min-width:0;overflow-wrap:anywhere;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .upd-age{flex:0 0 auto;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);white-space:nowrap;}
+  .upd-said{margin:0;font:13px/1.45 var(--font-sans);}
+  .upd-src{display:block;color:var(--color-fg-quiet);font:11.5px/1.45 var(--font-sans);}
+  .upd-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;overflow-wrap:anywhere;}
+  .upd-open .upd-text{display:block;-webkit-line-clamp:unset;line-clamp:unset;white-space:pre-wrap;}
+  .upd-step{display:flex;gap:8px;align-items:baseline;min-width:0;margin:0;padding:4px 8px;border-radius:6px;background:var(--color-code);font:12px/1.55 var(--font-mono);overflow:hidden;white-space:nowrap;}
+  .upd-tool{flex:0 0 auto;font-weight:600;}
+  .upd-words{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--color-fg-quiet);}
+  .upd-run{color:var(--color-current);}
+  .upd-ok{color:var(--color-added-text);}
+  .upd-bad{color:var(--color-danger-text);}
+  .upd-line{margin:0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .upd-acts{display:flex;gap:8px;align-items:center;justify-content:space-between;}
+  .upd-watch,.upd-toggle{margin:0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:550 12px/1.45 var(--font-sans);cursor:pointer;}
+  .upd-watch{border-color:var(--color-current);color:var(--color-current);}
+  .upd-watch:hover,.upd-toggle:hover{border-color:var(--color-fg-faint);}
+  .upd-more{display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid var(--color-divider);font:12px/1.45 var(--font-sans);}
+  .upd-steps,.upd-strands{list-style:none;margin:0;padding:0;display:grid;gap:3px;}
+  .upd-steps li{display:flex;gap:8px;align-items:baseline;min-width:0;font:12px/1.5 var(--font-mono);}
+  .upd-strands li{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .upd-last{margin:0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);overflow-wrap:anywhere;}
+  /* The board fills the reading pane: its grid is as wide as the pane. */
+  .inbox-reading:has(.upd-board) .inbox-body-text{max-width:none;}
+  .upd-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:12px;}
+  .upd-board .upd-card{margin:0;}
+  @media (max-width:640px){
+    .upd-board{grid-template-columns:1fr;}
+    .upd-card{margin:8px 12px;}
+    .upd-board .upd-card{margin:0;}
+    .upd-line{display:none;}
+    .upd-board .upd-toggle{display:none;}
+  }

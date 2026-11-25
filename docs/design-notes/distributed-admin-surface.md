@@ -50,14 +50,14 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:1676`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1657`).
+(`created_workspace`, `client/daemon/protocol.gleam:1681`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1662`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:96`). The web home is told only the names
 (`HomeAttachment`, `client/daemon/server.gleam:372`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
-name (`CreatingRemote`, `web_view/home.gleam:1551`). The terminal builds a
+name (`CreatingRemote`, `web_view/home.gleam:1572`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
@@ -530,7 +530,7 @@ of the section sits beneath `admin.body_path`, which the Admin socket already ad
 and nothing else (`admin_accepts`). The existing 065 admin addendum's description of
 the page in [the web view](../architecture/web-view.md) gets a paragraph for the
 section. Its reads run in weft tasks with a read number, next to the people and
-session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:7753`).
+session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:7813`).
 
 **Terminal.** A compact rendering, from the same snapshot:
 

@@ -21,7 +21,9 @@ is explored by a model-based test over random event sequences with no
 processes, and the ledger codec reads the same events on either target. The
 suite runs on both, and `scripts/check.sh` runs it on JavaScript through
 `scripts/portable_js_test.sh`. The dependencies beyond the standard library
-are `gleam_json` and `evalstat`, both of which have both targets.
+are `gleam_json`, `evalstat` and `jevelin`, all of which have both targets. `jevelin`
+is the sans-I/O Jev library and is a path dependency (`../../../jevelin`) until
+it is pinned for release.
 
 ## Modules, in reading order
 
@@ -55,6 +57,15 @@ are `gleam_json` and `evalstat`, both of which have both targets.
   router's batches), `project/route` (the router's decisions),
   `project/schedule` (worker slots) and `project/work` (a ticket from
   assignment to conclusion).
+- `project/jev` is the pure half of routing a trigger with Jev
+  ([design note](../../docs/design-notes/project-jev-routing.md)): `listing`
+  picks the tickets a request offers, `request` builds the questions and the
+  state object with jevelin, `accept` validates the reported model name,
+  `decide` combines the answers into a `Decision` under fixed bars and one
+  configured bar, and `still_offered` names the candidates the model router
+  still receives. It sends nothing, holds no key and has no authority: a
+  decision names a ticket the request listed, or new work, or a decline, or a
+  fallback, and `route.route` still checks it.
 - `project/codec` is the ledger's JSON form of an event, with total decoders.
 - `project/snapshot` is the engine's whole state as one JSON document, with total
   decoders, and `retire`, the retention rule: it drops tickets that ended and

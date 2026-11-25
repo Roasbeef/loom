@@ -1172,6 +1172,17 @@ pub fn upgrade_home(
             deliver,
           )
         },
+        // The folder index (protocol-change/132, the addendum on searching) is
+        // one walk of the home, so it is a task of its own under a deadline, and
+        // the page asks for one build at a time.
+        index: fn(seeds, deliver) {
+          within_deadline(
+            fn() { index_for(standing, open, new_folder.home, seeds) },
+            browse_ms,
+            Error(folder_browse.Unreadable),
+            deliver,
+          )
+        },
       ),
     )
 
@@ -5558,6 +5569,18 @@ pub fn browse_within(
   within: Int,
   deliver: fn(folder_browse.Answer) -> Nil,
 ) -> Nil {
+  within_deadline(attempt, within, Error(folder_browse.Unreadable), deliver)
+}
+
+/// Runs one attempt in a witnessed weft task under a deadline and delivers its
+/// answer, or `expired` when the deadline passed first. Both folder reads share
+/// it, so the deadline is one rule.
+fn within_deadline(
+  attempt: fn() -> answer,
+  within: Int,
+  expired: answer,
+  deliver: fn(answer) -> Nil,
+) -> Nil {
   let _ =
     weft.new([
       fn() {
@@ -5566,11 +5589,11 @@ pub fn browse_within(
           |> weft.deadline(within)
           |> weft.start
 
-        // A listing that passed its deadline is answered all the same, so the
+        // An attempt that passed its deadline is answered all the same, so the
         // picker never waits for one that will not come.
         case outcomes {
           [weft.Completed(value: answer, ..)] -> deliver(answer)
-          _ -> deliver(Error(folder_browse.Unreadable))
+          _ -> deliver(expired)
         }
 
         Ok(Nil)
@@ -5605,6 +5628,43 @@ pub fn browse_for(
     Ok(_) ->
       case home() {
         Ok(directory) -> folder_listing.list_in(directory, trail)
+        Error(_) -> Error(folder_browse.NoHome)
+      }
+    Error(_) -> Error(folder_browse.NotAFolder)
+  }
+}
+
+/// The index of folder names below the owner's home, for the composer's folder
+/// search (protocol-change/132, the addendum on searching). The same owner check as
+/// a creation and a listing runs first, so a page that may not create is told
+/// nothing about the filesystem and costs none, and the home is read only after
+/// it. A page that fails the check gets the refusal a missing folder gets. The
+/// seeds are hints that `folder_listing.index_in` checks itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.index_for(standing, open, fn() { Ok("/Users/o") }, [])
+/// ```
+@internal
+pub fn index_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: fn() -> Result(String, creations.Reason),
+  seeds: List(String),
+) -> folder_browse.IndexAnswer {
+  // The owner check comes first so a page that may not create costs no filesystem
+  // read, and the home is resolved only after it for the same reason.
+  case authorized_owner(standing, open) {
+    Ok(_) ->
+      case home() {
+        Ok(directory) ->
+          Ok(folder_listing.index_in(
+            directory,
+            seeds,
+            folder_listing.limits,
+            bootstrap.system_time_ms,
+          ))
         Error(_) -> Error(folder_browse.NoHome)
       }
     Error(_) -> Error(folder_browse.NotAFolder)

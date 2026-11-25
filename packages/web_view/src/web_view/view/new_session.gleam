@@ -152,7 +152,11 @@ pub type Presses(message) {
     start_with_limits: fn(String, Typed, composer.LimitsInput) -> message,
     /// The code list's search text changed.
     search: fn(String) -> message,
-    /// "Choose a folder…" was pressed: open the folder picker.
+    /// A found folder's row was pressed, by its index in the hits the page holds.
+    found: fn(Int) -> message,
+    /// Enter was pressed in the search field.
+    enter: message,
+    /// "Open folder…" was pressed: open the folder picker.
     browse: message,
     /// A child directory's row of the picker was pressed, by its index in the
     /// listing the page holds.
@@ -255,6 +259,7 @@ pub fn needs(target: Option(Target)) -> Needs {
     Some(composer.OnExecutor(workspace: None, ..))
     | Some(composer.InPool(workspace: None, ..)) -> NameAndWorkspace
     Some(composer.Folder(_))
+    | Some(composer.Project(_))
     | Some(composer.Picked(_))
     | Some(composer.OnExecutor(workspace: Some(_), ..))
     | Some(composer.InPool(workspace: Some(_), ..))
@@ -1164,24 +1169,31 @@ fn section_head(title: String, gloss: String) -> Element(message) {
   ])
 }
 
-/// The Code chip's list: the folder picker while "Choose a folder…" has it open,
-/// and the list of places otherwise.
+/// The Code chip's list: the folder picker while "Open folder…" has it open, and
+/// the list of places otherwise. Both sit inside `<loom-picklist>`, which moves
+/// focus with the arrow keys, closes the list on Escape and focuses the search
+/// field when the list opens, none of which the server need hear of.
 fn code_list(pane: Pane(message)) -> Element(message) {
-  case pane.state.browser {
+  // The list of places is the default; the picker takes its place once it is open.
+  let body = case pane.state.browser {
     composer.Closed -> code_places(pane)
     composer.Reading(..) | composer.Browsing(..) | composer.Failed(_) ->
       picker(pane)
   }
+
+  element.element("loom-picklist", [], [body])
 }
 
-/// The list of places: a search field, then the sections in their fixed order.
-/// Rows the search does not match are not drawn, nor are headings left with no
-/// row. A search that matches nothing says so.
+/// The list of places: a search field, then the folders, the way to open another
+/// and the executors and pools in their fixed order. Rows the search does not
+/// match are not drawn, nor are headings left with no row. A search that matches
+/// nothing says so.
 fn code_places(pane: Pane(message)) -> Element(message) {
-  let needle = string.lowercase(pane.state.search)
-  let sections =
+  let needle = string.lowercase(string.trim(pane.state.search))
+  let choices = composer.choices(pane.state, pane.offers)
+  let folders = folder_groups(pane, choices)
+  let elsewhere =
     list.flatten([
-      folder_section(pane, needle),
       other_folders(pane, needle),
       list.flat_map(pane.offers.cards.placements.executors, fn(each) {
         executor_section(pane, needle, each)
@@ -1195,31 +1207,201 @@ fn code_places(pane: Pane(message)) -> Element(message) {
     [
       attribute.class("pop"),
       attribute.class("wide"),
+      attribute.class("places"),
       attribute.role("listbox"),
       attribute.aria_label("Where the code is"),
     ],
+    list.flatten([
+      [search_field(pane)],
+      folders,
+      [opener(pane)],
+      elsewhere,
+      nothing_note(pane, needle, folders, elsewhere),
+    ]),
+  )
+}
+
+/// The search field, in a form so that Enter is a submit the server hears. The
+/// field is uncontrolled: the person's text is not drawn back into it.
+fn search_field(pane: Pane(message)) -> Element(message) {
+  html.form(
     [
-      html.div([attribute.class("search")], [
-        icon(Search),
-        html.input([
-          attribute.type_("search"),
-          attribute.class("search-field"),
-          attribute.aria_label("Search folders and workspaces"),
-          attribute.placeholder("Search folders and workspaces"),
-          attribute.autocomplete("off"),
-          event.on_input(pane.presses.search),
-        ]),
+      attribute.class("search"),
+      event.on("submit", decode.success(pane.presses.enter))
+        |> event.prevent_default,
+    ],
+    [
+      icon(Search),
+      html.input([
+        attribute.type_("search"),
+        attribute.class("search-field"),
+        attribute.aria_label("Search folders"),
+        attribute.placeholder("Search folders…"),
+        attribute.autocomplete("off"),
+        attribute.attribute("enterkeyhint", "go"),
+        event.on_input(pane.presses.search),
       ]),
-      ..case sections {
-        [] -> [
-          html.p([attribute.class("pop-foot")], [
-            html.text("Nothing matches that search."),
-          ]),
-        ]
-        some -> some
-      }
     ],
   )
+}
+
+/// The folders of this daemon: the remembered ones, the ones the daemon found
+/// under the home, and the owner's projects, each under its own heading and drawn
+/// only when it has a row. With another orchestrator as the agent they are that
+/// orchestrator's folders under the machine's name.
+fn folder_groups(
+  pane: Pane(message),
+  choices: composer.Choices,
+) -> List(Element(message)) {
+  // Another orchestrator's folders are named for the machine, since it has no home to
+  // search.
+  let recent_title = case pane.offers.typing {
+    composer.MayType -> "Recent"
+    composer.MayNotType -> "On " <> pane.offers.machine
+  }
+
+  list.flatten([
+    group(pane, recent_title, "", choices.recent),
+    group(pane, "Folders", "found under your home", choices.found),
+    seek_note(pane),
+    group(pane, "Projects", "", choices.projects),
+  ])
+}
+
+/// A heading and its folder rows, or nothing when there are none.
+fn group(
+  pane: Pane(message),
+  title: String,
+  gloss: String,
+  choices: List(composer.Choice),
+) -> List(Element(message)) {
+  case choices {
+    [] -> []
+    [_, ..] -> [
+      section_head(title, gloss),
+      ..list.map(choices, fn(each) { folder_row(pane, each) })
+    ]
+  }
+}
+
+/// One folder: its own name with where it lives dimmed beside it, so two folders
+/// of one name are told apart. Both are text nodes. The folder in force is marked.
+fn folder_row(pane: Pane(message), each: composer.Choice) -> Element(message) {
+  let current = pick(pane.target, Some(each.target))
+
+  // A found folder is pressed by its index among the hits the page holds, and
+  // every other row by the target the page drew.
+  let press = case each.found {
+    Some(index) -> pane.presses.found(index)
+    None -> pane.presses.choose(each.target)
+  }
+
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("opt"),
+      attribute.role("option"),
+      attribute.aria_selected(selected(current)),
+      event.on_click(press),
+    ],
+    [
+      icon(Folder),
+      html.span([attribute.class("opt-line")], [
+        html.span([attribute.class("opt-name")], [html.text(each.name)]),
+        html.small([attribute.class("opt-dim")], [html.text(each.parent)]),
+      ]),
+      ..check_if(current)
+    ],
+  )
+}
+
+/// What the search says of itself under the found folders, once something is
+/// typed: that the index is being built, that the daemon refused to build one, or
+/// that the build stopped before it had looked everywhere.
+fn seek_note(pane: Pane(message)) -> List(Element(message)) {
+  // Nothing is said until something is typed, since the rows already show the
+  // remembered folders.
+  let typing = case folder_browse.needle(pane.state.search) {
+    Ok(_) -> True
+    Error(Nil) -> False
+  }
+
+  // Once something is typed, the note says what the index is doing or why it
+  // has nothing to rank.
+  case typing, pane.state.seek {
+    False, _ | True, composer.Unindexed -> []
+    True, composer.Indexing(before: None) -> [
+      html.p([attribute.class("pop-foot")], [
+        html.text("Indexing your folders…"),
+      ]),
+    ]
+    True, composer.Indexing(before: Some(_)) -> []
+    True, composer.Unindexable(..) -> [
+      html.p([attribute.class("pop-foot")], [
+        html.text(
+          "The folder list took too long to build. Type a path, or try again.",
+        ),
+      ]),
+    ]
+    True, composer.Indexed(index:, ..) ->
+      case index.reach {
+        folder_browse.Covered -> []
+        folder_browse.Stopped -> [
+          html.p([attribute.class("pop-foot")], [
+            html.text(
+              "Not every folder was searched. Type more of the name, or open a folder.",
+            ),
+          ]),
+        ]
+      }
+  }
+}
+
+/// The row that opens the folder picker, drawn only where a path may be typed,
+/// since the picker names a directory on the daemon serving the page.
+fn opener(pane: Pane(message)) -> Element(message) {
+  case pane.offers.typing {
+    composer.MayType ->
+      row(
+        pane,
+        Row(
+          label: "Open folder…",
+          detail: "Browse your folders",
+          glyph: Folder,
+          standing: Opens,
+        ),
+      )
+    composer.MayNotType -> element.none()
+  }
+}
+
+/// The sentence for a search that matches nothing: drawn when text was typed and
+/// neither the folders nor the other places have a row for it, and no search is
+/// still out that might find one.
+fn nothing_note(
+  pane: Pane(message),
+  needle: String,
+  folders: List(Element(message)),
+  elsewhere: List(Element(message)),
+) -> List(Element(message)) {
+  // A search that is out may still find a row, so it holds the note back.
+  let waiting = case pane.state.seek {
+    composer.Indexing(before: None) -> True
+    composer.Indexing(before: Some(_))
+    | composer.Unindexed
+    | composer.Indexed(..)
+    | composer.Unindexable(..) -> False
+  }
+
+  // The note is for text that matched no row anywhere and is not waiting for one.
+  case needle, folders, elsewhere, waiting {
+    "", _, _, _ | _, _, _, True | _, [_, ..], _, _ | _, _, [_, ..], _ -> []
+    _, [], [], False -> [
+      html.p([attribute.class("pop-foot")], [
+        html.text("Nothing matches that search."),
+      ]),
+    ]
+  }
 }
 
 // What a code row says: its words, a smaller line under them, and the target a
@@ -1238,40 +1420,6 @@ type Standing(message) {
 
   // The row cannot work, and says why in words.
   Unavailable(reason: String)
-}
-
-/// The folders on the agent's machine: those the page drew, then the one that
-/// asks for a typed path.
-fn folder_section(
-  pane: Pane(message),
-  needle: String,
-) -> List(Element(message)) {
-  let machine = pane.offers.machine
-  let folders =
-    list.map(pane.offers.folders, fn(path) {
-      Row(
-        label: listing.short_path(path),
-        detail: path,
-        glyph: Folder,
-        standing: Pressable(composer.Folder(path)),
-      )
-    })
-
-  // The picker is offered only where a path may be typed, since both name a
-  // directory on the daemon serving the page.
-  let typed = case pane.offers.typing {
-    composer.MayType -> [
-      Row(
-        label: "Choose a folder…",
-        detail: "Browse your folders",
-        glyph: Folder,
-        standing: Opens,
-      ),
-    ]
-    composer.MayNotType -> []
-  }
-
-  section(pane, needle, "On " <> machine, "", list.append(folders, typed))
 }
 
 /// The folders of this daemon, when another orchestrator is the agent: one
@@ -1643,7 +1791,7 @@ type Walk {
 }
 
 /// The folder picker (protocol-change/132), drawn in the Code chip's place while
-/// "Choose a folder…" has it open. It draws what the page holds of the daemon's
+/// "Open folder…" has it open. It draws what the page holds of the daemon's
 /// answer: a breadcrumb, the child directories as rows, and the ways out. Every
 /// directory's name is a text node, and every press carries an index or a depth
 /// the server built, which the composer checks against its own listing.
@@ -1928,7 +2076,10 @@ fn footer(pane: Pane(message), standing: Use) -> Element(message) {
 /// The glyph for a target: a folder, or a chip for a registered workspace.
 fn code_icon(target: Target) -> Icon {
   case target {
-    composer.Folder(_) | composer.TypedFolder | composer.Picked(_) -> Folder
+    composer.Folder(_)
+    | composer.TypedFolder
+    | composer.Picked(_)
+    | composer.Project(_) -> Folder
     composer.OnExecutor(..) -> Cpu
     composer.InPool(..) -> Pool
   }

@@ -240,7 +240,7 @@ pub fn the_owner_opens_on_the_composer_test() {
   // the sentence says so.
   assert string.contains(
     html,
-    "Code</span><span class=\"place-chip-value\">/src/weft",
+    "Code</span><span class=\"place-chip-value\">weft",
   )
   assert string.contains(html, "<b>/src/weft</b>")
   assert string.contains(
@@ -331,9 +331,10 @@ pub fn the_code_list_has_folders_executors_and_pools_test() {
   let html = drawn(model)
 
   assert string.contains(html, "aria-label=\"Where the code is\"")
-  assert string.contains(html, "On laptop")
-  assert string.contains(html, "/src/weft")
-  assert string.contains(html, "Choose a folder…")
+  assert string.contains(html, "Recent")
+  assert string.contains(html, ">weft<")
+  assert string.contains(html, ">/src<")
+  assert string.contains(html, "Open folder…")
 
   // `exec` reported a workspace, and `gpu` is down: one disabled row, with the
   // reason in words.
@@ -440,9 +441,9 @@ pub fn the_search_narrows_every_section_test() {
   let assert Ok(#(_, list_html)) =
     string.split_once(drawn(model), "aria-label=\"Where the code is\"")
 
-  assert string.contains(list_html, "/src/weft")
+  assert string.contains(list_html, ">weft<")
   assert !string.contains(list_html, "exec · repo")
-  assert !string.contains(list_html, "Choose a folder…")
+  assert string.contains(list_html, "Open folder…")
 
   let model = run(model, compose(composer.Searched("zzz")))
   assert string.contains(drawn(model), "Nothing matches that search.")
@@ -618,9 +619,10 @@ pub fn every_composer_handler_is_beneath_the_table_region_test() {
   }
   assert list.all(keys, beneath)
 
-  // One input handler, the search's, and one submit, the form's.
+  // One input handler, the search's, and two submits: the search's, for Enter,
+  // and the form's.
   assert list.count(keys, string.ends_with(_, "\ninput")) == 1
-  assert list.count(keys, string.ends_with(_, "\nsubmit")) == 1
+  assert list.count(keys, string.ends_with(_, "\nsubmit")) == 2
 }
 
 // The sidebar groups the sessions by what each needs, tags each with the machine
