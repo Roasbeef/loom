@@ -13,9 +13,10 @@
 //// 2. `read` asks the registry for the caller's authority over the session,
 ////    afresh and never from the request. A session the caller does not hold is
 ////    refused as an unknown one is.
-//// 3. `reserved` takes one of the credential's brief reads, since a timeline
-////    read costs the session a bounded walk of its records as a brief does, and
-////    one allowance bounds both.
+//// 3. `brief_door.reserved` takes one of the credential's brief reads. A timeline
+////    read costs the session a scan of up to 2,000 records where a brief scans
+////    80, so sharing the allowance bounds how many scans a credential starts and
+////    not how heavy each is; slice 1 records the measured time.
 //// 4. `read` then asks the resident's peer endpoint for the page. A saved
 ////    session is refused as not running, because the daemon never opens one for
 ////    a read.
@@ -36,6 +37,7 @@ import client/peer_mail
 import core/json.{type JsonValue}
 import gleam/option.{type Option}
 import gleam/result
+import web_view/span_feed
 import web_view/timeline_feed
 
 /// Reads a session's timeline page as the reply object `{"timeline": {...}}`.
@@ -56,6 +58,56 @@ pub fn read(
   use Nil <- result.try(brief_door.reserved(allowance))
   use endpoint <- result.try(attention_door.endpoint_of(reach, session))
   attention_door.call(endpoint, peer_mail.SessionTimeline(before, limit))
+}
+
+/// Reads one span's lines as the reply object `{"span": {...}}`, with the
+/// authority and the allowance a timeline read has.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // timeline_door.read_span(reach, allowance, "0198...", "0198...", 12, 40)
+/// ```
+pub fn read_span(
+  reach: Reach(instance),
+  allowance: Allowance,
+  session: String,
+  last: String,
+  from_seq: Int,
+  to_seq: Int,
+) -> Result(JsonValue, Refusal) {
+  use _authority <- result.try(attention_door.held(reach, session))
+  use Nil <- result.try(brief_door.reserved(allowance))
+  use endpoint <- result.try(attention_door.endpoint_of(reach, session))
+  attention_door.call(endpoint, peer_mail.SessionSpan(last, from_seq, to_seq))
+}
+
+/// Reads one span's lines as the typed value the page draws, for a caller in this
+/// process. A reply the page's decoder cannot read is `unavailable`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // timeline_door.read_span_typed(reach, allowance, "0198...", "0198...", 12, 40)
+/// ```
+pub fn read_span_typed(
+  reach: Reach(instance),
+  allowance: Allowance,
+  session: String,
+  last: String,
+  from_seq: Int,
+  to_seq: Int,
+) -> Result(span_feed.Feed, Refusal) {
+  use reply <- result.try(read_span(
+    reach,
+    allowance,
+    session,
+    last,
+    from_seq,
+    to_seq,
+  ))
+  span_feed.decode(reply)
+  |> result.replace_error(Refusal("unavailable", "The span could not be read."))
 }
 
 /// Reads a session's timeline as the typed value the page draws, for a caller in

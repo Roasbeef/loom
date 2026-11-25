@@ -141,6 +141,7 @@ import web_view/review_feed
 import web_view/saved_attention
 import web_view/session_brief
 import web_view/sessions as listed_sessions
+import web_view/span_feed
 import web_view/thread_send
 import web_view/timeline_feed
 import web_view/tool_result
@@ -431,6 +432,11 @@ pub type HomeAttachment(instance) {
     /// its own.
     timeline: fn(String, Option(Int), Int) ->
       Result(timeline_feed.Feed, attention_door.Refusal),
+    /// One span's lines as the page's credential may read them (`home_span`,
+    /// protocol-change/134), spending the brief allowance and asking the
+    /// resident's own Agency actor, so a page runs it in a task of its own.
+    span: fn(String, String, Int, Int) ->
+      Result(span_feed.Feed, attention_door.Refusal),
     /// The daemon's own sessions directory, which deleting a session removes
     /// the database family from (`manager.delete_session`). It is the daemon's
     /// value and never a page's, and only the owner's fresh home may reach it
@@ -998,6 +1004,7 @@ fn home_upgrade(
             ),
             brief: home_brief(config, state.registry, grant.credential),
             timeline: home_timeline(config, state.registry, grant.credential),
+            span: home_span(config, state.registry, grant.credential),
             sessions_directory: state.sessions_directory,
             state_root: state.state_root,
             create: fn(principal, request, scope) {
@@ -3575,6 +3582,7 @@ fn control(
             | protocol.ReadApprovals(..)
             | protocol.SessionBrief(..)
             | protocol.SessionTimeline(..)
+            | protocol.SessionSpan(..)
             | protocol.ReviewSession(..)
             | protocol.CloseFind(..)
             | protocol.DismissStuck(..)
@@ -3633,6 +3641,7 @@ fn control_use(command: protocol.Command) {
     | protocol.ReadApprovals(..)
     | protocol.SessionBrief(..)
     | protocol.SessionTimeline(..)
+    | protocol.SessionSpan(..)
     | protocol.ReviewSession(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
@@ -3883,6 +3892,26 @@ fn dispatch(
         |> result.map_error(attention_refusal),
       )
       within_frame(reply_to, "sessions.timeline", page)
+    }
+
+    // A span's lines are read like the timeline: they refuse in words and spend
+    // the credential's brief allowance (`timeline_door`, protocol-change/134).
+    protocol.SessionSpan(session, last, from_seq, to_seq, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use span <- result.try(
+        timeline_door.read_span(
+          attention_reach(config, state.registry, digest),
+          brief_allowance(config, digest),
+          session,
+          last,
+          from_seq,
+          to_seq,
+        )
+        |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "sessions.span", span)
     }
 
     // The review is a read that refuses in words, like the attention reads, and
@@ -5743,6 +5772,7 @@ fn dispatch_class(
     | protocol.ReadApprovals(..)
     | protocol.SessionBrief(..)
     | protocol.SessionTimeline(..)
+    | protocol.SessionSpan(..)
     | protocol.ReviewSession(..)
     | protocol.CloseFind(..)
     | protocol.DismissStuck(..)
@@ -7604,6 +7634,33 @@ pub fn home_timeline(
       session,
       before,
       limit,
+    )
+  }
+}
+
+/// One span's lines as the credential may read them, for a home page
+/// (`timeline_door.read_span_typed`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_span(config, registry, digest)("0198...", "0198...", 12, 40)
+/// ```
+@internal
+pub fn home_span(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(String, String, Int, Int) ->
+  Result(span_feed.Feed, attention_door.Refusal) {
+  fn(session, last, from_seq, to_seq) {
+    timeline_door.read_span_typed(
+      attention_reach(config, registry, digest),
+      brief_allowance(config, digest),
+      session,
+      last,
+      from_seq,
+      to_seq,
     )
   }
 }

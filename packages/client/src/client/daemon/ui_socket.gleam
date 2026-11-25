@@ -986,6 +986,7 @@ pub fn upgrade_home(
   // the page's submit is admitted by the rule that admits the message form.
   let brief_of = attachment.brief
   let timeline_of = attachment.timeline
+  let span_of = attachment.span
   let home_attention =
     home_attention_capability(
       attachment.principal,
@@ -1016,6 +1017,12 @@ pub fn upgrade_home(
         timeline: fn(session, before, limit, deliver) {
           read_task(deliver, fn() {
             timeline_of(session, before, limit)
+            |> result.map_error(fn(refusal) { refusal.words })
+          })
+        },
+        span: fn(session, last, from_seq, to_seq, deliver) {
+          read_task(deliver, fn() {
+            span_of(session, last, from_seq, to_seq)
             |> result.map_error(fn(refusal) { refusal.words })
           })
         },

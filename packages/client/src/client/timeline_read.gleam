@@ -7,8 +7,19 @@
 //// and writes nothing. It scans the newest `scan_cap` records of main's branch,
 //// cuts them with `session_view/timeline`, and answers one bounded page of the
 //// cards, newest page first, with a cursor for the older ones and the span still
-//// open. A strand longer than the scan starts its cards inside a turn, and the
-//// first card it can make says so by having `turn_seq` zero.
+//// open.
+////
+//// ## A sliding window and what stays stable
+////
+//// A strand longer than the scan is cut from a window that slides with each new
+//// record, so the cut starts at a different record on each read. A card's
+//// `from_seq` is stable only after the window's first hard boundary: a prompt, an
+//// answer, an ask or a compaction closes a span whatever came before it, so the
+//// cards from there on are the cards a read of the whole strand would make. The
+//// cards before that boundary depend on where the window began (a command card
+//// needs three steps and the cap counts from the start), so they are not offered
+//// and a `before` cursor never points into them. A strand that fits the window is
+//// cut whole and every card is offered.
 ////
 //// ## How a read runs
 ////
@@ -21,9 +32,12 @@
 ////
 //// ## What a card claims
 ////
-//// Every fact comes from a record. Nothing a model wrote is in a card, and the
-//// strings a card holds are marked untrusted for the page
-//// (`web_view/timeline_feed`).
+//// Every fact comes from a record, and no summarizer's words are in a card. A
+//// command, a path, a sub-agent's purpose and the first words of a prompt or an
+//// answer are text an agent, a tool or a person wrote, so the strings a card holds
+//// are marked untrusted for the page (`web_view/timeline_feed`), and each is
+//// clipped in bytes, so a card is a few kilobytes at most and `fit` can always
+//// keep one.
 
 import core/entry.{type Entry}
 import core/json.{type JsonValue}
@@ -93,7 +107,34 @@ pub fn of_records(
   let cut = timeline.cut(records, timeline.default_step_limit)
   let wanted = int.clamp(limit, 1, timeline_feed.max_cards)
 
-  fit(page(cut, before, wanted))
+  fit(page(stable(cut, list.length(records) >= scan_cap), before, wanted))
+}
+
+/// The cards the window makes that a longer read would make too. A window that
+/// ended at the scan's cap is cut mid-strand, so the cards before its first hard
+/// boundary are left out; a window that holds the whole strand keeps them all.
+fn stable(cut: timeline.Cut, truncated: Bool) -> timeline.Cut {
+  // Only a window that was cut short has an unstable start.
+  case truncated {
+    True ->
+      timeline.Cut(
+        ..cut,
+        cards: list.drop_while(cut.cards, fn(card) { !hard(card.kind) }),
+      )
+    False -> cut
+  }
+}
+
+/// Whether a card closes on a record that closes a span whatever came before it.
+fn hard(kind: timeline.Kind) -> Bool {
+  // A command, a result and plain work depend on the steps and the cap before.
+  case kind {
+    timeline.Prompted
+    | timeline.Answered
+    | timeline.Asked
+    | timeline.Compacted -> True
+    timeline.Ran | timeline.Reported | timeline.Worked -> False
+  }
 }
 
 /// Main's newest `scan_cap` records of every kind, oldest first, or none when
@@ -143,14 +184,17 @@ fn page(cut: timeline.Cut, before: Option(Int), wanted: Int) -> Feed {
   )
 }
 
-/// Sheds the oldest cards until the reply fits, moving the cursor to the oldest
-/// card kept so the shed ones are still reachable.
+/// Sheds the oldest cards until the reply fits, keeping the newest one, and
+/// moves the cursor to the oldest card kept so the shed ones stay reachable. A
+/// card is a few kilobytes at most, so one card and the open span always fit the
+/// bound together with `timeline_feed.feed_bytes`; the open span is dropped
+/// before the last card would be.
 fn fit(feed: Feed) -> Feed {
   let size = string.byte_size(json.to_string(timeline_feed.to_json(feed)))
 
-  // A reply within the bound is sent whole.
+  // A reply within the bound is sent whole, and one card is never shed.
   case size <= timeline_feed.feed_bytes, feed.cards {
-    True, _ | _, [] -> feed
+    True, _ | _, [_] | _, [] -> feed
     False, [_, ..kept] ->
       fit(
         timeline_feed.Feed(..feed, cards: kept, older: case kept {
