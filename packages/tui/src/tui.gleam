@@ -996,7 +996,7 @@ pub fn new_model_with_clock(
       stamp:,
       build_notice: [],
       activity_revision: 0,
-      ask_results: 0,
+      newest_ask_seq: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
       record_cache_epoch: 0,

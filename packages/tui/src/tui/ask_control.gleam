@@ -97,7 +97,8 @@ fn poll(model: Model, host: job.Daemon) -> Model {
   // ask before its result is committed and the owner should not wait out the
   // rest to see the question. The count is the session's, so it holds however
   // the entry reached the terminal and however short the run was.
-  let board = ask_board.ask_committed(model.view.asks, model.shared.ask_results)
+  let board =
+    ask_board.ask_committed(model.view.asks, model.shared.newest_ask_seq)
 
   // A board that thinks an answer is on its way while the control request is
   // empty lost its reply, so it rests as a failed read would.

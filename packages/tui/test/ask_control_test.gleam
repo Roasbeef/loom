@@ -386,7 +386,7 @@ pub fn a_committed_ask_result_cuts_the_polls_rest_short_test() {
   let ended =
     tui_model.Model(
       ..resting,
-      shared: session_model.Shared(..resting.shared, ask_results: 1),
+      shared: session_model.Shared(..resting.shared, newest_ask_seq: 7),
     )
 
   // A rest nobody cut short starts no read.

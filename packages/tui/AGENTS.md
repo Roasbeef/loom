@@ -414,10 +414,12 @@ Five things break if changed carelessly.
   `ask_control.failed` through `finish_control_failure` while `Board.phase` is
   `Sending`. A read that counts no open ask rests `idle_rest_ms` (15 s), one
   that counts an ask `rest_ms` (4 s), and a committed `ask` tool result cuts
-  either short (`ask_board.ask_committed` compares `Shared.ask_results`, which
-  `event_fold` bumps for each such entry, with the count the board last acted
-  on; the run's strand phase is not used, because a short run is never seen
-  running); a `code_mode` ask waits out the rest. A reply for a session the
+  either short (`ask_board.ask_committed` compares `Shared.newest_ask_seq`, the
+  highest sequence of an `ask` tool result in the latest capture's window on any
+  strand, with the value the board last acted on). The run's strand phase is not
+  used, because a short run is never seen running. A `code_mode` ask, a peer's
+  ask, and any ask on a terminal with no session channel wait out the rest. A
+  reply for a session the
   terminal left clears the stale card with
   a repaint, and quit cancels a running read (`submit.quit`). A failed read
   rests ten seconds and says nothing, and a read that

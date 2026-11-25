@@ -742,7 +742,7 @@ No single key sends a decision.
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:320`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
-| Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:725`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:90`) is a `session_view` change, no wire change |
+| Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:717`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:90`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
 | Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:437`), `money` (`session_view/transcript_lines.gleam:4458`), `footer` (`session_view/context_view.gleam:432`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:552`) |

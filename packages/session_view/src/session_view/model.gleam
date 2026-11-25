@@ -503,14 +503,16 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// Bumped by operator or traffic activity (`mark_activity`); idle pacing
     /// reads it.
     activity_revision: Int,
-    /// How many results of the `ask` tool the held records contain: a pushed
-    /// entry adds one, and a capture or snapshot recounts. The tool creates
-    /// the ask before its result is committed, so a count that moved means an
-    /// ask may now be open. A reader keeps the count it last acted on and
-    /// compares, which holds however fast the run was and however the entry
-    /// arrived. The strand roster and the pushed phases are display labels
+    /// The sequence number of the newest `ask` tool result any strand has
+    /// committed, as the latest capture's window shows it, or zero before
+    /// any. It only rises. The tool creates the ask before its result is
+    /// committed, so a value that moved means an ask may now be open. A
+    /// reader keeps the value it last acted on and compares. It is read from
+    /// the capture's window, which covers every strand and does not follow
+    /// the operator's scrolling, and only a lane-attached terminal receives
+    /// captures. The strand roster and the pushed phases are display labels
     /// that a short run can skip, so they cannot stand in for it.
-    ask_results: Int,
+    newest_ask_seq: Int,
     /// Whether the last connection drain stopped at its batch rather than
     /// at an empty buffer, so the mailbox may still hold frames whose wakes
     /// were already spent on earlier ticks (`inbound.drain_connection`).
@@ -968,20 +970,6 @@ pub fn invalidate_frame(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   Shared(..shared, frame_revision: shared.frame_revision + 1)
-}
-
-/// Counts one committed `ask` result by bumping `ask_results`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let shared = session_model.note_ask_result(shared)
-/// ```
-@internal
-pub fn note_ask_result(
-  shared: Shared(socket, recorder, source, replay_source),
-) -> Shared(socket, recorder, source, replay_source) {
-  Shared(..shared, ask_results: shared.ask_results + 1)
 }
 
 /// Records operator or traffic activity by bumping `activity_revision`.

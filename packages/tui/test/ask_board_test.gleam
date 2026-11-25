@@ -315,7 +315,7 @@ pub fn a_committed_ask_result_cuts_a_rest_short_and_waits_for_a_request_in_fligh
   let resting = ask_board.read_failed(ask_board.empty(), 0)
   let cut = ask_board.ask_committed(resting, 1)
   assert cut.phase == ask_board.ReadDue
-  assert cut.results_seen == 1
+  assert cut.ask_seen == 1
 
   // The same count again changes nothing, so a read that rests afterwards is
   // not cut short a second time for the one result.
