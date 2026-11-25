@@ -160,7 +160,7 @@ output (which can hold repository contents) goes to the provider. The
 protocol change states that, as insight-triage does.
 
 **Storage.** A new catalogue table, `catalogue_session_timeline`, keyed
-`(session_id, strand, from_seq)`, version 24 (schema file plus generated
+`(session_id, strand, from_seq)`, version 25 (schema file plus generated
 module, `make gen-sql`). Columns: `entry_id` (the first record), `to_seq`,
 `started_at`, `ended_at`, `kind` (closed word), `facts` (bounded JSON), `title`
 and `detail` (nullable), `model` (the catalogue entry that wrote them) and
@@ -187,9 +187,9 @@ touched.
 check · exit 2 · 3 files`, and the page says once "Titles are off: route
 `summarize` to a cheap model". Nothing else changes.
 
-## 5. The read: `sessions.timeline` (outline of protocol-change/133)
+## 5. The read: `sessions.timeline` (outline of protocol-change/134)
 
-The next free number is 133 on this tree. The proposal, in the 123 and 125
+Number 133 and catalogue version 24 belong to the own-worktree work (`sessions/own-worktree`), so this outline takes 134 and version 25; whichever lands second takes the next free number and version. The proposal, in the 123 and 125
 format, says:
 
 - **Affects:** one v2 control command, `sessions.timeline`; one in-process read
@@ -289,7 +289,7 @@ owner saw includes both today.
    cards for three and says whether they could tell what the agent did.
 1. **A read for running sessions, in the web view.** `sessions.timeline` from
    the resident session (no catalogue), deterministic words, the review and
-   update threads, "Open in transcript". Exit: protocol-change/133 accepted; a
+   update threads, "Open in transcript". Exit: protocol-change/134 accepted; a
    drive shows a 300-step turn as at most 12 cards; each card opens at its seq.
 2. **Write-set split in review.** Exit: a drive with two sessions in one folder
    shows each its own files first; a `bash`-made change appears in the second
