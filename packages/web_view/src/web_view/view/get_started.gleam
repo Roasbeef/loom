@@ -34,6 +34,9 @@ import web_view/get_started.{type Step}
 /// What the page is given to draw.
 pub type Offer(message) {
   Offer(
+    /// The status line's heading: whether the page's connection to the daemon
+    /// stands.
+    heading: String,
     /// The status line's words, from `get_started.model_words`.
     status: String,
     /// The steps, from `get_started.checklist`.
@@ -79,7 +82,7 @@ pub fn view(offer: Offer(message)) -> Element(message) {
         ),
       ]),
       html.div([attribute.class("setup-note"), attribute.role("note")], [
-        html.p([attribute.class("setup-title")], [html.text("Daemon ready")]),
+        html.p([attribute.class("setup-title")], [html.text(offer.heading)]),
         html.p([], [html.text(offer.status)]),
       ]),
       ..list.map(offer.steps, step_row(_, offer.new_project))

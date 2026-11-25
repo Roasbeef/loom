@@ -8015,6 +8015,10 @@ fn get_started_page(model: Model) -> Element(Msg) {
   let facts = setup_facts(model)
 
   get_started_view.view(get_started_view.Offer(
+    heading: case model.status {
+      Connected -> "Daemon ready"
+      Connecting | Ended(_) -> "Daemon not reachable right now"
+    },
     status: get_started.model_words(facts.models),
     steps: get_started.checklist(facts),
     new_project: case facts.making {
