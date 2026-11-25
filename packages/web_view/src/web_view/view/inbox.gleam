@@ -764,11 +764,14 @@ fn message_form(
 fn message_label(thread: Thread, kind: Kind) -> String {
   let name = inbox_rule.shown_name(thread)
 
-  // An approval or a failed run has its own control above the box.
+  // Only an approval has a control of its own above the box; a failed run is
+  // only named above it, so its message is the thread's one action.
   case kind {
-    inbox_rule.ApprovalPending | inbox_rule.Failed -> "Or message " <> name
-    inbox_rule.Working | inbox_rule.Idle | inbox_rule.Settled ->
-      "Message " <> name
+    inbox_rule.ApprovalPending -> "Or message " <> name
+    inbox_rule.Failed
+    | inbox_rule.Working
+    | inbox_rule.Idle
+    | inbox_rule.Settled -> "Message " <> name
   }
 }
 
