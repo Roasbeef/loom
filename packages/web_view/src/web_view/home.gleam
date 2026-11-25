@@ -762,6 +762,14 @@ pub type Folders {
     /// that leaves it, and checks the page and the owner again, whatever this page
     /// said.
     browse: fn(List(String), fn(folder_browse.Answer) -> Nil) -> Nil,
+    /// Starts the build of the index of folder names below the owner's home, for
+    /// the composer's folder search (protocol-change/132, the addendum on
+    /// searching). The argument is the remembered folders, whose parents the
+    /// daemon reads first. The answer is one bounded index or a refusal,
+    /// dispatched as `FolderIndexed`. The daemon builds it in a task of its own,
+    /// follows no link, checks the page and the owner, and treats the seeds as
+    /// hints, whatever this page said.
+    index: fn(List(String), fn(folder_browse.IndexAnswer) -> Nil) -> Nil,
   )
 }
 
@@ -1578,6 +1586,11 @@ pub type Msg {
   /// and no handler carries it; the composer applies it only if it is still
   /// waiting for that trail.
   FolderBrowsed(trail: List(String), answer: folder_browse.Answer)
+
+  /// The index of folder names for the composer's folder search arrived. It is
+  /// the effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it; the composer applies it only while a build is out.
+  FolderIndexed(answer: folder_browse.IndexAnswer)
 
   /// A read of the other orchestrators' first pages arrived, numbered by the read
   /// it answers. It is the effect's own message, dispatched from the daemon's
@@ -3297,6 +3310,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         None -> #(model, effect.none())
       }
 
+    // The index for the composer's folder search, dated by the page's clock. The
+    // composer drops one that arrives when no build is out.
+    FolderIndexed(answer:) ->
+      case model.start.folders {
+        Some(_) -> #(
+          Model(
+            ..model,
+            compose: composer.indexed(model.compose, answer, model.start.now()),
+          ),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
     // The projects' boards. An answer a newer read overtook is dropped, and so is
     // one for a page that lists no projects; a read that could not ask keeps the
     // boards the page has. A board with the revision the page already holds
@@ -4472,26 +4499,57 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
         )
       let model = Model(..model, compose:) |> after_agent(model.compose.agent)
 
-      // Translate composer update intent into home page side effects.
-      case intent {
-        composer.Stay -> #(model, effect.none())
-        composer.ReadPlacements -> reading_cards(model)
-        composer.Browse(trail:) -> browsing(model, trail)
-        composer.ReadAgents -> reading_offers(model, names_of(model))
-        composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
-        composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
-          founding(model, orchestrator, place, roles, prompt)
-        composer.Create(place:, name:, prompt:, roles:, agency:) -> #(
-          Model(..model, note: None),
-          creating(ask, place, name, creations.Private, roles, agency, prompt),
-        )
-        composer.Depart(path:) -> #(
-          Model(..model, departure: Some(path)),
-          effect.none(),
-        )
+      // The folder index is owed while the Code list is open and none is held, so
+      // it is asked in step with whatever else the message owed.
+      let #(compose, seeds) = case model.start.folders {
+        Some(_) -> composer.indexing(model.compose, offers(model, entries))
+        None -> #(model.compose, None)
+      }
+
+      let model = Model(..model, compose:)
+      let #(model, owed) = acted(model, ask, intent)
+
+      // With no index owed the composer's own effect is returned untouched.
+      case seeds {
+        Some(_) -> #(model, effect.batch([owed, indexing(model, seeds)]))
+        None -> #(model, owed)
       }
     }
     Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(model, effect.none())
+  }
+}
+
+/// Carries out what the composer said the page owes.
+fn acted(
+  model: Model,
+  ask: fn(
+    creations.Place,
+    String,
+    creations.Sharing,
+    creations.Roles,
+    agency_limits.AgencyLimits,
+    String,
+    fn(creations.Answer) -> Nil,
+  ) -> Nil,
+  intent: composer.Intent,
+) -> #(Model, Effect(Msg)) {
+  // Translate composer update intent into home page side effects.
+  case intent {
+    composer.Stay -> #(model, effect.none())
+    composer.ReadPlacements -> reading_cards(model)
+    composer.Browse(trail:) -> browsing(model, trail)
+    composer.ReadAgents -> reading_offers(model, names_of(model))
+    composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
+    composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
+      founding(model, orchestrator, place, roles, prompt)
+    composer.Create(place:, name:, prompt:, roles:, agency:) -> #(
+      Model(..model, note: None),
+      creating(ask, place, name, creations.Private, roles, agency, prompt),
+    )
+    composer.Depart(path:) -> #(
+      Model(..model, departure: Some(path)),
+      effect.none(),
+    )
   }
 }
 
@@ -4519,6 +4577,8 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
         here:,
         agents:,
         typing: composer.MayType,
+        projects: list.map(model.boards, fn(each) { each.workspace }),
+        now: model.start.now(),
       )
     composer.Orchestrator(name:) as agent ->
       case orchestrators.standing(model.machines, name) {
@@ -4533,6 +4593,8 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             here:,
             agents:,
             typing: composer.MayNotType,
+            projects: [],
+            now: model.start.now(),
           )
         orchestrators.Asking | orchestrators.Refusing(_) ->
           composer.Offers(
@@ -4545,6 +4607,8 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             here:,
             agents:,
             typing: composer.MayNotType,
+            projects: [],
+            now: model.start.now(),
           )
       }
   }
@@ -4855,6 +4919,21 @@ fn browsing(model: Model, trail: List(String)) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+  }
+}
+
+/// Asks the daemon for the folder index when the composer owes one, which is when
+/// it handed back seeds. At most one build is ever out, because the composer
+/// holds `Indexing` until the answer comes.
+fn indexing(model: Model, seeds: Option(List(String))) -> Effect(Msg) {
+  // Seeds mean the composer put a build out; a page with no folder capability
+  // never gets that far, so a missing one is answered with nothing.
+  case seeds, model.start.folders {
+    Some(held), Some(Folders(index:, ..)) -> {
+      use dispatch <- effect.from
+      index(held, fn(answer) { dispatch(FolderIndexed(answer)) })
+    }
+    Some(_), None | None, _ -> effect.none()
   }
 }
 
@@ -7885,6 +7964,8 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
       model: fn(model) { Composed(composer.ChoseModel(model)) },
       search: fn(text) { Composed(composer.Searched(text)) },
+      found: fn(index) { Composed(composer.ChoseFound(index)) },
+      enter: Composed(composer.Entered),
       browse: Composed(composer.OpenedBrowser),
       descend: fn(index) { Composed(composer.Descended(index)) },
       ascend: fn(depth) { Composed(composer.Ascended(depth)) },
