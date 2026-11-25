@@ -256,7 +256,14 @@ fn scanning() -> Effect(Msg) {
   let places =
     list.append(
       places_of(page, ".session-head .home-link", "Your sessions"),
-      places_of(page, ".session-head .home-admin", "People and invitations"),
+      list.append(
+        places_of(page, ".session-head .home-admin", "People and invitations"),
+        places_of(
+          page,
+          ".sidebar .setup-entry",
+          "What is set up and what is left",
+        ),
+      ),
     )
   let sessions =
     ffi_dom.query_selector_all(page, ".sidebar .session-open")

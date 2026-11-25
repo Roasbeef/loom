@@ -613,7 +613,7 @@ fn getting_started(page: Page(message)) -> Element(message) {
           html.button(
             [
               attribute.type_("button"),
-              attribute.class("folder"),
+              attribute.class("folder setup-entry"),
               attribute.title("What is set up and what is left"),
               event.on_click(press),
             ],
@@ -640,13 +640,16 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
         // nothing, so it is not offered, and it is still listed so that the rail's
         // shape does not move as work comes and goes.
         folder_element(
-          case count {
-            Some(0) ->
+          case count, folder {
+            // The Projects folder is where a project is made, so an empty one
+            // stays a button: its page holds the "New project" button.
+            Some(0), inbox_rule.Projecting -> folders.way
+            Some(0), _ ->
               case folders.way {
                 Pick(_) -> Text
                 Return | Text -> folders.way
               }
-            Some(_) | None -> folders.way
+            Some(_), _ | None, _ -> folders.way
           },
           folder,
           count,

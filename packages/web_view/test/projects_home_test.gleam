@@ -938,6 +938,9 @@ const hint_words = "also route a repository"
 
 pub fn the_rail_offers_get_started_on_a_fresh_owner_page_test() {
   assert string.contains(drawn(fresh_owner()), "Get started")
+
+  // The search switcher lists the entry as a page by this class.
+  assert string.contains(drawn(fresh_owner()), "setup-entry")
 }
 
 pub fn the_rail_offers_nothing_on_a_page_that_may_not_create_test() {
@@ -1043,6 +1046,19 @@ pub fn every_handler_with_the_hint_drawn_is_beneath_an_admitted_region_test() {
 
   assert string.contains(drawn(model), hint_words)
   assert list.all(keys, admitted)
+}
+
+pub fn an_empty_projects_folder_is_still_a_button_test() {
+  // The folder holds the "New project" button, so with no project it must stay
+  // pressable; the other empty folders are text.
+  assert string.contains(
+    drawn(fresh_owner()),
+    "<button aria-pressed=\"false\" class=\"folder \" type=\"button\"><span class=\"nm\">Projects</span>",
+  )
+  assert string.contains(
+    drawn(fresh_owner()),
+    "<div class=\"folder \"><span class=\"nm\">Finds</span>",
+  )
 }
 
 pub fn the_projects_empty_line_says_what_to_do_test() {
