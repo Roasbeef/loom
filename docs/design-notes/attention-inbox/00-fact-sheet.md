@@ -227,7 +227,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
   question{seq,text,options}, pull_request, failure, actions[CanAnswer|CanClose|CanRetry|CanPublish|CanStop]`
   (`session_view/project_board.gleam:107-189`). Board also carries `would` (what `observe` rules would have done), `rules`
   with verdicts, and source `notes` such as a rate-limit end time (`project_board.gleam:273-299`).
-- Gaps: `options` is decoded but the daemon writes `"options": []` always (`client/daemon/project_host.gleam:5114-4307`),
+- Gaps: `options` is decoded but the daemon writes `"options": []` always (`client/daemon/project_host.gleam:5231-4307`),
   and the worker tool has no options or recommendation field. Durable: yes (ledger). Not wired: `token_ceiling`
   has no consumer (`project-mode.md` "Known gaps"). Status: #1164 merged on 2026-11-02 (the handoff's "draft" heading was stale and is corrected in `docs/next.md`, "Project mode");
   "never run" lists publishing against real GitHub.

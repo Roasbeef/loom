@@ -11774,6 +11774,13 @@ ordinary top-level worker session per ticket assignment
   `JevFallback` records for what it leaves, and makes the offer row due so its next run hands
   the router what is still offered. `StartRequest.agent` carries the catalogue entry chosen for
   the ticket's origin trigger to `project_start.start_worker`.
+- A verdict over Jev (`projects.verdict` with `router` `jev`) is `client/project_jev_judge`: a
+  `project_judge.Judge` whose trial asks Jev under one rotation of the ticket order and hands the
+  trial to the router's decider when Jev abstains or fails. `project_judge.Decision.trial` carries
+  what the trial kept, `Measured.trials` gathers them, and `project_verdict.jev_report` reads them
+  through `project/jev_verdict`. `project_host.jev_resolved` announces the Jev pin with the
+  reported model before the verdict is concluded. `Board.decisions` is the board's newest routing
+  decisions, with who decided.
 - The template (protocol-change/106, "The template") is two modules and a section of
   `project_host`. `client/project_template` builds it: `base_commit` from the owner's `HEAD`,
   `cut_template_tree` under `.template.making`, `run_setup` through `worktrees.setup_runner`

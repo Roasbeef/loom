@@ -1261,7 +1261,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1877`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1888`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1869,7 +1869,7 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
 | `projects.labels` | yes | `project`, `rule` (strings, required) | `projects.labels` |
 | `projects.label` | no | `project`, `trigger` (strings, required), `label` (`accept` or `reject`) | `projects.label` |
-| `projects.verdict` | no | `project`, `rule` (strings, required), `lane` (`replay` or `live`, optional, `replay` by default) | `projects.verdict` |
+| `projects.verdict` | no | `project`, `rule` (strings, required), `lane` (`replay` or `live`, optional, `replay` by default), `router` (`model` or `jev`, optional, the daemon's `[project] router` by default) | `projects.verdict` |
 
 ```json
 {"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
@@ -1966,7 +1966,7 @@ prompt and the router model changed, and how many of the thirty labels a verdict
 On page zero `projects.board` also carries `would_have_done`, the
 newest 50 inferred messages that an `observe` rule recorded as work it would have done and did not,
 each `{trigger, source, actor, rule, text, link, at_ms}` (`link` is the issue, pull request or checks
-page, or `null`, and `text` is external), and `sources`, one record per configured source,
+page, or `null`, and `text` is external), `decisions`, the newest 20 routing decisions, each `{trigger, decision, at_ms, decider, ..}` where `decision` is `accepted`, `attached`, `resumed`, `ignored` or `would_accept`, `decider` is `model` or `jev`, a Jev decision adds `model`, `probability` (basis points, or `null`), `reason` (the likeliest decline reason of an `ignored`, else `null`) and `agent`, and a model decision adds `fallback`, the reason Jev left the trigger or `null`, and `sources`, one record per configured source,
 `{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode, verdict}]}`. `verdict`
 is `{state, words, labelled, needed, lane}`: `state` is `none`, `failing`, `stale` or `current`, `words`
 is a sentence saying what a passing verdict claims or what is missing, `labelled` is the triggers of
@@ -1992,7 +1992,7 @@ twenty recorded triggers of that rule that no one has labelled yet, newest first
 `text` is external. `projects.label` (`{project, trigger, label}` with `label` `accept` or `reject`)
 replies `{trigger, label}`. The label is an event of the project ledger and survives a restart, a later
 label of a trigger replaces the earlier, and a trigger no rule matched or the project does not hold is
-refused `bad_request`. `projects.verdict` (`{project, rule, lane}` with `lane` `replay` by default)
+refused `bad_request`. `projects.verdict` (`{project, rule, lane, router}` with `lane` `replay` by default and `router` the daemon's by default; `router` `jev` measures Jev first with the router for what Jev leaves, is live only, and is refused `bad_request` on the replay lane)
 measures the rule's labelled triggers with the evaluation instrument and records the finding. It is
 refused `bad_request`, with a sentence, below thirty labels or when no trigger is labelled `accept`, or none `reject`.
 
@@ -4976,7 +4976,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:740`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:750`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

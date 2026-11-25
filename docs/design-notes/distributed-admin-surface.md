@@ -50,8 +50,8 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:1681`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1662`).
+(`created_workspace`, `client/daemon/protocol.gleam:1687`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1668`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:96`). The web home is told only the names
@@ -179,7 +179,7 @@ serves both through `detached` (`client/remote/orchestrator_port.gleam:705`), th
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1626`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1633`) builds it
 from the registry, the movers and the executor host, the way it builds
 `catalogue_holds` (`client/daemon/main.gleam:1743`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a

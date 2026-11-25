@@ -888,3 +888,20 @@ costs one git-cow copy once per build, which copies the bytes where the file sys
 - `[jev]` has `api_key_env` (default `JEV_API_KEY`), `model` (default `jev-latest`) and `timeout_ms` (500 to 30000, default 3000). `[project]` gains `router`, `jev_min_probability` (51 to 100, default 80) and `[[project.agent]]`, whose entries name a profile or a model the file defines. A ticket's worker starts with the profile or model of the agent chosen for its origin trigger.
 
 **What it costs.** A ledger that holds a `jev_fallback` line cannot be read by an older build, as one that holds `AgentChosen` cannot. With `router = "jev"` the text of a message and the `use_for` of each agent leave the machine for the service, which is why the default is `"model"`. A daemon with `"jev"` and no key records `no_key` for each candidate it would have asked about, and nothing else changes. A restart between the pass and the end of its row asks the candidates again, so a trigger can carry more than one `jev_fallback` line.
+
+## Addendum: the board's decisions and the Jev verdict (2026-11-24)
+
+**Status**: PROPOSED, built in the fourth slice of [the routing design](../docs/design-notes/project-jev-routing.md). **Affects**: the `projects.board` reply by one additive field and the `projects.verdict` command by one optional field. No change to a ledger event, a host record, a worker's tools, the jail or a Part 1 interface.
+
+**The problem.** A Jev decision is in the ledger with its probabilities, and the owner has nowhere to read it, nor a way to measure Jev against the labels before the default moves.
+
+**What was considered.** Extending `Judgement` with the report was rejected: it is recorded once per decision and the report is of a run. Calling Jev for the replay lane was rejected: a replay serves the router's recorded answers and Jev has none, so a Jev verdict is live only. Gating on Jev's own agreement was rejected: Jev abstains by design, and what the project would run is Jev where it settles a trigger and the router elsewhere, so that composed decider is what `judge.judge` gates. Sweeping every bar was rejected: only the attach bar is configured, and the others belong to the request-shape version.
+
+**The decision.**
+
+- `projects.board`, on page zero, carries `decisions`: the newest 20 triggers a router or Jev routed, each `{trigger, decision, at_ms, decider}`. A trigger with a judgement is `decider: "jev"` and adds `model`, `probability` (basis points that decided it, or `null`), `reason` and `agent`. Any other is `decider: "model"` and adds `fallback`, the reason of the newest `jev_fallback` record for it, or `null`. An older client ignores the field. An entry carries no trigger text.
+- `projects.verdict` takes an optional `router`, `model` or `jev`, which is the daemon's `[project] router` when absent. `jev` is live only and is refused on the replay lane in words.
+- A Jev run asks Jev for each trial under one of three rotations of the ticket order, built from the state as it stood when the run began, and hands the trial to the router's decider when Jev abstains or fails. The run's report adds how the trials ended, coverage and agreement with the labels at each attach bar from 55 to 100 percent, computed from the recorded answers and so costing no request, and agreement with what the router recorded for each trigger, with up to 20 disagreements. It carries no trigger text. The service-health bar counts only `unavailable` and `invalid`.
+- The run announces the Jev form of the router pin with the model the service reported, before the finding is recorded, so the verdict is recorded under the pin that names that model. A run whose pin moved for another reason is refused, as a live run always was.
+
+**What it costs.** A Jev verdict spends up to one request per trial plus the router's own trials for what Jev leaves. The agreement with the router's record reads the tickets that exist at run time, so a trigger that arrived earlier is judged against a list it did not see. The agent Jev chooses is not measured, since the labels cannot judge it.
