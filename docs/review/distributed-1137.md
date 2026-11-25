@@ -654,3 +654,53 @@ A real lid close with a child running; the cause of defects 4 and 5; whether
 the 6 s reconnect preceded the box answering; eight executors on separate
 machines (all eight share the one box); untrusted microVM guests (blocked on
 #85); a session file large enough to need #1297's phase 1.
+
+## Criterion 1: the laptop daemon frozen (2026-11-24)
+
+The 2026-11-20 stand-in stopped the laptop daemon with SIGTERM, which loses its
+in-memory state; a sleeping laptop keeps it. This drive froze the daemon instead:
+`kill -STOP` on its `beam.smp` for ten minutes, then `kill -CONT`. A frozen
+process keeps its state and its distribution connections stay open but send
+nothing, which is how a sleeping laptop looks to the box. Source baseline
+`a8f5dc379` (origin/main), built on both machines; `loom deployment status`
+reported that build on all three nodes. The topology was the one above with the
+box orchestrator and executor e1 only. The full record is kept outside the
+repository with the earlier ones.
+
+**Result.** Pass. A parent on the laptop started one seeded child on the box
+(`on` set to `box`, `context` set to `my_workspace`) that committed every two
+minutes, ten commits. The daemon was stopped from 00:27:03Z to 00:37:03Z on
+2026-11-25. Five commits, `freeze 3` at 00:28:39Z to `freeze 7` at 00:36:52Z,
+landed strictly inside that window. The box logged `Node 'twolaptop@...' not
+responding ** Removing (timedout) connection` between the stop and the check
+two minutes later, kept both units active, and stayed near 700 of 3909 MB. The
+first `loom deployment status` after the resume, one second later, answered 3 of
+3. The laptop log has no warning or error line from the stop to five minutes
+after the resume, and no line about the clock. The parent then ran
+`agent_wait`, `remote_spawn.commits_applied` brought ten commits back, the
+parent fast-forward merged them and ran 40 tests OK, and the push from the
+laptop workspace to the local origin succeeded (`e6fba1e..f58694a`). Keyless
+counts were 0 for the provider key on e1 and 0 for any GitHub token on every
+node, before and after.
+
+The ACP client holding the parent exited with `conversation request timed out`
+during the freeze, as a client of a process that stops answering should. The
+session survived and `session/load` resumed it.
+
+**Defects from the 2026-11-19 drive, since fixed.** Defects 1 and 2 (the move's
+exit status and the provisioned rows), 3 (a moved session on the relayed page),
+4 (an unstated `context` is now refused for a remote spawn, protocol-change/129)
+and 6 (a seeded child's report now steers the merge away from untracked files)
+landed in #1325. Defect 5, the false "has ended", was a key of another page
+drawn as an ended one, fixed for session pages in #1325 and for the home and
+admin pages in #1347. Defect 7 is recovery working as designed. In this drive
+the child also added `__pycache__/` to its `.gitignore` in its first commit.
+
+### Not verified
+
+Still not a lid close: the network and Tailscale stayed up and the wall clock
+did not jump, so a new address after wake and a time warp are not exercised
+here. The one real sleep, on 2026-11-20, showed the link returning by itself
+four minutes after the wake. The exact moment the box declared the laptop down
+is bracketed to two minutes, the box log carrying no timestamps. The first
+status probe after the resume may itself have prompted the reconnection.

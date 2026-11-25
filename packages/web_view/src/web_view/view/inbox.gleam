@@ -115,6 +115,10 @@ pub type Offer(message) {
     back: message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
+    /// The Projects section (`web_view/view/projects`), drawn at the head of the
+    /// list while the "Projects" folder is the one chosen, and nowhere else. A
+    /// page that holds no projects capability passes none.
+    projects: Option(Element(message)),
     /// What "New session" sends, on a page that may create one, and nothing on
     /// a page that may not. It is drawn only when no thread is left.
     new_session: Option(message),
@@ -362,11 +366,18 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   }
 
   html.div([attribute.class("inbox-list")], [
-    nothing_waits(offer),
-    case offer.folder {
-      inbox_rule.Projecting ->
+    // In the Projects folder the section is the head of the list: it lists each
+    // project and the tickets that wait in it, so the tickets are not drawn a
+    // second time as a band, and the empty sentence is its own.
+    case offer.folder, offer.projects {
+      inbox_rule.Projecting, Some(section) -> section
+      _, _ -> nothing_waits(offer)
+    },
+    case offer.folder, offer.projects {
+      inbox_rule.Projecting, Some(_) -> element.none()
+      inbox_rule.Projecting, None ->
         projects_group(list.append(attention.tickets, attention.reviews))
-      _ ->
+      _, _ ->
         draw(
           NeedsPart,
           inbox_rule.NeedsYou,
@@ -697,7 +708,7 @@ fn compose(
       [
         html.section([attribute.class("inbox-section inbox-msg")], [
           html.h2([attribute.class("inbox-label")], [
-            html.text("Message this session"),
+            html.text(message_label(thread, kind)),
           ]),
           keyed.div([attribute.class("inbox-send")], [
             #(
@@ -744,6 +755,24 @@ fn message_form(
       delivery_choice(kind),
     ],
   )
+}
+
+/// The heading over the message box, as the final design words it: `Or message
+/// <name>` where the thread has a decision of its own above, and `Message
+/// <name>` for a thread whose only action is the message. The name is the
+/// session's, drawn as text.
+fn message_label(thread: Thread, kind: Kind) -> String {
+  let name = inbox_rule.shown_name(thread)
+
+  // Only an approval has a control of its own above the box; a failed run is
+  // only named above it, so its message is the thread's one action.
+  case kind {
+    inbox_rule.ApprovalPending -> "Or message " <> name
+    inbox_rule.Failed
+    | inbox_rule.Working
+    | inbox_rule.Idle
+    | inbox_rule.Settled -> "Message " <> name
+  }
 }
 
 /// What the box says before anything is typed. The words say what a message does
@@ -924,12 +953,13 @@ fn form_field() -> decode.Decoder(#(String, String)) {
 /// session is doing in the page's own word, or in the words the data gives when
 /// it dates the turn (`working, 14 min into a turn`).
 fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
-  let base = inbox_rule.shown_name(thread)
+  let base = inbox_rule.shown_name(thread) <> " · main"
 
-  // A row with no workspace has no third part.
+  // A row with no workspace has no project part. The project is the workspace's
+  // directory name, as the final design's eyebrow draws it, and not the path.
   let placed = case thread.workspace {
     "" -> base
-    workspace -> base <> " · " <> heading.shorten_path(workspace)
+    workspace -> base <> " · " <> project_name(workspace)
   }
 
   // What the data says the session is doing replaces the kind's own word, and a
@@ -941,6 +971,16 @@ fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
     Some(words), _ -> placed <> " · " <> words
     None, Some(_) -> placed
     None, None -> placed <> " · " <> state_words(kind)
+  }
+}
+
+/// The project part of an eyebrow: the workspace's directory name, or `~` for the
+/// home directory itself, which would otherwise show the operating-system user's
+/// name.
+fn project_name(workspace: String) -> String {
+  case heading.shorten_path(workspace) {
+    "~" -> "~"
+    _ -> sessions.base_name(workspace)
   }
 }
 

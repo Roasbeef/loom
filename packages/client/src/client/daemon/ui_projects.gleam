@@ -20,7 +20,7 @@
 ////
 //// ## Flow
 ////
-//// `feed` → `boards` → `ticket_of` → `answered` → `closed` → `acted`
+//// `feed` → `boards` → `ticket_of` → `answered` → `closed` → `acted` → `proposal_for` → `made`
 ////
 //// 1. `feed` is the daemon's offer to a page, or nothing when there is no
 ////    project table.
@@ -32,11 +32,15 @@
 
 import client/daemon/project_book
 import client/daemon/project_host
+import client/daemon/project_settings_wire
 import client/daemon/project_start
+import client/project_overrides
+import client/project_proposal
 import core/json.{type JsonValue}
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 import gleam/result
+import web_view/creations
 import web_view/projects
 
 /// What the daemon reads and does for a page's projects.
@@ -54,6 +58,12 @@ pub type Feed {
     stop: fn(String, String) -> projects.Acted,
     /// A request for a new worker on a stalled ticket.
     retry: fn(String, String) -> projects.Acted,
+    /// The proposal for a folder the socket has already judged: what the table
+    /// in `project_proposal` reads from the folder's own files. Nothing runs.
+    propose: fn(String) -> projects.Proposal,
+    /// A project for a folder the socket has already judged, with the check and
+    /// setup the owner confirmed. A folder that has a project keeps it.
+    create: fn(String, Option(String), Option(String)) -> projects.Creation,
   )
 }
 
@@ -79,6 +89,10 @@ pub fn feed(control: Option(project_start.Control)) -> Option(Feed) {
       },
       retry: fn(project, ticket) {
         acted(held, project, ticket, project_host.retry)
+      },
+      propose: proposal_for,
+      create: fn(workspace, check, setup) {
+        made(held, workspace, check, setup)
       },
     )
   })
@@ -244,4 +258,111 @@ pub fn answer_of(
     -> projects.Refused("unanswered")
     Error(project_host.NotAccepted(..)) -> projects.Refused("bad_request")
   }
+}
+
+/// The proposal for a folder, as the `projects.propose` command words it for a
+/// project's workspace. The folder was judged by the socket, which is the one
+/// place that decides which folders the owner's page may name.
+fn proposal_for(workspace: String) -> projects.Proposal {
+  project_proposal.read(workspace)
+  |> project_proposal.propose
+  |> project_settings_wire.proposals_json("", _)
+  |> projects.Proposed
+}
+
+/// The project for a folder, and then the settings the owner confirmed. A folder
+/// that already has a running project is reported as it is, with nothing made
+/// and nothing written, because the commands the owner confirmed were proposed
+/// for a new project and must not replace the ones a project already holds.
+/// Otherwise the two are separate writes, as they are for `loom project init`,
+/// so the project is reported as made when its settings were refused, with the
+/// daemon's words. The name is the folder's, which is what the catalogue lists
+/// the project by.
+fn made(
+  control: project_start.Control,
+  workspace: String,
+  check: Option(String),
+  setup: Option(String),
+) -> projects.Creation {
+  let held =
+    list.find(project_book.all(control.book), fn(handle) {
+      handle.workspace == workspace
+    })
+
+  // A running project for the folder is reported and left alone; any other
+  // folder is made, and only then are its confirmed commands stored.
+  case held {
+    Ok(handle) -> projects.Existing(handle.project)
+    Error(Nil) ->
+      // The control makes the project, or refuses in its own words.
+      case control.create(workspace, creations.folder(workspace)) {
+        Error(words) -> projects.MakeFailed(words)
+        Ok(created) ->
+          projects.Made(
+            project: created.project,
+            settled: settled(control, created.project, check, setup),
+          )
+      }
+  }
+}
+
+/// Stores the confirmed commands for a project that now exists. Nothing
+/// confirmed stores nothing. The revision is the one read just now, and a write
+/// that finds it moved is refused as stale and reported in words.
+fn settled(
+  control: project_start.Control,
+  project: String,
+  check: Option(String),
+  setup: Option(String),
+) -> projects.Settled {
+  let wanted =
+    list.filter_map(
+      [
+        #(project_overrides.CheckKey, check),
+        #(project_overrides.SetupKey, setup),
+      ],
+      fn(each) {
+        option.to_result(each.1, Nil)
+        |> result.map(fn(text) { #(each.0, text) })
+      },
+    )
+
+  // Each command is checked by the rules the file is checked by, so the words
+  // of a refusal are the file's.
+  case
+    list.try_map(wanted, fn(each) {
+      project_overrides.parse(each.0, [each.1])
+      |> result.map(project_overrides.Hold)
+    })
+  {
+    Error(words) -> projects.SettingsRefused(words)
+    Ok([]) -> projects.SettingsHeld
+    Ok(changes) ->
+      case store(control, project, changes) {
+        Ok(Nil) -> projects.SettingsHeld
+        Error(words) -> projects.SettingsRefused(words)
+      }
+  }
+}
+
+/// The write of the changes at the revision the project has now.
+fn store(
+  control: project_start.Control,
+  project: String,
+  changes: List(project_overrides.Change),
+) -> Result(Nil, String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("the project is not running"),
+  )
+  use read <- result.try(project_host.settings(handle))
+  project_host.change_settings(handle, read.revision, changes, None, "owner")
+  |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(failure) {
+    case failure {
+      project_host.StaleSettings ->
+        "the settings changed while the project was being made"
+      project_host.RefusedSettings(words:) -> words
+    }
+  })
 }
