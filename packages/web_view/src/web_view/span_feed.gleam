@@ -18,6 +18,7 @@
 
 import core/json.{type JsonValue}
 import gleam/list
+import gleam/option
 
 import gleam/result
 import session_view/span_lines
