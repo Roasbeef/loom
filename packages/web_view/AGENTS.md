@@ -518,7 +518,7 @@ page keys and nonces, and the relay into the session's gateway.
   socket admits its clicks and its one submit there as before, and the code
   picker's search is the one `input` the owner's socket now admits
   (`ui_socket.home_event`), beneath that region only. The folder picker
-  (protocol-change/132) replaces that list while "Choose a folder…" has it open:
+  (protocol-change/132) replaces that list while "Open folder…" has it open:
   `composer.State.browser` (`Closed`, `Reading`, `Browsing`, `Failed`), the messages
   `OpenedBrowser`, `Descended(index)`, `Ascended(depth)`, `ChosePicked` and
   `ClosedBrowser`, the intent `Browse(trail)`, `composer.browsed` (applies the
@@ -527,7 +527,21 @@ page keys and nonces, and the relay into the session's gateway.
   vocabulary (`Listing`, `Child`, `Cut`, `Refusal`, the bounds, `component_ok`,
   `trail_ok`, `below`, `above`); `Folders.browse` is the home's read, answered as
   `FolderBrowsed`. A press names an index into the listing the page holds, never a
-  path. Every row is a button whose
+  path.
+  The Code list is also a search (protocol-change/132, the addendum on searching):
+  `composer.State.seek` (`Unindexed`, `Indexing`, `Indexed`, `Unindexable`) holds one
+  `folder_browse.Index` of folder names that the daemon builds when the list opens
+  (`composer.indexing` returns the seeds to ask with and the state that says a build is
+  out; `composer.indexed` applies the answer dated by `Offers.now`, and the page asks
+  again after `folder_browse.index_ttl_ms`). A keystroke asks for nothing:
+  `folder_browse.rank` ranks the index in memory (exact name, prefix, contains,
+  shallower first, twenty). `composer.choices` makes the `Recent`, found `Folders` and
+  `Projects` rows, each a `Choice` with a name and a shortened parent, a found row
+  carrying the index of its hit; `ChoseFound(index)`, `Entered` (Enter in the field's
+  own form chooses the first row) and `Target.Project(workspace)`, offered only when
+  `Offers.projects` holds it. `Folders.index` is the home's read, answered as
+  `FolderIndexed`. The list is drawn inside `<loom-picklist>`, which moves the focus
+  with the arrow keys and closes on Escape in the browser. Every row is a button whose
   message carries a value the server built; the form's decoder (`new_session.fields`)
   takes exactly the name field and the one more field the chosen target needs. The
   composer creates through `Start.create` with `creations.Private`, so the server

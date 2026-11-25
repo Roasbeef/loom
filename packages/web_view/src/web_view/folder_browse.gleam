@@ -2,7 +2,7 @@
 //// walk the directories below the owner's home, what it answers, and the fixed
 //// words for each refusal (protocol-change/132).
 ////
-//// The composer's "Choose a folder…" draws a picker in the page, because a
+//// The composer's "Open folder…" draws a picker in the page, because a
 //// browser's file dialog cannot name a path on the daemon's machine. The picker
 //// needs the daemon to say which directories exist, and that lists the owner's
 //// files to a browser, so the request is narrow. The page never sends a path. It
@@ -16,6 +16,12 @@
 //// half that asks the filesystem is the daemon's, because only the host can say
 //// what a name resolves to.
 ////
+//// The picker also finds. The folder search (protocol-change/132, the addendum
+//// on searching) asks the daemon once for an index of the folder names below the
+//// home, and the page ranks that index in memory for each keystroke. The only
+//// browser text the search reads is the fragment, which `needle` judges here, and
+//// a hit is a trail the page keeps and names by index.
+////
 //// ## Flow
 ////
 //// `component_ok` and `trail_ok` → the daemon lists → `Listing` or `Refusal`
@@ -27,8 +33,19 @@
 ////    its depth against the depth bound, resolves the trail against the home, and
 ////    answers a `Listing` whose trail is the canonical one, or a `Refusal`.
 //// 3. `trail_text` writes a trail as the `~/` path the creation judges.
+////
+//// the daemon indexes once → `needle` → `rank`
+////
+//// 1. The daemon walks the home breadth first, bounded in depth, directories read,
+////    entries and time, and answers an `Index` of folder names.
+//// 2. `needle` turns the typed text into the lowercase fragment, or refuses a
+////    fragment too short to be worth ranking.
+//// 3. `rank` picks the best entries for the fragment, and `hit_trail` is the one
+////    place a found folder becomes a trail the creation judges.
 
+import gleam/int
 import gleam/list
+import gleam/order
 import gleam/string
 import session_view/text_hygiene
 
@@ -50,6 +67,35 @@ pub const shown_limit = 200
 
 /// The most bytes one name may hold, the filesystem's own bound.
 pub const name_limit = 255
+
+/// The fewest characters a search fragment may hold. One letter matches most of
+/// the home and says little.
+pub const needle_min = 2
+
+/// The most characters a search fragment may hold, the length the composer keeps
+/// of the search text.
+pub const needle_limit = 64
+
+/// The most hits one search shows.
+pub const find_limit = 20
+
+/// The most directories below the home the index lists. It is below
+/// `depth_limit`, so every entry is a trail a creation takes.
+pub const index_depth = 6
+
+/// The most directories one index build reads, which bounds its cost whatever the
+/// shape of the home. An index that reaches it says it stopped.
+pub const index_visit_limit = 20_000
+
+/// The most entries one index holds, which bounds its memory the same way.
+pub const index_entry_limit = 60_000
+
+/// The longest an index build may run, in milliseconds. It ends with what it has
+/// and says it stopped.
+pub const index_ms = 4000
+
+/// How long a page keeps an index before it asks for another, in milliseconds.
+pub const index_ttl_ms = 300_000
 
 /// The words on a name's row, and where it leads.
 pub type Child {
@@ -122,6 +168,47 @@ pub type Refusal {
 /// What a read of one directory gave: the listing, or why it was refused.
 pub type Answer =
   Result(Listing, Refusal)
+
+/// Whether an index build looked at every directory it was allowed to.
+pub type Reach {
+  /// The build ended because every directory within `index_depth` had been read.
+  Covered
+
+  /// The build stopped at `index_visit_limit` directories, `index_entry_limit`
+  /// entries or `index_ms`, so there may be more.
+  Stopped
+}
+
+/// One directory of the index.
+pub type Entry {
+  Entry(
+    /// The directory's trail below the home, outermost first, never empty. The
+    /// build walks real directories and follows no link, so it is also the
+    /// directory's canonical trail.
+    trail: List(String),
+    /// The directory's own name in lower case, kept so a keystroke compares
+    /// without lowering every name again.
+    lower: String,
+  )
+}
+
+/// The folder names below the home, as one bounded walk found them. The page holds
+/// it for `index_ttl_ms` and ranks it in memory for each keystroke.
+pub type Index {
+  Index(
+    /// The canonical home the entries lie below, which lets the page compare a
+    /// remembered folder's whole path with an entry's.
+    home: String,
+    /// The directories the build listed, shallowest first.
+    entries: List(Entry),
+    /// Whether the build looked everywhere it could.
+    reach: Reach,
+  )
+}
+
+/// What an index build gave: the index, or why the daemon would not build one.
+pub type IndexAnswer =
+  Result(Index, Refusal)
 
 /// Whether a name may be one component of a trail: not empty, not `.` or `..`, no
 /// slash, no control character or line break, no space at either end (a path is
@@ -231,5 +318,119 @@ pub fn refusal_words(refusal: Refusal) -> String {
     TooMany ->
       "That folder holds too many entries to list. Go up, or type the path of the folder."
     Unreadable -> "That folder cannot be read. Go up, or type a path."
+  }
+}
+
+/// The fragment a search looks for, from the text the person typed: trimmed,
+/// lowercase, a leading `~/` removed so a pasted path searches as the path below
+/// the home, a single line of at least `needle_min` and at most `needle_limit`
+/// characters. Anything else is `Error(Nil)`, so the page ranks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert folder_browse.needle("  Loom ") == Ok("loom")
+/// assert folder_browse.needle("~/code/app") == Ok("code/app")
+/// assert folder_browse.needle("l") == Error(Nil)
+/// ```
+pub fn needle(text: String) -> Result(String, Nil) {
+  let trimmed = string.trim(text) |> string.lowercase
+
+  // A leading `~/` names the home, so a pasted path searches the path below it.
+  let fragment = case string.starts_with(trimmed, "~/") {
+    True -> string.drop_start(trimmed, 2)
+    False -> trimmed
+  }
+
+  let length = string.length(fragment)
+
+  // A fragment is kept only if it is long enough to be worth ranking, short
+  // enough to be a name, and one line.
+  case
+    length >= needle_min
+    && length <= needle_limit
+    && text_hygiene.single_line(fragment) == fragment
+  {
+    True -> Ok(fragment)
+    False -> Error(Nil)
+  }
+}
+
+/// The index entries a fragment finds, best first, at most `find_limit`. An entry
+/// is found when its name holds the fragment; a fragment with a slash is looked
+/// for in the whole trail instead, so `code/app` finds the `app` below `code`.
+/// The order is an exact name, then a name that starts with the fragment, then one
+/// that holds it, and within a kind the shallower directory, then the trail
+/// alphabetically.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let entries = [folder_browse.Entry(["a", "loomy"], "loomy"), folder_browse.Entry(["loom"], "loom")]
+/// assert folder_browse.rank(entries, "loom") == [["loom"], ["a", "loomy"]]
+/// ```
+pub fn rank(entries: List(Entry), fragment: String) -> List(List(String)) {
+  let slashed = string.contains(fragment, "/")
+
+  list.filter_map(entries, fn(entry) {
+    // A slash makes the fragment a path, which is compared with the whole trail;
+    // otherwise only the directory's own name is.
+    let held = case slashed {
+      True -> string.lowercase(string.join(entry.trail, "/"))
+      False -> entry.lower
+    }
+
+    // An entry the fragment is not in is dropped, and the rest are ranked.
+    case kind(held, fragment) {
+      Ok(rank) ->
+        Ok(#(
+          rank,
+          list.length(entry.trail),
+          string.join(entry.trail, "/"),
+          entry.trail,
+        ))
+      Error(Nil) -> Error(Nil)
+    }
+  })
+  |> list.sort(fn(a, b) {
+    int.compare(a.0, b.0)
+    |> order.break_tie(int.compare(a.1, b.1))
+    |> order.break_tie(string.compare(a.2, b.2))
+  })
+  |> list.take(find_limit)
+  |> list.map(fn(found) { found.3 })
+}
+
+/// How well a name holds a fragment: 0 for the same, 1 for a start, 2 for any
+/// other place, and `Error(Nil)` for not at all.
+fn kind(held: String, fragment: String) -> Result(Int, Nil) {
+  case held == fragment, string.starts_with(held, fragment) {
+    True, _ -> Ok(0)
+    False, True -> Ok(1)
+    False, False ->
+      case string.contains(held, fragment) {
+        True -> Ok(2)
+        False -> Error(Nil)
+      }
+  }
+}
+
+/// The trail at an index of the trails the page holds, or `Error(Nil)` for an
+/// index that names none. This is the one place a found folder becomes a trail, so
+/// a press whose index the page did not draw reaches nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert folder_browse.hit_trail([["a", "b"]], 0) == Ok(["a", "b"])
+/// assert folder_browse.hit_trail([["a", "b"]], 1) == Error(Nil)
+/// ```
+pub fn hit_trail(
+  hits: List(List(String)),
+  index: Int,
+) -> Result(List(String), Nil) {
+  case index >= 0, list.drop(hits, index) {
+    True, [trail, ..] -> Ok(trail)
+    True, [] | False, _ -> Error(Nil)
   }
 }

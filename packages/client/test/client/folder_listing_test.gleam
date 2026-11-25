@@ -4,6 +4,7 @@
 //// refuses rather than cuts without saying.
 
 import client/daemon/folder_listing
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
@@ -272,4 +273,268 @@ pub fn a_canonical_trail_with_an_unsendable_name_is_refused_test() {
 
   assert folder_listing.list_in(home, ["shortcut"])
     == Error(folder_browse.NotAFolder)
+}
+
+fn clock() -> Int {
+  0
+}
+
+// The index of a home with the daemon's bounds and no seeds.
+fn indexed(home: String) -> folder_browse.Index {
+  folder_listing.index_in(home, [], folder_listing.limits, clock)
+}
+
+// The trails the fragment finds in an index, best first.
+fn found(index: folder_browse.Index, fragment: String) -> List(List(String)) {
+  folder_browse.rank(index.entries, fragment)
+}
+
+// The index lists real visible directories below the home and the ranking puts an
+// exact name first, then a name that starts with the fragment, then one that holds
+// it, the shallower first within a kind. A hidden folder, `Library`, a file, and
+// what a build-output folder holds are not listed, but a folder named like build
+// output is itself found.
+pub fn the_index_ranks_names_and_skips_what_a_creation_refuses_test() {
+  let home = owners_home("index-order")
+  make(home <> "/work/Loom")
+  make(home <> "/code/deep/inside/oldloom")
+  make(home <> "/loom-picker")
+  make(home <> "/loom")
+  make(home <> "/.hidden/loom")
+  make(home <> "/Library/loom")
+  make(home <> "/code/node_modules/loom")
+  make(home <> "/code/app")
+  let assert Ok(Nil) = simplifile.write(home <> "/loom.txt", "x") as "a file"
+
+  let index = indexed(home)
+  assert found(index, "loom")
+    == [
+      ["loom"],
+      ["work", "Loom"],
+      ["loom-picker"],
+      ["code", "deep", "inside", "oldloom"],
+    ]
+  assert index.reach == folder_browse.Covered
+  assert index.home == home
+
+  // The build-output folder is an entry itself and nothing below it is.
+  assert found(index, "node_modules") == [["code", "node_modules"]]
+}
+
+// A fragment with a slash is looked for in the whole trail, and a leading `~/` is
+// the home.
+pub fn a_slash_names_a_path_test() {
+  let home = owners_home("index-slash")
+  make(home <> "/code/app")
+  make(home <> "/other/app")
+
+  let index = indexed(home)
+  assert found(index, "code/app") == [["code", "app"]]
+  assert folder_browse.needle("~/code/app") == Ok("code/app")
+}
+
+// A link is not followed: what lies behind one is not listed and the walk never
+// leaves the home, while a real folder beside the links is found, so the empty
+// answer is the rule and not a broken walk.
+pub fn the_index_follows_no_link_test() {
+  let home = owners_home("index-link")
+  let outside = owners_home("index-link-outside")
+  make(outside <> "/loom-secret")
+  make(home <> "/real/loom-real")
+  let assert Ok(Nil) = simplifile.create_symlink(outside, home <> "/loom-link")
+    as "a link out of the home"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(home <> "/real", home <> "/loom-in")
+    as "a link inside the home"
+
+  assert found(indexed(home), "loom") == [["real", "loom-real"]]
+}
+
+// A directory at the depth bound is listed and one below it is not.
+pub fn the_depth_bound_lists_six_levels_and_not_seven_test() {
+  let home = owners_home("index-depth")
+  make(home <> "/a/b/c/d/e/six-dir")
+  make(home <> "/a/b/c/d/e/f/seven-dir")
+
+  let index = indexed(home)
+  assert found(index, "six-dir") == [["a", "b", "c", "d", "e", "six-dir"]]
+  assert found(index, "seven-dir") == []
+  assert index.reach == folder_browse.Covered
+}
+
+// The visit bound ends the build with what it has and says so, and a match beyond
+// it is not found. The entry bound and the clock do the same.
+pub fn each_bound_ends_the_build_and_says_so_test() {
+  let home = owners_home("index-bounds")
+  list.each(["a", "b", "c", "d", "e", "f"], fn(name) {
+    make(home <> "/" <> name <> "/inner-" <> name)
+  })
+  make(home <> "/zz/target-zz")
+
+  let visits =
+    folder_listing.index_in(
+      home,
+      [],
+      folder_listing.Limits(..folder_listing.limits, visits: 3),
+      clock,
+    )
+  assert visits.reach == folder_browse.Stopped
+  assert found(visits, "target-zz") == []
+
+  let entries =
+    folder_listing.index_in(
+      home,
+      [],
+      folder_listing.Limits(..folder_listing.limits, entries: 2),
+      clock,
+    )
+  assert entries.reach == folder_browse.Stopped
+
+  // The bound is checked between directories, so the root's seven children are
+  // all listed before the build stops.
+  assert list.length(entries.entries) == 7
+
+  // A clock that is past the bound stops the walk before it reads a directory.
+  let ticks = process.new_subject()
+  process.send(ticks, 0)
+  let late = fn() {
+    case process.receive(ticks, 0) {
+      Ok(_) -> 0
+      Error(Nil) -> 10_000
+    }
+  }
+  let timed =
+    folder_listing.index_in(
+      home,
+      [],
+      folder_listing.Limits(..folder_listing.limits, ms: 50),
+      late,
+    )
+  assert timed.reach == folder_browse.Stopped
+  assert found(timed, "target-zz") == []
+
+  // With room, everything is found.
+  assert found(indexed(home), "target-zz") == [["zz", "target-zz"]]
+}
+
+// Below a Git checkout the walk keeps descending but lists only folders that hold a
+// `.git`, which are its worktrees and sub-repositories.
+pub fn below_a_checkout_only_checkouts_are_listed_test() {
+  let home = owners_home("index-checkout")
+  make(home <> "/code/proj/.git")
+  make(home <> "/code/proj/src/deep")
+  make(home <> "/code/proj/worktrees/feature")
+  let assert Ok(Nil) =
+    simplifile.write(home <> "/code/proj/worktrees/feature/.git", "gitdir: x")
+    as "a linked worktree's .git file"
+  make(home <> "/code/proj/vendor/lib/.git")
+
+  let index = indexed(home)
+  assert found(index, "proj") == [["code", "proj"]]
+  assert found(index, "feature") == [["code", "proj", "worktrees", "feature"]]
+  assert found(index, "lib") == [["code", "proj", "vendor", "lib"]]
+  assert found(index, "deep") == []
+  assert found(index, "src") == []
+  assert found(index, "worktrees") == []
+}
+
+// A deep container of repositories, as an owner keeps them, is found when the
+// remembered folders seed the walk, though a wide home spends a small budget before
+// reaching it breadth first.
+pub fn the_remembered_folders_seed_a_deep_container_test() {
+  let home = owners_home("index-seeds")
+  let container = "/gocode/src/github.com/roasbeef"
+  make(home <> container <> "/loom/.git")
+  make(home <> container <> "/weft/.git")
+  list.each(["a", "b", "c", "d", "e", "f", "g", "h"], fn(name) {
+    make(home <> "/" <> name <> "/x/y")
+  })
+
+  let tight = folder_listing.Limits(..folder_listing.limits, visits: 12)
+  let unseeded = folder_listing.index_in(home, [], tight, clock)
+  assert found(unseeded, "weft") == []
+
+  let seeded =
+    folder_listing.index_in(home, [home <> container <> "/loom"], tight, clock)
+  assert found(seeded, "weft")
+    == [["gocode", "src", "github.com", "roasbeef", "weft"]]
+
+  // A seed that reaches the container through a link, or lies outside the home, is
+  // not read.
+  let outside = owners_home("index-seeds-outside")
+  make(outside <> "/gocode/src/github.com/roasbeef/loom")
+  let assert Ok(Nil) = simplifile.create_symlink(outside, home <> "/via-link")
+    as "a link out of the home"
+  let hostile =
+    folder_listing.index_in(
+      home,
+      [
+        home <> "/via-link/gocode/src/github.com/roasbeef/loom",
+        outside <> "/gocode/src/github.com/roasbeef/loom",
+      ],
+      tight,
+      clock,
+    )
+  assert found(hostile, "loom") == []
+}
+
+// A seed whose parent is as deep as the depth bound is dropped, since its children
+// would be trails past what a creation takes, and a seed with a `..` component is
+// refused whole.
+pub fn a_seed_too_deep_or_with_a_dot_dot_is_not_read_test() {
+  let home = owners_home("index-seed-depth")
+  let deep = "/a/b/c/d/e/f"
+  make(home <> deep <> "/g/seed-child")
+  make(home <> "/one/two")
+  make(home <> "/other/target-up")
+  list.each(["a", "b", "c", "d", "e", "f", "g", "h"], fn(name) {
+    make(home <> "/" <> name <> "/x/y")
+  })
+  let tight = folder_listing.Limits(..folder_listing.limits, visits: 4)
+
+  // The parent `a/b/c/d/e/f/g` is seven deep, past the bound, so it is not seeded
+  // and its folder is not found with the tight budget.
+  let too_deep =
+    folder_listing.index_in(
+      home,
+      [home <> deep <> "/g/seed-child"],
+      tight,
+      clock,
+    )
+  assert found(too_deep, "seed-child") == []
+  assert list.all(too_deep.entries, fn(entry) {
+    list.length(entry.trail) <= folder_browse.index_depth
+  })
+
+  // `one/../other/target-up` would reach `other` through a `..`, which is refused.
+  let dots =
+    folder_listing.index_in(home, [home <> "/one/../other/x"], tight, clock)
+  assert found(dots, "target-up") == []
+  let plain = folder_listing.index_in(home, [home <> "/other/x"], tight, clock)
+  assert found(plain, "target-up") == [["other", "target-up"]]
+}
+
+// A remembered folder inside a repository seeds its parent as below the checkout,
+// so only folders that hold a `.git` are listed there, as the walk from the home
+// would list them.
+pub fn a_seed_inside_a_checkout_lists_only_checkouts_test() {
+  let home = owners_home("index-seed-checkout")
+  make(home <> "/code/proj/.git")
+  make(home <> "/code/proj/packages/client/src")
+  make(home <> "/code/proj/packages/lib/.git")
+  list.each(["a", "b", "c", "d", "e", "f"], fn(name) {
+    make(home <> "/" <> name <> "/x/y")
+  })
+  let tight = folder_listing.Limits(..folder_listing.limits, visits: 8)
+
+  let seeded =
+    folder_listing.index_in(
+      home,
+      [home <> "/code/proj/packages/client"],
+      tight,
+      clock,
+    )
+  assert found(seeded, "lib") == [["code", "proj", "packages", "lib"]]
+  assert found(seeded, "client") == []
+  assert found(seeded, "src") == []
 }
