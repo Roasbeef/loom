@@ -15,6 +15,7 @@ import gleam/string
 import lustre/effect
 import lustre/element
 import session_view/diff_view
+import session_view/timeline
 import web_view/approval_evidence
 import web_view/attention_feed.{Find, Row, Section}
 import web_view/home
@@ -22,9 +23,12 @@ import web_view/item_pane
 import web_view/review_feed
 import web_view/review_scan_rule as scan
 import web_view/review_stage_rule
+import web_view/session_brief
 import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
 import web_view/thread_send
+import web_view/timeline_feed
+import web_view/timeline_rule
 import web_view/view/review_thread
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -225,23 +229,21 @@ fn start_for(
     rename: None,
     manage: None,
     thread_send: None,
-    attention: Some(
-      home.Attention(
-        feed: fn(_, deliver) { deliver(feed_rows()) },
-        saved: fn(_, deliver) { deliver([]) },
-        record: fn(_session, _id, deliver) {
-          deliver(Ok(item_pane.FindRecord(find: the_find(), revision: 9)))
-        },
-        approvals: fn(_session, deliver) {
-          deliver(Ok(approval_evidence.Evidence(count: 0, items: [])))
-        },
-        review:,
-        review_pause_ms: 5,
-        act:,
-        brief: fn(_, _, _) { Nil },
-        timeline: fn(_, _, _, _) { Nil },
-      ),
-    ),
+    attention: Some(home.Attention(
+      feed: fn(_, deliver) { deliver(feed_rows()) },
+      saved: fn(_, deliver) { deliver([]) },
+      record: fn(_session, _id, deliver) {
+        deliver(Ok(item_pane.FindRecord(find: the_find(), revision: 9)))
+      },
+      approvals: fn(_session, deliver) {
+        deliver(Ok(approval_evidence.Evidence(count: 0, items: [])))
+      },
+      review:,
+      review_pause_ms: 5,
+      act:,
+      brief: fn(_, _, _) { Nil },
+      timeline: timeline_reader,
+    )),
     create: None,
     folders: None,
     elsewhere: None,
@@ -902,4 +904,117 @@ pub fn a_refusing_reader_still_reaches_every_session_test() {
   // four, and the one refusal that stopped a run, and no other ask: a refusal
   // never starts the next read.
   assert process.call(allowance, 1000, Count) == 6
+}
+
+// --- the timeline above the review ---------------------------------------------
+
+fn timeline_card(
+  from_seq: Int,
+  kind: timeline.Kind,
+  words: String,
+) -> timeline_feed.Card {
+  timeline_feed.Card(
+    kind:,
+    turn_seq: 1,
+    from_seq:,
+    to_seq: from_seq + 2,
+    last: "entry",
+    started_at: 6_000_000,
+    ended_at: 6_100_000,
+    steps: 5,
+    reads: 1,
+    failed: 0,
+    files: [
+      timeline_feed.File(session_brief.untrusted(hostile), 3, 1),
+    ],
+    files_total: 1,
+    command: Some(timeline_feed.Command(
+      session_brief.untrusted("make check"),
+      2,
+    )),
+    spawned: [],
+    peers: 0,
+    tokens_before: None,
+    excerpt: Some(session_brief.untrusted(words)),
+  )
+}
+
+// Session A has a prompt, plain work and a failed command, and an older page of
+// one prompt; every other session has no cards.
+fn timeline_reader(
+  session: String,
+  before: Option(Int),
+  _limit: Int,
+  deliver: fn(Result(timeline_feed.Feed, String)) -> Nil,
+) -> Nil {
+  case session, before {
+    "A", None ->
+      deliver(
+        Ok(timeline_feed.Feed(
+          cards: [
+            timeline_card(10, timeline.Prompted, "fix the replay"),
+            timeline_card(13, timeline.Worked, "work"),
+            timeline_feed.Card(
+              ..timeline_card(16, timeline.Ran, "ran"),
+              failed: 1,
+            ),
+          ],
+          older: Some(10),
+          now: None,
+        )),
+      )
+    "A", Some(_) ->
+      deliver(
+        Ok(timeline_feed.Feed(
+          cards: [timeline_card(1, timeline.Prompted, "an older prompt")],
+          older: None,
+          now: None,
+        )),
+      )
+    _, _ -> deliver(Ok(timeline_feed.Feed(cards: [], older: None, now: None)))
+  }
+}
+
+// The cards draw above the review's diff, at the landmark density, and say
+// nothing of plain work until the person asks for every card.
+pub fn the_timeline_draws_above_the_diff_at_landmarks_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let html = drawn(model)
+
+  assert string.contains(html, "fix the replay")
+  assert string.contains(html, "make check · exit 2")
+  assert !string.contains(html, "<span class=\"timeline-words\">5 steps")
+  assert index_of(html, "timeline-list") < index_of(html, "review-files")
+
+  let standard = run(model, home.TimelineDensityChosen(timeline_rule.Standard))
+
+  assert string.contains(
+    drawn(standard),
+    "<span class=\"timeline-words\">5 steps",
+  )
+}
+
+// A card's text is escaped and never reaches an attribute, and a press opens a
+// card's detail without a read.
+pub fn timeline_text_is_text_only_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let opened = run(model, home.TimelineCardToggled("A", 10))
+  let html = drawn(opened)
+
+  assert string.contains(
+    html,
+    "src/&quot;&gt;&lt;script&gt;x&lt;/script&gt;.gleam",
+  )
+  assert !string.contains(html, "<script>x</script>")
+}
+
+// "Earlier cards" reads the page before the oldest card held and puts it first.
+pub fn earlier_cards_read_the_page_before_the_oldest_held_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let older = run(model, home.TimelineOlderAsked("A"))
+  let html = drawn(older)
+
+  assert string.contains(drawn(model), "Earlier cards")
+  assert string.contains(html, "an older prompt")
+  assert !string.contains(html, "Earlier cards")
 }
