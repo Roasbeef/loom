@@ -48,7 +48,7 @@
    input 47fe7d29954cc7e1ceaa46842f529fd148112613e5de839bd09ba7b7898689c0  packages/web_client/src/web_client/shell_rule.gleam
    input b2e3b58f4885a4ab8b0ccf6474b5a29fc714eaab7eb85b0de39eb62746cc349b  packages/web_client/src/web_client/switch.gleam
    input 30a2c1d2aa353323c622bf2f9e14e07c86ce786b22e8beb711b43549b3748f72  packages/web_client/src/web_client/switch_rule.gleam
-   input 0f3b81b0ee0cc712e0447a3b6e2b21669a52b12b7eb1d8d0458078f2cf86c650  packages/web_client/src/web_client/switcher.gleam
+   input 4fed5f2b8b993a1ca16d38dd0fcae266c27bb3efdd99f01966819926f464885e  packages/web_client/src/web_client/switcher.gleam
    input 8866be0c1d22fea5f5e308dda8530d730a4c62253603734536291b507817dc1e  packages/web_client/src/web_client/switcher_rule.gleam
    input 6e4917623d353d9b9999e56fec8a878b899bf8dece1e89feed0b53ad992b1927  packages/web_client/src/web_client/time.gleam
    input f97bef3b01867984caddf83a790ca147ed565b0e23d7b44691c9b9e9bde41c80  packages/web_client/src/web_client/time_rule.gleam
@@ -173,7 +173,7 @@
    input 79de790a23d34dc69c1fc4f19818edcd812897f48604d3a9f5269285c5efa6ab  packages/web_view/src/web_view/view/session_tab.gleam
    input c43a7ffc9c4a4e0812866a144a02b7ad7511cb21f9e3e37889374f8689bfd4c0  packages/web_view/src/web_view/view/share.gleam
    input 3b5cd6878242e9976230213eb4f2f391073e69e3689b603f1fa36f05b6f7f5c2  packages/web_view/src/web_view/view/shell.gleam
-   input 2011aa1bee90f1eacaecb8c130e9159038c260df22eb1c663bcdb1b146e90b32  packages/web_view/src/web_view/view/sidebar.gleam
+   input 35a90092ad4c2105a98eb9350154c4b10082dbe74e8875c6ee063f6765bbacba  packages/web_view/src/web_view/view/sidebar.gleam
    input 379a1349cf6dd30058af926e6fffe7bd33d5c1705afd39bbd9524fabf8e216ea  packages/web_view/src/web_view/view/signins.gleam
    input 97c91d0092150273cbefc0fc4e49cab3dc0a90b53c4c621fa3250ed41e87263b  packages/web_view/src/web_view/view/stamp.gleam
    input 3378b51ac21094f2e52ce289e50b135fa77dea98a5cc11ccbb7a3337ec2a0709  packages/web_view/src/web_view/view/strand_detail.gleam
