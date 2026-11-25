@@ -34,6 +34,8 @@ page keys and nonces, and the relay into the session's gateway.
 
 **Project tickets as threads** (phase 2, protocol-change/051's addendum "project tickets on Home"): a ticket whose stage needs a person is a row after the attention rows under Needs you, built from `Model.boards` by `ticket_rule.waiting`. `ticket_rule` (pure) decides the controls from the daemon's action list only (`controls`, `allowed`; Publish and unknown actions draw none), the one confirm click for Stop and Close (`press`, `confirmed`, `cancelled`) and the words of an outcome (`settled`, `refusal_words`). `view/ticket_thread` draws the row and pane; every ticket word is a text node and the answer form is keyed by project, ticket and question number. `Model.ticket` holds the open thread (never together with `item`); the messages are `TicketThreadPicked`, `TicketThreadRead`, `TicketControlPressed`, `TicketAnswerSent`, `TicketActConfirmed`, `TicketActKept` and `TicketActSettled`. `Projects` gained `stop` and `retry`. Each press re-derives authority (connected, capability at the Operator ceiling, control still listed). The board carries no branch, diff stat or check result, so none is drawn.
 
+**Creating a project** (protocol-change/106's addendum "creating a project from the web view"): `Projects` gained `propose(folder)` and `create(folder, check, setup)`, and `Pane` gained `ProjectCreating(project_create.Creation)`. `project_create` (pure) is the page's steps (`Choosing`, `Reading`, `Reviewing`, `Creating`, `Done`) and the moves between them (`open`, `chose`, `proposal_heard`, `confirmed`, `settled`); a refused creation returns to `Reviewing` with what was typed, and a project made while its settings were refused is `Done` with the daemon's sentence. `view/project_create` draws it: folders as buttons (text nodes), a typed-folder form with one field and a confirmation form with exactly `check` and `setup`. The page's messages are `ProjectCreationOpened`, `ProjectFolderChosen`, `ProjectProposalRead`, `ProjectConfirmed`, `ProjectCreateSettled` and `ProjectCreationClosed`. `home.project_folder_choices` is the one function that decides which folders the page offers (`composer.folders_offered` less folders that hold a project), the seam for the searchable folder picker. `view/projects.Shown` carries `create`, so the Projects section is drawn, with its "New project" button, on the owner's operating page even with no project.
+
 **Data for the final inbox mockup** (protocol-change/050, 120 addenda, 125, 126). `sessions.Report` gains `last_message_at` and `turn_started_at` (`Option(Int)`, Unix ms; the page formats them). `attention_feed.Stuck` gains `reason`, `retry_after_ms` and `parent`, and its `failed_at` is exact. `approval_evidence.Item` gains `raised_at`, `network` (`NetworkOn`/`NetworkOff`), `policy` (`Policy(sandbox, network)`). `session_brief` (pure) is the codec of `session.brief`: `Brief(assistant, steps, strands, goal, peers, command)`, with model text in the opaque `Untrusted` (read only through `untrusted_text`), `to_json` for the daemon and a total `decode`. `Attention.brief` reads one session's brief, spends the credential's brief allowance, and answers `BriefRead` into `Model.briefs`; `Attention.brief` is read for the open thread only, by `approving` and `ItemPicked`, and never for a row that is not open.
 
 **Sidebar asks and a stopped page** (protocol-change/050, addendum on open asks). `sessions.Report` gains `asks` (open asks routed to the owner, 0 when the daemon predates it). The session page's activity read returns `sessions.Watch(activity, asks)`, so `component.session_watching` feeds `watch_rule.Facts.asks` and a row reads `asked`, as Home's does. A page whose connection ended (`component.ending`) draws every rail row as `out of date`, says so in the rail note, and its notice (`view/ended`) offers `<loom-back>` after a `Final` ending: a server-wired button is dead once the socket closes, `history.back()` is not.
@@ -495,7 +497,7 @@ page keys and nonces, and the relay into the session's gateway.
   groups, the folded saved sessions, a native `<details>` for the quiet rows past
   `listing.idle_shown`, a row menu (`details.row-menu`) that holds the archive
   control and, on the home, "Rename, move or delete" (which shows the list), and a
-  foot. A row's second line is the tag `agent → code`; the subtitle is a third line.
+  foot. A row's second line is the tag `agent → code`; the subtitle is a third line in the tree that the rail's stylesheet hides (the switcher reads it), and the running groups draw no heading.
   The component carries `Standing.machine` (the serving daemon's name:
   `server.page_machine`, the node name when distributed and the host name when
   not), `View.filter`, `component.narrow`, `widen` and `waiting_count`, and
@@ -1056,8 +1058,11 @@ page keys and nonces, and the relay into the session's gateway.
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
   server timer; before the generation clock starts it says `Thinking` alone).
-  The first fragment replaces it with `Reasoning` or the answer. The shared
-  `generation_rate` ledger observes captures for every strand, and focus reads
+  A capture that marks the followed operation as waiting for a provider retry
+  draws `live.RetryWait` instead of `Thinking` and hides the generating line.
+  The next capture that leaves retry wait restores the usual generation rows.
+  The first fragment replaces `Thinking` with `Reasoning` or the answer. The
+  shared `generation_rate` ledger observes captures for every strand, and focus reads
   the selected strand's existing clock without resetting it. Joining an already
   running request starts a partial observation window and leaves its
   full-request TPS unmeasured. The region is a row of the
@@ -1440,7 +1445,8 @@ page keys and nonces, and the relay into the session's gateway.
   page's `PeerUnreachable` and `PeerCrowded`): why a page
   has no session, as a closed type. `OtherPage` is `page_grant`'s 403 for a live
   page key whose grant names another page (a home key typed onto a session's
-  address); it is final and says the link was opened for a different page, not
+  address, or a session's key onto the home's or the admin page's, which
+  have their own headlines); it is final and says the link was opened for a different page, not
   that the page ended (protocol-change/051, the addendum of 2026-11-20). `PageEnded` means eight hours ran out, the
   daemon restarted, or the page was the oldest of `ending.max_pages` (four)
   when a newer link opened; a newer link ends nothing below that bound. `headline` and `advice(ending,
@@ -2386,8 +2392,9 @@ ticket stay the home's.
 
 ## Projects section and ticket page (protocol-change/106, web addendum)
 
-`Start.projects` (`Some` exactly where `create` is) feeds a Projects section at the
-top of the owner's home and a ticket page. `web_view/projects` holds the feed's
+`Start.projects` (`Some` exactly where `create` is) feeds a Projects section, drawn at
+the head of the inbox list while the "Projects" folder is chosen (`view/inbox.Offer.projects`;
+`centre_head` no longer draws it), and a ticket page. `web_view/projects` holds the feed's
 vocabulary (`Read`, `TicketRead`, `Answer`) and the decoded `Loaded` boards;
 `view/projects` draws the section and the page; `session_view/project_board`
 orders, groups and words, so the terminal and the page cannot disagree. The

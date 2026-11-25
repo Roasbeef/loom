@@ -74,7 +74,7 @@ pub const most_width = 4000
 /// The sidebar's width before the reader changes it, in pixels. The
 /// stylesheet's fallback for the `--sidebar-width` property is the same
 /// number.
-pub const sidebar_default_width = 232
+pub const sidebar_default_width = 184
 
 /// The narrowest the sidebar may be, in pixels: room for a session's name and
 /// its status.
@@ -219,7 +219,7 @@ pub fn most_in(region: Region) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert grip_rule.default_in(shell_rule.Sidebar) == 232
+/// assert grip_rule.default_in(shell_rule.Sidebar) == 184
 /// assert grip_rule.default_in(shell_rule.Panel) == 344
 /// ```
 pub fn default_in(region: Region) -> Int {
@@ -423,7 +423,7 @@ pub fn adjusted(width: Int, adjustment: Adjustment, room: Room) -> Int {
 /// let wider = grip_rule.Wider(grip_rule.Fine)
 /// assert grip_rule.adjusted_in(shell_rule.Sidebar, 232, wider, room) == 256
 /// assert grip_rule.adjusted_in(shell_rule.Sidebar, 400, grip_rule.Reset, room)
-///   == 232
+///   == 184
 /// ```
 pub fn adjusted_in(
   region: Region,

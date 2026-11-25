@@ -80,12 +80,12 @@ pub type Ending {
   PeerCrowded
 
   /// The page key in the address belongs to a page that was opened for
-  /// something else: the home, another session or the admin page. A page key
-  /// is minted for the one page a link opened, and a login made with
+  /// something else: the home, a session or the admin page. A page key is
+  /// minted for the one page a link opened, and a login made with
   /// `loom ui --no-remember` reaches no other page, so an address built by hand
-  /// from that key names a session the key was never issued for. The key is
-  /// live and so the page is not `PageEnded`; a link that names the session
-  /// is the fix.
+  /// from that key names a page the key was never issued for, whether that is
+  /// a session, the home or the admin page. The key is live and so the page is
+  /// not `PageEnded`; a link made for the page named in the address is the fix.
   OtherPage
 }
 
@@ -287,9 +287,7 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
     PeerUnreachable -> Advice("This page will reconnect.", None)
     OtherPage ->
       Advice(
-        "A page key opens only the page its link was made for, and a link from "
-          <> "loom ui --no-remember reaches no other page. Open the session "
-          <> "from the page that link opened.",
+        other_page_advice <> " Open the session from the page that link opened.",
         command,
       )
     PeerCrowded ->
@@ -340,12 +338,12 @@ pub fn home_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
+    OtherPage -> home_other_page_headline
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage -> "The connection to the daemon failed."
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -378,12 +376,16 @@ pub fn home_advised(ending: Ending) -> Advice {
         command,
       )
     LinkExpired -> Advice("A link works once, within 60 seconds.", command)
+    OtherPage ->
+      Advice(
+        other_page_advice <> " Open the home from the link made for it.",
+        command,
+      )
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage ->
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link.",
         command,
@@ -431,6 +433,20 @@ pub fn relayed_advice(ending: Ending) -> String {
 const other_page_headline =
   "This link was opened for a different page, not for this session."
 
+/// The sentence every `OtherPage` advice starts with, so the three pages say the
+/// rule in the same words and each appends what to do on its own page.
+const other_page_advice =
+  "A page key opens only the page its link was made for, and a link from "
+  <> "loom ui --no-remember reaches no other page."
+
+/// `other_page_headline` for the home, which is not a session.
+const home_other_page_headline =
+  "This link was opened for a different page, not for the home."
+
+/// `other_page_headline` for the admin page.
+const admin_other_page_headline =
+  "This link was opened for a different page, not for the admin page."
+
 /// What a relayed page says while it waits for its orchestrator.
 const relayed_wait_advice =
   "This page keeps asking the orchestrator and reconnects by itself when it answers. Commands whose outcome is unknown will not be sent again."
@@ -450,12 +466,12 @@ pub fn admin_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
+    OtherPage -> admin_other_page_headline
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage -> "The connection to the daemon failed."
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -492,12 +508,17 @@ pub fn admin_advised(ending: Ending) -> Advice {
       )
     LinkExpired ->
       Advice("A link works once, within 60 seconds." <> fresh, command)
+    OtherPage ->
+      Advice(
+        other_page_advice
+          <> " Press Admin on the home page for a fresh admin page.",
+        command,
+      )
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage ->
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link." <> fresh,
         command,

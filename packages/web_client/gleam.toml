@@ -11,3 +11,7 @@ lustre = "== 5.7.1"
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 lustre_dev_tools = "== 2.4.0"
+
+[tools.lustre.bin]
+# scripts/web_assets.sh pins and verifies this executable before building.
+tailwindcss = "build/web_asset_tools/tailwindcss"

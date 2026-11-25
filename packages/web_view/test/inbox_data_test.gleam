@@ -432,6 +432,14 @@ pub fn a_session_with_only_its_own_strand_has_no_coordinator_test() {
   // No goal and no delegate: nothing to draw.
   assert element.to_string(brief_view.coordinator(lone)) == ""
 
+  // The advisor is a strand of every session and is not a delegate.
+  let advised =
+    Brief(..lone, strands: [
+      session_brief.Strand("main", session_brief.Working, Some(now)),
+      session_brief.Strand("advisor", session_brief.Working, Some(now)),
+    ])
+  assert element.to_string(brief_view.coordinator(advised)) == ""
+
   // A goal alone is a card of the goal and the tokens, with no delegate lines.
   let with_goal = Brief(..lone, goal: the_brief().goal)
   let html = element.to_string(brief_view.coordinator(with_goal))

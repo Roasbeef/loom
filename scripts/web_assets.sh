@@ -29,8 +29,18 @@
 #
 # lustre_dev_tools downloads its bundler (Bun) and Tailwind the first time,
 # checking each against a sha256 it carries for its pinned version, and
-# caches them under packages/web_client/build. That is the one step that
-# needs the network, and only `make gen-client` takes it.
+# caches them under packages/web_client/.lustre/bin. That is the one step
+# that needs the network, and only `make gen-client` takes it.
+#
+# On macOS the Tailwind it downloads does not run as shipped. Tailwind's
+# standalone binary is built with `bun --compile`, which appends the program
+# after the linker's ad-hoc signature, so the signature no longer covers the
+# file and the kernel kills it on exec. The cache is per working tree and
+# ignored by git, so every fresh worktree downloads a copy that fails the
+# same way. lustre_build re-signs that one file ad hoc and runs the build
+# again. An ad-hoc signature adds no trust: the file is still the one whose
+# sha256 lustre_dev_tools checked before writing it, and the signature only
+# makes it match itself again.
 #
 # ## Why the gate needs no toolchain
 #
@@ -204,12 +214,33 @@ stamp() {
 	} >"$output"
 }
 
+# Tailwind as lustre_dev_tools caches it on Apple silicon, the one binary
+# lustre_build may re-sign.
+tailwind="$client/.lustre/bin/tailwindcss-macos-arm64/tailwindcss-macos-arm64"
+
+lustre_build() {
+	(cd "$client" && gleam run -m lustre/dev build --minify --no-html \
+		--outdir=build/web_assets)
+}
+
+# A failed first build on macOS is most often the fresh Tailwind refusing to
+# run (see the header). Re-sign it only when its signature does not verify,
+# and retry once, so any other failure still stops the build with its own
+# message.
+lustre_build_signed() {
+	lustre_build && return 0
+	[ "$(uname -s)" = Darwin ] && [ -f "$tailwind" ] || return 1
+	codesign --verify "$tailwind" 2>/dev/null && return 1
+	echo "web_assets: re-signing the downloaded Tailwind ad hoc (see the header)" >&2
+	codesign --force --sign - "$tailwind"
+	lustre_build
+}
+
 build() {
 	local path
 	rm -rf "$scratch"
 	mkdir -p "$static"
-	(cd "$client" && gleam run -m lustre/dev build --minify --no-html \
-		--outdir=build/web_assets)
+	lustre_build_signed
 	stamp "$scratch/web_client.js" "$static/web_client.mjs" bundle_inputs \
 		"The web view's client components"
 	stamp "$scratch/web_client.css" "$static/web_client.css" stylesheet_inputs \

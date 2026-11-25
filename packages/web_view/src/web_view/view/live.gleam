@@ -79,6 +79,9 @@ pub type Row {
     headline: Option(String),
   )
 
+  /// A provider retry is durably waiting, not actively generating.
+  RetryWait
+
   /// A turn that has opened and has streamed nothing yet: the request is out
   /// and the model has said nothing, which is every wait a model that streams
   /// no reasoning text makes. It is drawn as `Thinking · 0:03` so the lane is
@@ -187,6 +190,12 @@ fn row(item: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
       html.div([attribute.class("held")], [
         html.p([attribute.class("held-text")], [html.text(text)]),
         html.p([attribute.class("held-mark")], [html.text(words)]),
+      ])
+
+    // A durable retry wait is distinct from an active generation.
+    RetryWait ->
+      html.p([attribute.class("retry-wait")], [
+        html.text("Waiting for provider retry"),
       ])
 
     // The turn is open and nothing has streamed. The same row the reasoning

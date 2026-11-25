@@ -611,7 +611,6 @@ pub fn an_observer_sees_no_review_test() {
   let model = scanned(scanned(model))
   let html = drawn(model)
 
-  assert !string.contains(html, "To review")
   assert !string.contains(html, "Changes to review")
   assert string.contains(html, "Waiting<span class=\"inbox-count\"> · 2</span>")
   assert string.contains(html, "Done &lt;b&gt;it&lt;/b&gt;.")

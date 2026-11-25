@@ -519,6 +519,15 @@ pub fn the_live_rows_are_plain_values_test() {
     |> element.to_string
   assert string.contains(none, "<span class=\"verb\">Reasoning</span>")
   assert !string.contains(none, "loom-elapsed")
+  let retry_wait =
+    live.view([live.RetryWait], fn(line: Line) { html.text(line.text) })
+    |> element.to_string
+  assert string.contains(
+    retry_wait,
+    "class=\"retry-wait\">Waiting for provider retry</p>",
+  )
+  assert !string.contains(retry_wait, "Thinking")
+  assert !string.contains(retry_wait, "generating")
 }
 
 // The line under the live region says which request of the turn is generating,
@@ -745,6 +754,29 @@ pub fn the_opened_row_sits_beside_the_pulsing_dot_test() {
     let drawn = element.to_string(view)
     assert string.contains(drawn, "class=\"dot pulse\"")
     assert string.contains(region(view), "Thinking")
+  })
+}
+
+pub fn a_retry_capture_replaces_thinking_until_generation_resumes_test() {
+  let open_capture = lane_fixture.phased(running(), "assistant")
+  let model = page([open_capture])
+  list.each(pages(model), fn(view) {
+    assert string.contains(region(view), "Thinking")
+  })
+
+  let waiting =
+    component.apply(model, [lane_fixture.waiting_for_provider_retry()])
+  list.each(pages(waiting), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "Waiting for provider retry")
+    assert !string.contains(drawn, "Thinking")
+    assert !string.contains(drawn, "generating")
+  })
+
+  let resumed = component.apply(waiting, [open_capture])
+  list.each(pages(resumed), fn(view) {
+    assert string.contains(region(view), "Thinking")
+    assert !string.contains(region(view), "Waiting for provider retry")
   })
 }
 
