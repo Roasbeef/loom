@@ -414,23 +414,50 @@ could tell what the agent did, is the owner's to give and is not yet.
 
 `sessions.timeline` reads a running session's newest 2,000 records of `main`,
 cuts them, and answers a page of at most 20 cards with a cursor and the open
-span (protocol-change/134). Home reads the newest page with a thread's brief and
-an older page when the person presses "Earlier cards", and draws the cards above
-the review pane in a session's thread, which serves the review and update
-threads. It differs from the note in these places.
+span; `sessions.span` answers the lines of one span (protocol-change/134). Home
+reads the newest page with a thread's brief and an older page when the person
+presses "Earlier cards", and draws the cards above the review pane in a session's
+thread, which serves the review and update threads, whatever the session's state.
+A card opens to its span's own lines, read once when it is opened. It differs from
+the note in these places.
 
-- **One allowance.** The read spends the brief's allowance and takes none of its
-  own, so an open thread spends two of the six reads in four seconds.
+- **One allowance.** Both reads spend the brief's allowance and take none of
+  their own, so an open thread spends two of the six reads in four seconds and a
+  card opened a third.
 - **A density control the note did not have.** The census showed a card for about
   every three steps, so the thread starts at the landmark kinds (prompts, answers,
-  asks, compactions, sub-agent results, failed commands) and offers "All cards" and
-  "With detail". The idea came from the owner's reference image, which had a
-  low, medium and high density.
-- **No span read yet.** A card's "Open the session" opens the session's page. It
-  does not open the span: the lane's fold opens a whole turn from its last record
-  and keeps 100 rows, so a card deep in a long turn needs the new "show this
-  span" read of section 5, which is not built.
-- **Where it is** says how many steps ran since the last card and how long ago
-  the last record was written. It does not say what the strand is doing now,
-  because the open span has no title until slice 3.
+  asks, compactions, sub-agent results, commands that exited with a failure) and
+  offers "All cards" and "With detail". The idea came from the owner's reference
+  image, which had a low, medium and high density.
+- **The window's stability.** A strand longer than the scan is cut from a sliding
+  window, so cards before the window's first hard boundary (a prompt, an answer, an
+  ask or a compaction) are not offered; see protocol-change/134.
+- **Where it is** says how many steps ran since the last card and how long ago the
+  last record was written, and is absent when no step ran. It does not say what the
+  strand is doing now, because the open span has no title until slice 3.
 - **No approval or commit card**, for the reasons in section 10.
+- **The span opens beside the card**, in the thread, not in the session page. A
+  card's "Open the session" still opens the session's page.
+
+**Measured read time.** The resident's read (scan of up to 2,000 records, cut,
+page, encoding) over 23 copies of recorded sessions, on the machine that builds
+this tree: minimum 2 ms, median 51 ms, 90th percentile 306 ms, maximum 361 ms, with
+replies of about 3.3 KB (`gleam run -m timeline_census -- timing <dir>`). The
+sessions that fill the 2,000-record window take 250 to 360 ms, so a board that
+refreshes 24 such sessions starts 24 scans of about a third of a second each, one in
+each session's own actor, spread by the allowance. The scan materialises up to 2,000
+records with their payloads, which can be tens of kilobytes each, and is not bounded
+in bytes; it is bounded in records and time, and a byte bound waits on a read that
+needs less than the whole record.
+
+**How many landmark cards, measured.** Over 27 more copies of recorded sessions
+the whole strand made a median of 67 cards at the 40-step limit, 53 of them
+landmark kinds, from a median of 24 turns, so a list of every landmark kind is
+too long to be a list of milestones for most sessions. A turn where something
+happened (it wrote a file, had a failed call, asked, compacted or got a
+sub-agent's result) is a milestone and a turn that only talked is not: the median
+session has 12 such turns, and 15 of the 27 have 15 or fewer. The Landmarks
+density therefore keeps the landmark cards of those turns and of the newest turn,
+and the first page of a thread shows at most ten cards, so a thread opens with a
+handful (six or seven of the newest ten on the sessions driven live) and "Earlier
+cards" pages back through the rest.
