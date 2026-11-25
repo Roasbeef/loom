@@ -95,7 +95,7 @@ textarea.cmd { width:100%; font-family: var(--mono); font-size:12.5px; backgroun
   <div class="cap">1440 wide: the wizard as a page in the web view, with the model step selected.</div>
   <div class="board">
     <nav class="rail" aria-label="Rail">
-      <div class="row start-row"><strong>Get started</strong><span class="n">3 of 7</span></div>
+      <div class="row start-row"><strong>Get started</strong><span class="n">2 of 5</span></div>
       <h2>Inbox</h2>
       <div class="row"><span>Everything, by need</span><span class="n">0</span></div>
       <div class="row"><span>Needs you</span><span class="n">0</span></div>
@@ -113,49 +113,41 @@ textarea.cmd { width:100%; font-family: var(--mono); font-size:12.5px; backgroun
       <div class="head">
         <div>
           <h1>Get started</h1>
-          <p class="sub">Each step shows what the daemon already has. Skip anything; nothing is written until you confirm.</p>
+          <p class="sub">Each step shows what already exists. Skip anything; nothing is written until you confirm.</p>
         </div>
-        <span class="meter">3 of 7 done &middot; 2 optional skipped</span>
+        <span class="meter">2 of 5 done &middot; hides when all are done or skipped</span>
       </div>
 
       <div class="steps">
-        <div class="step"><span class="num">1</span><h3>Daemon</h3><span class="chip ok">ready</span>
-          <p>loomd 0.3.2, ready, state in ~/.loom. <a class="help">Help</a></p></div>
-        <div class="step sel"><span class="num">2</span><h3>Model</h3><span class="chip bad">key not set</span>
-          <p>Entry <code>anthropic</code> (claude-opus-5) reads <code>ANTHROPIC_API_KEY</code>, which loomd cannot see.</p>
-          <div class="acts"><button class="btn go" type="button">Test it</button><button type="button">Check again</button></div></div>
-        <div class="step"><span class="num">3</span><h3>Default folder</h3><span class="chip ok">~/code/loom</span>
+        <div class="box ok" style="margin:0">Daemon ready &middot; loomd 0.3.2 &middot; main role runs <code>claude-opus-5</code>. <span class="foot">Status only, no actions.</span></div>
+        <div class="step"><span class="num">1</span><h3>Default folder</h3><span class="chip ok">~/code/loom</span>
           <p>Remembered from your last session.</p>
           <div class="acts"><button type="button">Choose another&hellip;</button></div></div>
-        <div class="step"><span class="num">4</span><h3>Worktree default</h3><span class="chip ok">in the folder</span>
-          <p>New sessions work in the folder itself. A worktree keeps each session's changes apart.</p></div>
-        <div class="step"><span class="num">5</span><h3>First project <span class="opt">optional</span></h3><span class="chip need">none yet</span>
+        <div class="step"><span class="num">2</span><h3>Worktree default</h3><span class="chip ok">in the folder</span>
+          <p>New sessions work in the folder itself. A worktree keeps each session's changes apart.</p>
+          <div class="acts"><button type="button">Change</button></div></div>
+        <div class="step sel"><span class="num">3</span><h3>First project <span class="opt">optional</span></h3><span class="chip need">none yet</span>
           <p>A project is one router for one repository. Loom proposes how to check its work.</p>
           <div class="acts"><button class="btn go" type="button">New project</button><button type="button">Skip</button></div></div>
-        <div class="step"><span class="num">6</span><h3>GitHub publish <span class="opt">optional</span></h3><span class="chip skip">skipped</span>
+        <div class="step"><span class="num">4</span><h3>GitHub publish <span class="opt">optional</span></h3><span class="chip skip">skipped</span>
           <p>Needs <code>gh</code> logged in on this machine. Publishing opens pull requests and never merges.</p>
           <div class="acts"><button type="button">Set up</button></div></div>
-        <div class="step"><span class="num">7</span><h3>Extras <span class="opt">optional</span></h3><span class="chip need">2 available</span>
-          <p>A cheaper model for summaries, and the Jev key for routing project work.</p>
-          <div class="acts"><button type="button">Summarize role</button><button type="button">Jev key</button><button type="button">Skip</button></div></div>
+        <div class="step"><span class="num">5</span><h3>Extras <span class="opt">optional</span></h3><span class="chip need">2 available</span>
+          <p>A cheaper model for summaries, and the Jev table for routing project work.</p>
+          <div class="acts"><button type="button">Summarize role</button><button type="button">Jev</button><button type="button">Skip</button></div></div>
       </div>
 
-      <aside class="detail" aria-label="Model step">
-        <h2>Model</h2>
-        <p class="sub">Confirms that a session can get an answer, with one small request.</p>
-        <dl class="kv">
-          <dt>Entry</dt><dd><code>anthropic</code> from the environment, no loom.toml</dd>
-          <dt>Model</dt><dd><code>claude-opus-5</code></dd>
-          <dt>Key variable</dt><dd><code>ANTHROPIC_API_KEY</code> &mdash; not set in loomd's environment</dd>
-        </dl>
-        <div class="box bad">The key is not shown or stored here. Export it where loomd starts, then press Check again.</div>
-        <textarea class="cmd" rows="2" readonly>export ANTHROPIC_API_KEY=...   # then restart loomd</textarea>
-        <div class="box">
-          <strong>Test turn.</strong> One request, a fixed prompt, at most 16 output tokens, no tools and no session.
-          Unpriced: this entry has no <code>[models.anthropic.pricing]</code>, so the cost shows as about 40 tokens, not dollars.
-        </div>
-        <div style="display:flex;gap:8px"><button class="btn go" type="button" disabled>Test it</button><button type="button">Check again</button></div>
-        <p class="foot">Writes nothing. Adding a model or role to loom.toml is a proposal you approve as an exact diff. <a class="help">docs/configuration.md, [models]</a></p>
+      <aside class="detail" aria-label="First project">
+        <h2>First project</h2>
+        <p class="sub">The daemon read the folder and proposes. Nothing ran.</p>
+        <dl class="kv"><dt>Folder</dt><dd><code>~/code/loom</code></dd></dl>
+        <label class="foot" for="chk">Check, proposed because the Makefile has a check target</label>
+        <textarea id="chk" class="cmd" rows="1">make check</textarea>
+        <label class="foot" for="set">Setup, proposed because gleam.toml exists</label>
+        <textarea id="set" class="cmd" rows="1">gleam deps download</textarea>
+        <div class="box ok">Dry run after Create: setup runs with the network on, then the check runs once, offline, on a clean copy. The outcome shows here: building, passed, or failed with the daemon's text.</div>
+        <div style="display:flex;gap:8px"><button class="btn go" type="button">Create project</button><button type="button">Skip</button></div>
+        <p class="foot">Writes the project's own settings, no restart. <a class="help">docs/configuration.md, per-project settings</a></p>
       </aside>
     </main>
   </div>
@@ -163,27 +155,23 @@ textarea.cmd { width:100%; font-family: var(--mono); font-size:12.5px; backgroun
   <div class="cap">375 wide: the same steps in one column, the project step open, and the empty state that leads to it.</div>
   <div class="pair">
     <div class="phone">
-      <div class="top"><strong>Get started</strong><span class="meter">3 of 7</span></div>
+      <div class="top"><strong>Get started</strong><span class="meter">2 of 5</span></div>
       <div class="body">
-        <div class="step"><span class="num">1</span><h3>Daemon</h3><span class="chip ok">ready</span></div>
-        <div class="step"><span class="num">2</span><h3>Model</h3><span class="chip bad">key not set</span>
-          <div class="acts"><button class="btn go" type="button">Test it</button><button type="button">Check again</button></div></div>
-        <div class="step"><span class="num">3</span><h3>Default folder</h3><span class="chip ok">~/code/loom</span></div>
-        <div class="step"><span class="num">4</span><h3>Worktree default</h3><span class="chip ok">in the folder</span></div>
-        <div class="step sel"><span class="num">5</span><h3>First project <span class="opt">optional</span></h3><span class="chip need">review the proposal</span>
+        <div class="box ok" style="margin:0">Daemon ready &middot; loomd 0.3.2 &middot; main: <code>claude-opus-5</code></div>
+        <div class="step"><span class="num">1</span><h3>Default folder</h3><span class="chip ok">~/code/loom</span></div>
+        <div class="step"><span class="num">2</span><h3>Worktree default</h3><span class="chip ok">in the folder</span></div>
+        <div class="step sel"><span class="num">3</span><h3>First project <span class="opt">optional</span></h3><span class="chip need">review the proposal</span>
           <div class="detail" style="grid-column:1/3;margin-top:6px">
-            <dl class="kv" style="grid-template-columns:70px 1fr">
-              <dt>Folder</dt><dd><code>~/code/loom</code></dd>
-            </dl>
-            <label class="foot" for="chk">Check, proposed because the Makefile has a <code>check</code> target</label>
-            <textarea id="chk" class="cmd" rows="1">make check</textarea>
-            <label class="foot" for="set">Setup, proposed because <code>gleam.toml</code> exists</label>
-            <textarea id="set" class="cmd" rows="1">gleam deps download</textarea>
-            <div class="box ok">Dry run after Create: setup runs with the network on, then the check runs once, offline, on a clean copy.</div>
+            <dl class="kv" style="grid-template-columns:70px 1fr"><dt>Folder</dt><dd><code>~/code/loom</code></dd></dl>
+            <label class="foot" for="chk2">Check, proposed because the Makefile has a check target</label>
+            <textarea id="chk2" class="cmd" rows="1">make check</textarea>
+            <label class="foot" for="set2">Setup, proposed because gleam.toml exists</label>
+            <textarea id="set2" class="cmd" rows="1">gleam deps download</textarea>
+            <div class="box ok">Dry run after Create: setup with the network on, then the check once, offline, on a clean copy.</div>
             <div class="acts" style="margin:0"><button class="btn go" type="button">Create project</button><button type="button">Skip</button></div>
           </div></div>
-        <div class="step"><span class="num">6</span><h3>GitHub publish <span class="opt">optional</span></h3><span class="chip skip">skipped</span></div>
-        <div class="step"><span class="num">7</span><h3>Extras <span class="opt">optional</span></h3><span class="chip need">2 available</span></div>
+        <div class="step"><span class="num">4</span><h3>GitHub publish <span class="opt">optional</span></h3><span class="chip skip">skipped</span></div>
+        <div class="step"><span class="num">5</span><h3>Extras <span class="opt">optional</span></h3><span class="chip need">2 available</span></div>
       </div>
     </div>
 
@@ -193,7 +181,7 @@ textarea.cmd { width:100%; font-family: var(--mono); font-size:12.5px; backgroun
         <div class="box"><strong>No project yet.</strong><br>A project is one router for one repository. Choose a folder and Loom proposes how to check its work.
           <div class="acts" style="margin-top:8px"><button class="btn go" type="button">New project</button><a class="help">What is a project?</a></div></div>
         <div class="box need" style="background:var(--need-bg);border-color:var(--need-line);color:var(--need-ink)">
-          <strong>Get started</strong> &middot; 3 of 7 done. <a class="help" style="color:inherit">Continue</a></div>
+          <strong>Get started</strong> &middot; 2 of 5 done. <a class="help" style="color:inherit">Continue</a></div>
         <p class="note">The first-session hint, drawn once in the inbox after a first session ends and while no project exists: &ldquo;Loom can also route a repository's work as tickets. Set up a project.&rdquo; Dismissing it is remembered by this browser.</p>
       </div>
     </div>
