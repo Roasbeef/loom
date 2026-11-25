@@ -255,6 +255,17 @@ def main_turn(messages):
             "tool_use",
             warm,
         )
+    if "work long" in lowered:
+        # A call that runs long enough to watch, so the session stays in Updates
+        # while the page is read.
+        return (
+            [
+                ("text", "Starting a long pass over the fixtures. I will report when the check finishes, and the notes so far are in the worktree."),
+                ("tool_use", "bash", {"command": "sleep 110; echo long-done"}),
+            ],
+            "tool_use",
+            warm,
+        )
     if "work slowly" in lowered:
         return [("tool_use", "bash", {"command": "sleep 45; echo slow-done"})], "tool_use", warm
     if "code mode ask" in lowered:

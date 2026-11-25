@@ -5634,3 +5634,30 @@ live page is still `PageEnded`. Nothing about what a key opens changes: the gran
 check that refused the request still refuses it, with the same 403, and only the
 words differ.
 `a_key_for_another_page_on_home_or_admin_says_it_is_another_page_test` pins it.
+
+## Addendum: the Updates cards and the "Watch all" board (2026-11-24)
+
+The inbox's Updates group draws each working session as a card
+(`view/update_card`), and a "Watch all" control puts a board of the same cards in
+the reading pane. This adds two page messages and one bounded read, and no route,
+no event and no wire field.
+
+**Click paths.** `CardToggled(session)` opens or closes one card, and
+`WatchAllToggled` shows or hides the board. Both are clicks beneath the table's
+path, as a thread's press is, so the socket admits nothing new. `CardToggled` is
+honoured only for a session the Updates group holds. The set of open cards and the
+board's state live in the page model and are never stored.
+
+**The read.** A card draws what the reading pane's update thread reads: the
+session's brief (protocol-change/125). The page reads it for the sessions in
+Updates only, at most eight, and starts at most one read each time it refreshes,
+for the session read longest ago among those whose last read is fifteen seconds old
+or older (`home.card_briefing`, paced by `brief_rule.due`). That is at most eight
+reads in fifteen seconds, inside the daemon's six in four seconds for a
+credential, and it leaves the open thread's own read its turn. A card draws at most
+five steps. No daemon field is added.
+
+**Text.** Everything a model, a peer or the host wrote (the message, a step's tool
+and words, a strand's name, a command, a machine's name) is a text node under a
+label that says it is untrusted, and none reaches an attribute. `update_card_test`
+pins that markup in a message is escaped and that no attribute holds it.

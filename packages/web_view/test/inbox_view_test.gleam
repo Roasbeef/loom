@@ -197,8 +197,9 @@ pub fn the_inbox_groups_the_threads_and_counts_what_it_read_test() {
   assert string.contains(html, "<span class=\"inbox-name\">vetting lint</span>")
   assert string.contains(html, "<span class=\"inbox-kind\">Approval</span>")
   assert string.contains(html, "Approve the push?")
-  assert string.contains(html, "<span class=\"inbox-name\">docs sweep</span>")
-  assert string.contains(html, "<span class=\"inbox-kind\">Update</span>")
+  // An Updates session is a card, whose title is its name.
+  assert string.contains(html, "<span class=\"upd-title\">docs sweep</span>")
+  assert string.contains(html, "upd-card")
   assert string.contains(html, "reading the spec")
   assert !string.contains(html, "ago")
 }
@@ -641,7 +642,7 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
   assert string.contains(
     drawn(back),
-    "<span class=\"inbox-name\">docs sweep</span>",
+    "<span class=\"upd-title\">docs sweep</span>",
   )
   let back = run(run(pressed, home.ShowingNew), home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
@@ -672,7 +673,7 @@ pub fn the_rail_folders_lead_back_to_the_inbox_from_any_centre_test() {
   assert string.contains(drawn(from_form), "<h1>Inbox</h1>")
   assert string.contains(
     drawn(from_form),
-    "<span class=\"inbox-name\">docs sweep</span>",
+    "<span class=\"upd-title\">docs sweep</span>",
   )
   let from_list =
     run(
@@ -959,4 +960,45 @@ pub fn a_send_to_a_shown_thread_goes_out_test() {
 
   let _ = run(kept, home.ThreadSubmitted("C", "go on", operator.Prompt))
   assert received(asked) == [#("C", "go on", operator.Prompt)]
+}
+
+// The Updates group draws a card for each working session, and the "Watch all"
+// control is drawn beside the list while any is working.
+pub fn the_updates_group_draws_cards_and_a_watch_all_control_test() {
+  let html = drawn(opened(start(home.OperatorCeiling, reports())))
+
+  assert string.contains(html, "upd-card")
+  assert string.contains(html, "latest message, untrusted text")
+  assert string.contains(html, ">Watch all<")
+  assert string.contains(html, "aria-pressed=\"false\"")
+}
+
+// Pressing "Watch all" puts the board in the reading pane, one card for each
+// working session, and pressing it again takes the board away; a card's
+// disclosure opens that card alone, in the page's own state.
+pub fn watch_all_draws_the_board_and_a_disclosure_opens_one_card_test() {
+  let model = opened(start(home.OperatorCeiling, reports()))
+  let watching = run(model, home.WatchAllToggled)
+  let html = drawn(watching)
+
+  assert string.contains(html, "upd-board")
+  assert string.contains(html, "aria-pressed=\"true\"")
+  assert !string.contains(
+    drawn(run(watching, home.WatchAllToggled)),
+    "upd-board",
+  )
+
+  // A card opened in place is open, and closing it closes it.
+  let toggled = run(model, home.CardToggled("C"))
+  assert string.contains(drawn(toggled), "aria-expanded=\"true\"")
+  assert !string.contains(
+    drawn(run(toggled, home.CardToggled("C"))),
+    "aria-expanded=\"true\"",
+  )
+
+  // A session the Updates group does not hold changes nothing.
+  assert !string.contains(
+    drawn(run(model, home.CardToggled("B"))),
+    "aria-expanded=\"true\"",
+  )
 }
