@@ -53,7 +53,6 @@ import gleam/result
 import gleam/string
 import project/event.{type Event}
 import project/gate
-import project/jev
 import project/jev_verdict
 import project/judge
 import project/model.{type RuleId, type SourceId, type TriggerId}
@@ -134,6 +133,8 @@ pub type JevPlan {
     recorded: dict.Dict(TriggerId, jev_verdict.Target),
     /// The attach bar the run was made under, as a percent.
     percent: Int,
+    /// Whether the finding is written to the ledger.
+    recording: project_jev_judge.Recording,
   )
 }
 
@@ -291,6 +292,7 @@ pub fn start(
         jev: Some(JevPlan(
           recorded: recorded_targets(current, work),
           percent: setup.setting.percent,
+          recording: setup.recording,
         )),
       ))
     }
@@ -603,22 +605,25 @@ pub fn lane_of(
 ) -> Result(Lane, String) {
   use measured <- result.try(router_of(router, jev.default))
 
-  // The replay lane serves recorded answers, which a Jev run has none of.
-  case word, measured {
-    None, ModelRouter | Some("replay"), ModelRouter -> Ok(ReplayLane)
-    None, JevRouter | Some("replay"), JevRouter ->
+  // The replay lane serves recorded answers, which a Jev run has none of, and
+  // it measures the gate, which neither router decides.
+  case word, router, measured {
+    None, _, _ | Some("replay"), None, _ -> Ok(ReplayLane)
+    Some("replay"), Some("jev"), _ ->
       Error(
         "a Jev verdict is live only: a replay serves the router's recorded answers, and Jev has none. Ask for lane live.",
       )
-    Some("live"), ModelRouter -> result.map(judge(), LiveLane)
-    Some("live"), JevRouter ->
+    Some("replay"), Some(_), _ -> Ok(ReplayLane)
+    Some("live"), _, ModelRouter -> live_model(jev, judge)
+    Some("live"), _, JevRouter ->
       result.map(judge(), fn(router_judge) {
         JevLane(project_jev_judge.Setup(
           setting: jev.setting,
           router: router_judge,
+          recording: recording_for(jev.default),
         ))
       })
-    Some(_), _ -> Error("a lane is replay or live")
+    Some(_), _, _ -> Error("a lane is replay or live")
   }
 }
 
@@ -656,6 +661,7 @@ fn jev_report(plan: Plan, measured: Measured) -> Option(#(JsonValue, String)) {
       #("service_healthy", json.Bool(healthy)),
       #("sweep", json.Array(list.map(rows, sweep_json))),
       #("silver", silver_json(compared)),
+      #("uncompared", json.Int(list.length(entries) - compared.compared)),
       #("models", json.Array(list.map(models_of(entries), json.String))),
     ])
   #(body, jev_words(planned.percent, counted, healthy, rows, compared))
@@ -776,7 +782,7 @@ fn jev_words(
     <> int.to_string(compared.agreeing)
     <> " of "
     <> int.to_string(compared.compared)
-    <> " triggers it settled and the router chose for. The tickets listed are the ones at run time, so a trigger that arrived earlier was judged against a list it did not see."
+    <> " triggers it settled and the router chose for. The rest are not compared: a rule in observe records the router's accepts as would-accept, which names no ticket to compare. The tickets listed are the ones at run time, so a trigger that arrived earlier was judged against a list it did not see."
   first <> " " <> sweep <> " " <> silver
 }
 
@@ -786,4 +792,29 @@ fn percent_text(points: Int) -> String {
   <> "."
   <> int.to_string({ points % 100 } / 10)
   <> "%"
+}
+
+/// A model verdict on a daemon that routes with Jev would be recorded under the
+/// Jev pin, which names a decider it did not measure, so it is refused.
+fn live_model(
+  jev: Jev,
+  judge: fn() -> Result(Judge, String),
+) -> Result(Lane, String) {
+  // A daemon that routes with the model records a model verdict as it always has.
+  case jev.default {
+    ModelRouter -> result.map(judge(), LiveLane)
+    JevRouter ->
+      Error(
+        "this daemon routes with Jev, so a verdict of the model router would be recorded under a pin that names Jev. Set [project] router to model first, or ask for router jev.",
+      )
+  }
+}
+
+/// A Jev verdict is recorded only when the daemon routes with Jev, since only
+/// then is the pin in force the one that names Jev.
+fn recording_for(default: Router) -> project_jev_judge.Recording {
+  case default {
+    JevRouter -> project_jev_judge.Records
+    ModelRouter -> project_jev_judge.MeasuresOnly
+  }
 }

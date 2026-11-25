@@ -62,9 +62,22 @@ pub type Setting {
   )
 }
 
+/// Whether a finished run's verdict is written to the ledger. A verdict is
+/// pinned to the decider that was measured, and the pin in force is the Jev
+/// form only when the daemon routes with Jev. A daemon that routes with the
+/// model would otherwise record a Jev run under the model's pin and unlock
+/// `auto` for a router the run did not measure.
+pub type Recording {
+  /// The verdict is recorded under the Jev pin.
+  Records
+
+  /// The run measures and reports and records nothing.
+  MeasuresOnly
+}
+
 /// A setting with the router's own decider, which takes every trial Jev leaves.
 pub type Setup {
-  Setup(setting: Setting, router: Judge)
+  Setup(setting: Setting, router: Judge, recording: Recording)
 }
 
 /// The decider a run measures: Jev first, the router for what Jev leaves. The

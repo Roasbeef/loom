@@ -60,6 +60,7 @@ import client/jev as transport
 import client/notes
 import client/peer_mail
 import client/project_github
+import client/project_jev_judge
 import client/project_judge
 import client/project_overrides.{type Change, type View}
 import client/project_poller
@@ -4581,15 +4582,40 @@ fn router_pinned(
   case host.config.policy.router {
     ModelRouter -> pin_now(host, prompt_revision, router_model)
     JevRouter -> {
+      let bars = configured_bars(host)
       let held =
         Host(..host, router_pin: Some(#(prompt_revision, router_model)))
-      announce_jev_pin(
-        held,
-        host.config.policy.jev_model,
-        configured_bars(held),
-      )
+
+      // A pin already in the Jev form for this router and bar is kept: the
+      // engine holds the model Jev last reported, which a restart must not
+      // replace with the configured alias and so demote every `auto` rule.
+      case jev_pin_held(held, prompt_revision, router_model, bars) {
+        True -> held
+        False -> announce_jev_pin(held, host.config.policy.jev_model, bars)
+      }
     }
   }
+}
+
+/// Whether the engine's pin is the Jev form over this router's prompt and
+/// model and this bar, whatever model Jev resolved to.
+fn jev_pin_held(
+  host: Host,
+  prompt_revision: String,
+  router_model: String,
+  bars: jev.Bars,
+) -> Bool {
+  let wanted =
+    jev.pin_of(
+      host.engine.policy_version,
+      "x",
+      prompt_revision,
+      router_model,
+      bars,
+    )
+  string.starts_with(host.engine.router_model, "jev/")
+  && string.ends_with(host.engine.router_model, "/" <> router_model)
+  && host.engine.prompt_revision == wanted.prompt_revision
 }
 
 /// The catalogue agent chosen for a ticket's origin trigger, or none for the
@@ -6236,10 +6262,16 @@ fn conclude_run(
     project_verdict.conclude(host.engine, plan, found)
   }
 
-  // A run with no samples, or whose pin moved, is a sentence and no event.
-  case concluded {
-    Error(words) -> #(host, "incomplete", words)
-    Ok(#(recorded, body)) -> {
+  // A run with no samples, or whose pin moved, is a sentence and no event, and
+  // a Jev run that has nothing to be recorded under is reported only.
+  case concluded, withheld(plan, measured) {
+    Error(words), _ -> #(host, "incomplete", words)
+    Ok(#(_, body)), Some(reason) -> #(
+      host,
+      "measured",
+      text_of(body, "words") <> " " <> reason,
+    )
+    Ok(#(recorded, body)), None -> {
       let #(next, committed) = record_verdict(host, rule, by, recorded, body)
 
       // The engine may still refuse the event, which is the last way a run
@@ -6249,6 +6281,31 @@ fn conclude_run(
         Error(words) -> #(next, "incomplete", words)
       }
     }
+  }
+}
+
+/// Why a Jev run's finding is reported and not recorded, if it is not. A daemon
+/// that routes with the model has no Jev pin to record under, and a run in which
+/// Jev never answered measured the router alone.
+fn withheld(
+  plan: project_verdict.Plan,
+  measured: Result(project_judge.Measured, String),
+) -> Option(String) {
+  // Only a Jev run can be withheld, and the daemon's own setting decides first.
+  case plan.jev, measured {
+    Some(planned), Ok(found) ->
+      case planned.recording, reported_model(found) {
+        project_jev_judge.MeasuresOnly, _ ->
+          Some(
+            "Not recorded: this daemon routes with the model, so a Jev verdict is reported and does not unlock auto. Set [project] router to jev to record one.",
+          )
+        project_jev_judge.Records, None ->
+          Some(
+            "Not recorded: Jev never answered, so the run measured the router alone.",
+          )
+        project_jev_judge.Records, Some(_) -> None
+      }
+    _, _ -> None
   }
 }
 

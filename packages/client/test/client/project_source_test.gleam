@@ -1011,7 +1011,7 @@ fn jev_body(asks: String, clear: String) -> String {
 // Jev takes the first two bumps on, declines most of the rest, leaves bump 5 in
 // the middle band, and fails on bump 6. The router's own decider, scripted to
 // agree with the labels, takes what Jev leaves.
-fn jev_lane() -> project_verdict.Lane {
+fn jev_lane(recording: project_jev_judge.Recording) -> project_verdict.Lane {
   let fetch = fn(request: http.HttpRequest, _limit, _timeout) {
     let asked = fn(n: Int) {
       string.contains(request.body, "bump package " <> int.to_string(n) <> "\"")
@@ -1051,24 +1051,73 @@ fn jev_lane() -> project_verdict.Lane {
       agents: [],
     ),
     router:,
+    recording:,
   ))
 }
 
 pub fn a_verdict_over_jev_reports_coverage_the_sweep_and_the_router_record_test() {
   let #(_rig, handle, _triggers) = labelled_rig("jev-verdict")
   project_host.pin_router(handle, "sha256:one", "profile:default model:a")
-  let row = live_run(handle, "deps", jev_lane())
+  let row = live_run(handle, "deps", jev_lane(project_jev_judge.MeasuresOnly))
 
-  // The composed decider agrees with every label, so the verdict passes, and
-  // the account says how the trials ended: 28 triggers settled by Jev, one
-  // abstained on and one failed, three trials each.
-  assert string.contains(row, "\"state\":\"passed\"")
+  // The daemon routes with the model, so a Jev run is reported and records
+  // nothing. The account says how the trials ended: 28 triggers settled by
+  // Jev, one abstained on and one failed, three trials each.
+  assert string.contains(row, "\"state\":\"measured\"")
+  assert string.contains(row, "Not recorded: this daemon routes with the model")
   assert string.contains(row, "Jev settled 93.3% of 90 trials")
   assert string.contains(row, "abstained on 3.3%")
   assert string.contains(row, "gave no usable answer for 3.3%")
   assert string.contains(row, "under the service-health bar")
   assert string.contains(row, "By attach bar")
   assert string.contains(row, "Against the router's own record")
+}
+
+pub fn a_verdict_over_jev_is_recorded_under_the_jev_pin_when_the_daemon_routes_with_jev_test() {
+  let rig =
+    rig(
+      "jev-recorded",
+      project_host.Policy(
+        ..project_host.idle_policy,
+        sources: sources(100),
+        router: project_settings.JevRouter,
+      ),
+    )
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+  label_all(handle, triggers)
+  let row = live_run(handle, "deps", jev_lane(project_jev_judge.Records))
+  assert string.contains(row, "\"state\":\"passed\"")
+
+  // The finding is in the ledger, and the router pin it was recorded under
+  // names the model the service reported.
+  stop(handle)
+  let kinds = ledger_kinds(rig)
+  assert list.contains(kinds, "verdict_recorded")
+  assert list.contains(kinds, "router_pin_set")
+}
+
+pub fn a_model_verdict_is_refused_on_a_daemon_that_routes_with_jev_test() {
+  let jev =
+    project_verdict.Jev(
+      ..project_verdict.jev_off(),
+      default: project_settings.JevRouter,
+    )
+  let assert Error(words) =
+    project_verdict.lane_of(Some("live"), Some("model"), jev, fn() {
+      Error("no judge")
+    })
+  assert string.contains(words, "routes with Jev")
+
+  // The replay lane measures the gate, which neither router decides.
+  assert project_verdict.lane_of(Some("replay"), None, jev, fn() {
+      Error("no judge")
+    })
+    == Ok(project_verdict.ReplayLane)
 }
 
 pub fn a_verdict_over_jev_is_refused_on_the_replay_lane_test() {
