@@ -39,12 +39,17 @@ import gleam/string
 import storage/access
 import storage/catalogue
 import storage/domain
+import web_view/timeline_feed
 
 /// The only control envelope version accepted by this module.
 pub const version = 2
 
 /// A complete control frame or fragmented message may contain at most 64 KiB.
 pub const max_bytes = 65_536
+
+/// The most records a `sessions.span` request may name between its first and last
+/// sequence. It is the scan bound of `client/span_read`.
+pub const max_span_records = 5000
 
 /// The most sessions one `sessions.activity` request may name. Each answer
 /// is bounded to 2,400 encoded bytes, so this many fit the 60,000-byte reply
@@ -368,6 +373,30 @@ pub type Command {
     /// Unix milliseconds; peer messages recorded after it are listed. Zero when
     /// the request names none.
     since: Int,
+    epoch: String,
+  )
+
+  /// Reads one page of a running session's timeline cards: the newest `limit`
+  /// cards older than the span `before` begins at, or the newest when it is
+  /// none, the cursor for the older ones and the span still open
+  /// (`protocol-change/134`). The owner, or a member that holds the session at
+  /// any role, as `SessionBrief` is. It reads and never writes.
+  SessionTimeline(
+    session: String,
+    before: Option(Int),
+    limit: Int,
+    epoch: String,
+  )
+
+  /// Reads the lines of one timeline span of a running session: the records from
+  /// `from_seq` to `to_seq`, scanned down from the span's last record `last`
+  /// (`protocol-change/134`). The owner, or a member that holds the session at
+  /// any role, as `SessionTimeline` is. It reads and never writes.
+  SessionSpan(
+    session: String,
+    last: String,
+    from_seq: Int,
+    to_seq: Int,
     epoch: String,
   )
 
@@ -989,6 +1018,59 @@ fn decode_fields(
 
       use epoch <- result.map(text_field(fields, "epoch", 256))
       SessionBrief(session, since, epoch)
+    }
+    "sessions.timeline" -> {
+      use session <- result.try(attention_session(fields))
+
+      // An absent `before` asks for the newest page, and a negative or mistyped
+      // one is refused.
+      use before <- result.try(case list.key_find(fields, "before") {
+        Error(Nil) -> Ok(None)
+        Ok(json.Int(before)) if before >= 0 -> Ok(Some(before))
+        Ok(_) -> Error("expected a nonnegative before")
+      })
+
+      // An absent `limit` asks for the default page, and one outside the bound
+      // is refused rather than clamped, so a caller learns its own mistake.
+      use limit <- result.try(case list.key_find(fields, "limit") {
+        Error(Nil) -> Ok(timeline_feed.default_limit)
+        Ok(json.Int(limit)) if limit >= 1 && limit <= timeline_feed.max_cards ->
+          Ok(limit)
+        Ok(_) -> Error("expected a limit of one to twenty")
+      })
+
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionTimeline(session, before, limit, epoch)
+    }
+    "sessions.span" -> {
+      use session <- result.try(attention_session(fields))
+      use last <- result.try(text_field(fields, "last", 64))
+      use last <- result.try(
+        ids.parse_entry_id(last)
+        |> result.map(ids.entry_id_to_string)
+        |> result.replace_error("expected a record id"),
+      )
+
+      // The span's first sequence is a nonnegative integer.
+      use from_seq <- result.try(case list.key_find(fields, "from_seq") {
+        Ok(json.Int(from_seq)) if from_seq >= 0 -> Ok(from_seq)
+        Ok(_) | Error(Nil) -> Error("expected a nonnegative from_seq")
+      })
+
+      // Its last is no earlier than its first.
+      use to_seq <- result.try(case list.key_find(fields, "to_seq") {
+        Ok(json.Int(to_seq)) if to_seq >= from_seq -> Ok(to_seq)
+        Ok(_) | Error(Nil) -> Error("expected a to_seq no less than from_seq")
+      })
+
+      // A span longer than the scan bound is refused, since the read would be cut.
+      use Nil <- result.try(case to_seq - from_seq < max_span_records {
+        True -> Ok(Nil)
+        False -> Error("expected a span of fewer than 5000 records")
+      })
+
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionSpan(session, last, from_seq, to_seq, epoch)
     }
     "sessions.review" -> {
       use session <- result.try(attention_session(fields))

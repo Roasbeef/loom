@@ -2482,3 +2482,22 @@ for a folder on this daemon's machine (`Folder`, `TypedFolder`, `Picked`, agent 
 `view/new_session.worktree_toggle` draws it beside the chips with the existing `place-chip`
 classes; `component.Label.branch` is the session's `loom/<id>` branch, which `stream_head`
 adds to its place words.
+## Session timeline (protocol-change/134)
+
+`timeline_feed` is the typed page of timeline cards, its total decoder and its
+encoder, with every session string wrapped in `session_brief.Untrusted`.
+`timeline_rule` holds what the page keeps (`Held`, merged from newest and older
+pages) and which cards a density shows (`Landmarks`, `Standard`, `Detailed`).
+`view/timeline_view` draws the "Where it is" band, the density control, the cards
+and "Earlier cards". Home reads a session's first page with its brief and an older
+page on a press (`home.TimelineRead`), and `inbox.Offer.timelines` draws it above
+the review pane in a session's thread. Session text is a text node and the press
+messages carry numbers, never text.
+
+`span_feed` is the typed answer to `sessions.span` (a span's lines, each word
+string `Untrusted`), and Home reads it once when a card is opened
+(`home.SpanRead`, `home.spanning`), drawing the lines in the card
+(`timeline_view.span`). `timeline_rule.merged` joins a newest-page refresh to the
+older pages the person loaded and takes an older page only for the cursor the page
+holds; `shown` at the Landmarks density keeps the landmark cards of the turns where
+something happened and of the newest turn.
