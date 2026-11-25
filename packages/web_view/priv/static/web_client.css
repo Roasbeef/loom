@@ -34,7 +34,7 @@
    input d45998197428aa6231383982bb9a35709b22692f5eba855bd3424037f2603fa1  packages/web_client/src/web_client/mermaid_rule.gleam
    input 3a69c29b35de430ea2b66b999df59b5a48482663ec8701d59a4bb7c1344828b0  packages/web_client/src/web_client/notes.gleam
    input 1e03fd42be5b58ffaebd30339b3cb01b253edf349b7c1731d8a02f49363d4e4c  packages/web_client/src/web_client/pending_rule.gleam
-   input c6d1a7a9f65a55f8490a8d4fd0eb8e021afdccb55cd04c42f772bd7510786465  packages/web_client/src/web_client/picklist.gleam
+   input 186a78825433533cc38f1e82fbfc50023a268edec0814a8c43042d1c57ce748b  packages/web_client/src/web_client/picklist.gleam
    input bc3dad67e488a8ee370b555e20e919c258434dfb0336434e9c2585bfe635baf6  packages/web_client/src/web_client/picklist_rule.gleam
    input 9fe67276f88a2d02088d7d8fc27ce2479da76fa7e00bd280fe5b8389907f658f  packages/web_client/src/web_client/popover.gleam
    input b8ef129c1a538e75dfaaf54b70bb30859013df7d3dcb090c36454d113a3c434f  packages/web_client/src/web_client/popover_rule.gleam
@@ -67,14 +67,14 @@
    input b04d61c20017c3db1953ea00397b1d65218738f7976b181ed8758f346ce3119b  packages/web_view/src/web_view/committed_patch.gleam
    input 45e0f17a9c0774ef90d38eb60ca7a0abb55d7b24bd91a5ed7e987eb3d8fa2963  packages/web_view/src/web_view/completion.gleam
    input 3fdc1f60ba3ed7505ca2a495777a8256590e7aa0156b6a3d983c4c2457cc5517  packages/web_view/src/web_view/component.gleam
-   input 70bd263b6142a2fc5d24f97a9a85c3260a47ffa0e1a32fcf87bfb016c8e41eb4  packages/web_view/src/web_view/composer.gleam
+   input 94c497fe4f3b6f7f9ef68ad7c5be16298567b47f6bb9fd2578b813f666bcb1f0  packages/web_view/src/web_view/composer.gleam
    input 445afa4a5615a89c1ab8d8db1a45ab6712095c4805091c006432fad0e23396ae  packages/web_view/src/web_view/creations.gleam
    input 8f8bb63ee62d9e14a7287585ac4acb69ba17b1b87cc8625065fdf0ca87eb677d  packages/web_view/src/web_view/elsewhere.gleam
    input 6a7e4af3c2061d40e51043212e2bac64f19c782244f3fca08a4417a34bbb860c  packages/web_view/src/web_view/ending.gleam
    input 95dea9e89540da416ca2f2e8a5863b0a006c6a654cf76980566e3f94095e1a57  packages/web_view/src/web_view/evolution.gleam
-   input 4e86b51bd163c9e92fe03727ebc78f3f3fdc651c28d9b961fd4062a33007103f  packages/web_view/src/web_view/folder_browse.gleam
+   input d22ff439b2d17643c403e2eebf95b05a5b766936fe4beaf5ed858e9e0760c9d8  packages/web_view/src/web_view/folder_browse.gleam
    input 777f62e6196e124c729e6beeb69f725ff04bc2857d635b9d6ba7bf4687563636  packages/web_view/src/web_view/grants.gleam
-   input b5c48e6b31da090437380074e2387314d6197a3dc35324cd2fc9539f22a5edf7  packages/web_view/src/web_view/home.gleam
+   input 8a36481257a55691fae9c3913d8c6a87eff128e52b991d1b50b71c0e3c434e8a  packages/web_view/src/web_view/home.gleam
    input 4d9b80a99c6bfbc7b8dd091cf90a6b1dbb4d14c6ce2ab9681f9c67214a085301  packages/web_view/src/web_view/image.gleam
    input 819a6875fea1f7bfb89c5d7aeabdebf15a0f1415ba5b7be00a6528380fb8f32e  packages/web_view/src/web_view/inbox_rule.gleam
    input cc4574be3f7777bc3a1663aebe0aec8b0eb699e6b4eccf33d7dbc2a564e6d43b  packages/web_view/src/web_view/invites.gleam
@@ -147,7 +147,7 @@
    input ddbaeb8df98e687cf53c116094523ceb373c86660e84869d91419aadd45f6d23  packages/web_view/src/web_view/view/lifted.gleam
    input 5ddc13d94dcce07ff3957e2db5f17bc301170aaca707dd1e0636702514d82b9a  packages/web_view/src/web_view/view/live.gleam
    input 5e17ceaa822a04ba69b5155ceceb9b58334d1700289ee02205e5928c8e0c4860  packages/web_view/src/web_view/view/memory.gleam
-   input 4d14cf97564be6957187803ba661ec8fb1957d3e50e2424b15357237b863c657  packages/web_view/src/web_view/view/new_session.gleam
+   input d6837bdcc5e16b48f6fba531180cc85d194ba107935614d74d85f8f9326ae223  packages/web_view/src/web_view/view/new_session.gleam
    input 5f506314cb16fdb0658eb73728d85b56cf39577eb1d1ab51230883ac7bfcecd5  packages/web_view/src/web_view/view/notes.gleam
    input 8ac4a964a8cc9533bc165f260bedd62aa834cfda13f87959b82160cc91a2f17e  packages/web_view/src/web_view/view/notice.gleam
    input afacc41caa63b5b7d434bda98c63819d47ba95e5ed537dd31aa908939589dd20  packages/web_view/src/web_view/view/nudges.gleam
