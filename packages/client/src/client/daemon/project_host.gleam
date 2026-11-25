@@ -6464,6 +6464,7 @@ fn compacted(
   use lines <- result.try(surviving_lines(marked))
   let document =
     project_retention.Document(
+      layout: project_retention.layout_of(kept),
       state: snapshot.encode(kept),
       records: project_retention.select_records(lines, kept),
       arrivals: dict.to_list(
