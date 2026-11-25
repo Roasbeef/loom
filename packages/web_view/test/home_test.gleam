@@ -1291,8 +1291,8 @@ pub fn the_owner_has_a_button_under_each_workspace_test() {
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
 
-  // The rail adds "Everything, by need" and its "+ New session".
-  assert list.length(keys) == 14
+  // The rail adds "Everything, by need", "Get started" and its "+ New session".
+  assert list.length(keys) == 15
   assert list.all(keys, beneath_the_two_regions)
 }
 

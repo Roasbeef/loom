@@ -125,6 +125,10 @@ pub type Offer(message) {
     back: message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
+    /// The first-session hint, drawn first in the list. It sits beneath the
+    /// inbox's own region, where the socket admits a press, and it is nothing
+    /// when its facts do not hold.
+    hint: Element(message),
     /// The Projects section (`web_view/view/projects`), drawn at the head of the
     /// list while the "Projects" folder is the one chosen, and nowhere else. A
     /// page that holds no projects capability passes none.
@@ -290,7 +294,7 @@ type Part {
 /// ## Examples
 ///
 /// ```gleam
-/// // inbox.view(inbox.Offer(folder: inbox_rule.Everything, groups:, selected: None, opening: None, pick:, open:, back:, all_sessions:, new_session: None, presses: 0, field: None, attention: None, review: None, checking: [], sized: [], waited: []))
+/// // inbox.view(inbox.Offer(folder: inbox_rule.Everything, groups:, selected: None, opening: None, pick:, open:, back:, all_sessions:, new_session: None, presses: 0, field: None, hint: element.none(), attention: None, review: None, checking: [], sized: [], waited: []))
 /// ```
 pub fn view(offer: Offer(message)) -> Element(message) {
   html.section([attribute.class("inbox")], [threads_list(offer), pane(offer)])
@@ -400,6 +404,7 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   }
 
   html.div([attribute.class("inbox-list")], [
+    offer.hint,
     watch_bar(offer),
 
     // In the Projects folder the section is the head of the list: it lists each

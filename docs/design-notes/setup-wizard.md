@@ -38,7 +38,7 @@ The wizard assumes a running, configured daemon (the owner's ruling, 2026-11-24)
 
 ## 3. The wizard
 
-A page in the web view, reached as "Get started" at the top of the rail, then the same in desktop. It opens by itself the first time, which means when the daemon has no session and no project and the client has not recorded a dismissal. Once every step is done or skipped, the rail entry hides. It is a list, not a modal sequence: each step has a state word, an action and a Skip, so a person can do step 3 before step 1.
+A page in the web view, reached as "Get started" at the top of the rail, then the same in desktop. It opens by itself the first time, which means when the daemon has no session and no project and the client has not recorded a dismissal. Once every step is done or skipped, the rail entry hides; a step the page cannot read yet keeps it until it is skipped. The entry is offered only on the owner's operating page, because a member's or observer's page cannot do the steps. The web view has no command palette, so the rail entry is its way in; the desktop port adds the palette entry. It is a list, not a modal sequence: each step has a state word, an action and a Skip, so a person can do step 3 before step 1.
 
 It opens with a **status line** that has no actions: the daemon is ready, its version, and the model the `main` role uses once a read reports it (see section 2). Then five steps. Every state is derived from what exists, so a re-run shows what is done:
 
