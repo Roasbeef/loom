@@ -14,7 +14,7 @@ and reaches the page), **PARTIAL** (some of it exists, or it exists but does not
    See Q3.
 2. **The home page and the sidebar already group sessions by "what needs you"** (Needs you / Working / Idle /
    Saved) from a polled `sessions.activity` read. But the page keeps only a four-word state and throws away
-   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7749-6558`).
+   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7806-6558`).
 3. **Project mode is already a coordinator.** One router session, worker sessions per ticket, a ledger, a
    board whose stages are literally "who acts next" (`person/answer`, `person/review`, `person/blocked`,
    `person/failed`), a worker question with an answer box, and GitHub PR creation and polling. The web home
@@ -427,7 +427,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
 | Observer can see counts but not decide | Any inbox surface drawing decide buttons must gate them like approval cards (owner/operator only, 600 ms arming, never auto-focus) | `approvals.md:261-299` |
 | No naked `Bool`, literate comments, lint R0-R22 | Module `////` prose, `///` on every public item, blank line above comments, bodies of at most about eight statements, `make check` is the gate (verify by its own exit code) | `CLAUDE.md` |
 | Pure-state-machine pattern for UI state | State machines as functions; process machinery via weft; no hand-rolled timers/pollers | `CLAUDE.md` ("Process machinery goes through weft"); `docs/weft.md` |
-| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1183` |
+| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1206` |
 
 ---
 

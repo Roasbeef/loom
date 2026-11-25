@@ -11897,3 +11897,11 @@ only product is a verdict and a recorded run.
   `sheet`, `run <dir> <loom.toml> <role>` and `verdict`, each as
   `gleam run -m insight_slice0 -- <command> <dir>`; `run` replays a session whose
   record already holds the same prompt, so a second run costs nothing.
+
+## Session timeline read (protocol-change/134)
+
+`sessions.timeline` is the brief's sibling: `daemon/timeline_door` takes the same
+authority walk and the brief allowance, asks the resident's Agency actor
+(`peer_mail.SessionTimeline`), which answers `timeline_read.read`: the newest 2,000
+records of main cut by `session_view/timeline`, one page of at most 20 cards, a
+cursor, and the open span. The page is `web_view/timeline_feed`.

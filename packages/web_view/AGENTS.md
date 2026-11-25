@@ -2454,3 +2454,15 @@ Things that break if changed carelessly:
   of the counts, and a margin on the dock keeps the stream in place.
 - **Folders.** The session page's rail folders are buttons only where
   `component.can_go_home` holds, and text otherwise.
+
+## Session timeline (protocol-change/134)
+
+`timeline_feed` is the typed page of timeline cards, its total decoder and its
+encoder, with every session string wrapped in `session_brief.Untrusted`.
+`timeline_rule` holds what the page keeps (`Held`, merged from newest and older
+pages) and which cards a density shows (`Landmarks`, `Standard`, `Detailed`).
+`view/timeline_view` draws the "Where it is" band, the density control, the cards
+and "Earlier cards". Home reads a session's first page with its brief and an older
+page on a press (`home.TimelineRead`), and `inbox.Offer.timelines` draws it above
+the review pane in a session's thread. Session text is a text node and the press
+messages carry numbers, never text.
