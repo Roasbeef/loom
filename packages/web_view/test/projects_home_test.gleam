@@ -22,6 +22,7 @@ import session_view/project_board as board
 import web_view/creations
 import web_view/home
 import web_view/inbox_rule
+import web_view/project_page
 import web_view/projects as feed
 import web_view/sessions.{Entry, Live}
 import web_view/signins
@@ -140,7 +141,7 @@ fn detail_saying(seq: Int, text: String) -> json.JsonValue {
 }
 
 fn listed(document: json.JsonValue) -> feed.Read {
-  feed.Heard([feed.Listed("p1", "/src/loom", document)])
+  feed.Heard([feed.Listed("p1", "/src/loom", "router-1", document)])
 }
 
 const now = 7_400_000
@@ -157,6 +158,7 @@ fn sessions_listing() -> List(sessions.Entry) {
       role: None,
       project: None,
       executor: None,
+      standing: sessions.Ordinary,
     ),
   ]
 }
@@ -176,6 +178,11 @@ fn projects_with(
   answer: fn(String, String, Int, String) -> feed.Answer,
 ) -> home.Projects {
   home.Projects(
+    settings: fn(_, deliver) { deliver(feed.SettingsUnread) },
+    set_settings: fn(_, _, _, _, deliver) {
+      deliver(feed.SettingsDeclined("bad_request", "no"))
+    },
+    post: fn(_, _, _, deliver) { deliver(feed.NotPosted("bad_request")) },
     propose: fn(_, deliver) {
       deliver(feed.ProposalRefused(creations.Unavailable))
     },
@@ -765,6 +772,11 @@ pub fn a_refused_close_is_said_in_words_test() {
   let asked = process.new_subject()
   let projects =
     home.Projects(
+      settings: fn(_, deliver) { deliver(feed.SettingsUnread) },
+      set_settings: fn(_, _, _, _, deliver) {
+        deliver(feed.SettingsDeclined("bad_request", "no"))
+      },
+      post: fn(_, _, _, deliver) { deliver(feed.NotPosted("bad_request")) },
       propose: fn(_, deliver) {
         deliver(feed.ProposalRefused(creations.Unavailable))
       },
@@ -809,6 +821,11 @@ pub fn a_failed_start_shows_the_reason_and_offers_what_is_listed_test() {
     ])
   let projects =
     home.Projects(
+      settings: fn(_, deliver) { deliver(feed.SettingsUnread) },
+      set_settings: fn(_, _, _, _, deliver) {
+        deliver(feed.SettingsDeclined("bad_request", "no"))
+      },
+      post: fn(_, _, _, deliver) { deliver(feed.NotPosted("bad_request")) },
       propose: fn(_, deliver) {
         deliver(feed.ProposalRefused(creations.Unavailable))
       },
@@ -848,6 +865,11 @@ pub fn an_ended_ticket_has_no_close_button_test() {
   let done = ticket("t-done", "ended/closed", 1000, "done")
   let projects =
     home.Projects(
+      settings: fn(_, deliver) { deliver(feed.SettingsUnread) },
+      set_settings: fn(_, _, _, _, deliver) {
+        deliver(feed.SettingsDeclined("bad_request", "no"))
+      },
+      post: fn(_, _, _, deliver) { deliver(feed.NotPosted("bad_request")) },
       propose: fn(_, deliver) {
         deliver(feed.ProposalRefused(creations.Unavailable))
       },
@@ -1013,6 +1035,11 @@ fn serving_check(output: String) -> home.Model {
   let ticket = checking(output)
   let projects =
     home.Projects(
+      settings: fn(_, deliver) { deliver(feed.SettingsUnread) },
+      set_settings: fn(_, _, _, _, deliver) {
+        deliver(feed.SettingsDeclined("bad_request", "no"))
+      },
+      post: fn(_, _, _, deliver) { deliver(feed.NotPosted("bad_request")) },
       propose: fn(_, deliver) {
         deliver(feed.ProposalRefused(creations.Unavailable))
       },
@@ -1400,4 +1427,219 @@ pub fn the_projects_folder_draws_a_waiting_ticket_once_test() {
   assert at(html, title) < string.byte_size(html)
   let assert Ok(#(_, after_first)) = string.split_once(html, title)
   assert !string.contains(after_first, title)
+}
+
+// --- a project's page ----------------------------------------------------------
+
+// What the page asked of the daemon from a project's page, in order.
+type Paged {
+  ReadSettings(project: String)
+  Wrote(
+    project: String,
+    revision: Int,
+    changes: List(#(String, option.Option(List(String)))),
+    publish_to: option.Option(String),
+  )
+  Posted(project: String, request: String, text: String)
+}
+
+fn settings_body(revision: Int, check: String) -> json.JsonValue {
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(revision)),
+    #("publish_url", json.String("https://github.com/o/n")),
+    #(
+      "settings",
+      json.Array([
+        json.Object([
+          #("key", json.String("check")),
+          #("value", json.Array([json.String(check)])),
+          #("source", json.String("project")),
+        ]),
+        json.Object([
+          #("key", json.String("max_workers")),
+          #("value", json.Array([json.String("4")])),
+          #("source", json.String("default")),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+// A board with two tickets of the twenty-five the project holds, the router busy
+// and two decisions: one opened a ticket, one was held.
+fn routed_board() -> json.JsonValue {
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(7)),
+    #("total", json.Int(25)),
+    #(
+      "tickets",
+      json.Array([
+        asking("t-ask", 9, "pick a database"),
+        json.Object([
+          #("id", json.String("t-work")),
+          #("title", json.String("build the thing")),
+          #("stage", json.String("working")),
+          #("session", json.String("worker-2")),
+          #("opened_ms", json.Int(100)),
+          #("question", json.Null),
+        ]),
+      ]),
+    ),
+    #(
+      "router",
+      json.Object([
+        #("phase", json.String("busy")),
+        #("queued", json.Int(2)),
+        #("offered", json.Int(1)),
+      ]),
+    ),
+    #(
+      "decisions",
+      json.Array([
+        json.Object([
+          #("trigger", json.String("tr-1")),
+          #("source", json.String("composer")),
+          #("actor", json.String("owner")),
+          #("decision", json.String("accepted")),
+          #("ticket", json.String("t-ask")),
+          #("reason", json.Null),
+          #("at_ms", json.Int(1000)),
+        ]),
+        json.Object([
+          #("trigger", json.String("tr-2")),
+          #("source", json.String("github")),
+          #("actor", json.String("stranger")),
+          #("decision", json.String("held")),
+          #("ticket", json.Null),
+          #("reason", json.String("attention")),
+          #("at_ms", json.Int(900)),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+fn paging(asked: Subject(Paged)) -> home.Model {
+  let projects =
+    home.Projects(
+      ..projects_with(
+        asked_unused(),
+        fn() { listed(routed_board()) },
+        fn(_, _) { feed.TicketGone },
+        fn(_, _, _, _) { feed.Recorded },
+      ),
+      settings: fn(project, deliver) {
+        process.send(asked, ReadSettings(project))
+        deliver(feed.SettingsHeard(settings_body(3, "make check")))
+      },
+      set_settings: fn(project, revision, changes, publish_to, deliver) {
+        process.send(asked, Wrote(project, revision, changes, publish_to))
+        deliver(feed.SettingsStored(settings_body(revision + 1, "make verify")))
+      },
+      post: fn(project, request, text, deliver) {
+        process.send(asked, Posted(project, request, text))
+        deliver(feed.Posted("tr-9"))
+      },
+    )
+
+  run(opened(start_with(Some(projects))), home.ProjectOpened("p1"))
+}
+
+fn drain_paged(asked: Subject(Paged)) -> List(Paged) {
+  case process.receive(asked, 0) {
+    Ok(next) -> [next, ..drain_paged(asked)]
+    Error(Nil) -> []
+  }
+}
+
+// The page shows the router's state, what it decided, the tickets by stage with
+// their workers, how many of the project's tickets it shows, and the settings in
+// force with where each came from.
+pub fn a_project_page_shows_the_router_its_decisions_and_the_tickets_test() {
+  let asked = process.new_subject()
+  let html = drawn(paging(asked))
+
+  assert drain_paged(asked) == [ReadSettings("p1")]
+  assert string.contains(
+    html,
+    "The router is deciding on 1, and 2 requests wait for it.",
+  )
+  assert string.contains(html, "Opened ticket t-ask")
+  assert string.contains(html, "Held: too many tickets wait on a person")
+  assert string.contains(html, "stranger via github")
+  assert string.contains(html, "ANSWER (1)")
+  assert string.contains(html, "worker working")
+  assert string.contains(html, "Showing 2 of 25 tickets.")
+  assert string.contains(html, "check: make check")
+  assert string.contains(html, "set for this project")
+}
+
+// A request goes to the router under a request id the page counts, once.
+pub fn a_request_is_posted_to_the_router_once_test() {
+  let asked = process.new_subject()
+  let model = paging(asked)
+  let _ = drain_paged(asked)
+
+  let model = run(model, home.ProjectRequested(" fix the flaky test "))
+  assert drain_paged(asked) == [Posted("p1", "web-p1-0", "fix the flaky test")]
+  assert string.contains(drawn(model), "Request sent to the router.")
+
+  let _ = run(model, home.ProjectRequested("   "))
+  assert drain_paged(asked) == []
+}
+
+// A form that changes nothing writes nothing; one that changes the check writes
+// that key at the revision read, and the stored settings are drawn.
+pub fn the_settings_form_writes_only_what_changed_test() {
+  let asked = process.new_subject()
+  let model = paging(asked)
+  let _ = drain_paged(asked)
+
+  let unchanged =
+    run(
+      model,
+      home.ProjectSettingsSaved(project_page.Form("make check", "", "4", "")),
+    )
+  assert drain_paged(asked) == []
+  assert string.contains(drawn(unchanged), "Nothing changed.")
+
+  let saved =
+    run(
+      model,
+      home.ProjectSettingsSaved(project_page.Form("make verify", "", "4", "")),
+    )
+  assert drain_paged(asked)
+    == [Wrote("p1", 3, [#("check", Some(["make verify"]))], None)]
+  assert string.contains(drawn(saved), "Settings saved.")
+  assert string.contains(drawn(saved), "check: make verify")
+}
+
+// Turning publishing on names the URL the settings showed.
+pub fn publishing_on_names_the_url_in_the_write_test() {
+  let asked = process.new_subject()
+  let model = paging(asked)
+  let _ = drain_paged(asked)
+
+  let _ = run(model, home.ProjectPublishChosen(project_page.PublishOn))
+  assert drain_paged(asked)
+    == [
+      Wrote(
+        "p1",
+        3,
+        [#("publish", Some(["pull_request"]))],
+        Some("https://github.com/o/n"),
+      ),
+    ]
+}
+
+// A page that holds no such project opens nothing.
+pub fn a_project_the_page_does_not_hold_opens_nothing_test() {
+  let asked = process.new_subject()
+  let model = paging(asked)
+  let _ = drain_paged(asked)
+
+  let after = run(model, home.ProjectOpened("p-gone"))
+  assert after == model
 }

@@ -790,3 +790,57 @@ pub fn a_check_without_a_note_ends_at_its_sentence_test() {
   assert bare("unfinished") == "The check gave no result at abc."
   assert bare("failed") == "The check failed at abc."
 }
+
+// The router's recent decisions and state decode totally and word themselves
+// from fixed sentences: a row with no trigger or no word is left out, an unknown
+// word is kept as the daemon spelled it, and a daemon that predates the read
+// sends none.
+pub fn the_routers_decisions_and_state_decode_and_word_test() {
+  let row = fn(trigger, decision, ticket, reason) {
+    json.Object([
+      #("trigger", json.String(trigger)),
+      #("source", json.String("composer")),
+      #("actor", json.String("owner")),
+      #("decision", json.String(decision)),
+      #("ticket", ticket),
+      #("reason", reason),
+      #("at_ms", json.Int(5)),
+    ])
+  }
+  let assert json.Object(fields) = body([])
+  let document =
+    json.Object(
+      list.append(fields, [
+        #(
+          "decisions",
+          json.Array([
+            row("tr-1", "accepted", json.String("t-1"), json.Null),
+            row("tr-2", "held", json.Null, json.String("attention")),
+            row("tr-3", "from-the-future", json.Null, json.Null),
+            json.Object([#("decision", json.String("accepted"))]),
+          ]),
+        ),
+        #(
+          "router",
+          json.Object([
+            #("phase", json.String("busy")),
+            #("queued", json.Int(2)),
+            #("offered", json.Int(1)),
+          ]),
+        ),
+      ]),
+    )
+  let assert Ok(decoded) = board.decode_board(document)
+
+  assert list.map(decoded.decisions, board.decision_words)
+    == [
+      "Opened ticket t-1",
+      "Held: too many tickets wait on a person",
+      "from-the-future",
+    ]
+  assert decoded.router == Some(board.Router("busy", 2, 1))
+
+  let assert Ok(older) = board.decode_board(body([]))
+  assert older.decisions == []
+  assert older.router == None
+}

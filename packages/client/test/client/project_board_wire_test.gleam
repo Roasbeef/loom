@@ -20,9 +20,11 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap
 import project/model
+import session_view/project_settings_view as settings_view
 import simplifile
 import support/project_ports
 import tools/project as tools
@@ -492,5 +494,58 @@ pub fn a_folder_that_has_a_project_keeps_its_settings_test() {
   let assert Ok(after) = project_host.settings(handle)
   assert after.revision == before.revision
   assert held_check(handle) == []
+  stop(handle)
+}
+
+// The project page's reads and writes over the real actor: the settings in force,
+// a write at the revision read, a stale write refused as `conflict`, a request
+// posted once under its id, and the board body carrying the router's state.
+pub fn the_feed_reads_and_writes_settings_and_posts_requests_test() {
+  let handle = start("feed-page")
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+
+  let assert page_projects.SettingsHeard(body) = feed.settings("p1")
+  let assert Ok(read) = settings_view.decode_settings(body)
+
+  // A write at the revision read is stored; the same revision again is stale.
+  let changes = [#("check", Some(["make verify"]))]
+  let assert page_projects.SettingsStored(_) =
+    feed.set_settings("p1", read.revision, changes, None)
+  assert held_check(handle) == ["make verify"]
+  let assert page_projects.SettingsDeclined("conflict", _) =
+    feed.set_settings("p1", read.revision, [#("check", Some(["make x"]))], None)
+  assert held_check(handle) == ["make verify"]
+
+  // The file's own rules judge a value, and turning publishing on needs its URL.
+  let assert page_projects.SettingsDeclined("bad_request", _) =
+    feed.set_settings(
+      "p1",
+      read.revision + 1,
+      [#("max_workers", Some(["0"]))],
+      None,
+    )
+  let assert page_projects.SettingsDeclined("bad_request", _) =
+    feed.set_settings(
+      "p1",
+      read.revision + 1,
+      [#("publish", Some(["pull_request"]))],
+      None,
+    )
+
+  // A request is recorded once under its id, and a repeat says so.
+  let assert page_projects.Posted(trigger) =
+    feed.post("p1", "web-p1-0", "fix it")
+  assert feed.post("p1", "web-p1-0", "fix it")
+    == page_projects.Reposted(trigger)
+  assert feed.post("p-gone", "web-x-0", "fix it")
+    == page_projects.NotPosted("not_found")
+
+  // The board carries the router's state and no decision text.
+  let assert Ok(shown) = project_host.board(handle, 0)
+  let body = ui_projects.board_body("p1", shown)
+  let assert json.Object(fields) = body
+  let assert Ok(json.Object(router)) = list.key_find(fields, "router")
+  assert list.key_find(router, "phase") |> result.is_ok
+  let assert Ok(json.Array(_)) = list.key_find(fields, "decisions")
   stop(handle)
 }

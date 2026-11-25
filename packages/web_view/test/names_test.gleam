@@ -36,6 +36,7 @@ fn listing() -> List(Entry) {
       role: None,
       project: None,
       executor: None,
+      standing: sessions.Ordinary,
     ),
   ]
 }

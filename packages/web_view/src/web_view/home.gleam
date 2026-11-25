@@ -296,6 +296,7 @@ import lustre/server_component
 import session_view/move_candidates
 import session_view/operator
 import session_view/project_board as board
+import session_view/project_settings_view as settings_view
 import web_view/actions
 import web_view/answer_rule
 import web_view/approval_evidence
@@ -317,6 +318,7 @@ import web_view/page
 import web_view/passkeys.{type Passkey}
 import web_view/placements
 import web_view/project_create
+import web_view/project_page
 import web_view/projects as feed
 import web_view/relayed
 import web_view/relayed_session
@@ -350,6 +352,7 @@ import web_view/view/new_session
 import web_view/view/notice
 import web_view/view/passkeys as passkeys_view
 import web_view/view/project_create as project_create_view
+import web_view/view/project_page as project_page_view
 import web_view/view/projects as projects_view
 import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
@@ -809,6 +812,23 @@ pub type Projects {
     stop: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
     /// Asks for a new worker on a stalled ticket, with the same arguments.
     retry: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
+    /// Starts the read of a project's settings in force. The daemon checks the
+    /// page and the owner again.
+    settings: fn(String, fn(feed.SettingsRead) -> Nil) -> Nil,
+    /// Writes a project's own settings: the project, the revision the page read,
+    /// the changes (a key and its words, or none to give the key back to
+    /// `loom.toml`), and the URL the page names when it turns publishing on. The
+    /// daemon refuses a stale revision.
+    set_settings: fn(
+      String,
+      Int,
+      List(#(String, Option(List(String)))),
+      Option(String),
+      fn(feed.SettingsWrite) -> Nil,
+    ) -> Nil,
+    /// Posts the owner's request to a project's router as an explicit trigger:
+    /// the project, a request id that makes a repeat harmless, and the text.
+    post: fn(String, String, String, fn(feed.Posted) -> Nil) -> Nil,
     /// Starts the read of a proposal for a folder: the check and setup the
     /// daemon would suggest from the folder's own files. The text is a folder
     /// the page drew or the owner typed; the daemon judges it as it judges a new
@@ -985,6 +1005,11 @@ pub opaque type Model {
     /// The entries of the last list, grouped for the sidebar and the table.
     /// It is built when a read lists, so a render regroups nothing.
     groups: List(Group),
+    /// The router and the workers of the projects the daemon lists. They are
+    /// kept out of `groups`, so no list of conversations draws them, and read
+    /// for the inbox alone: one is a thread while it waits on an approval, or
+    /// while its feed holds an ask or a stuck strand (`machinery_listed`).
+    machinery: List(Entry),
     /// What the daemon last said each running session is doing, by identity.
     /// An answer replaces it whole, so a session that stopped running leaves it
     /// at the next one.
@@ -1260,6 +1285,10 @@ pub type Pane {
   /// A ticket of a project (`view/projects`): why it was allowed, its question
   /// with an answer box, and a link to the worker's session.
   Ticketed(ticket: OpenTicket)
+
+  /// One project's page (`view/project_page`): its router and what the router
+  /// decided, a composer for a request, its tickets by stage and its settings.
+  Projected(page: project_page.Page)
 
   /// The owner is making a project (`view/project_create`): a folder, the
   /// daemon's proposal for its check and setup, and the confirmation.
@@ -1623,6 +1652,32 @@ pub type Msg {
   /// The new-project page's Cancel or Done was pressed.
   ProjectCreationClosed
 
+  /// A project's "Open project" was pressed: show its page. The id is the
+  /// board's, fixed when the tree was drawn, and the page honours the press only
+  /// for a project it holds.
+  ProjectOpened(project: String)
+
+  /// The settings of the open project arrived. It is the effect's own message.
+  ProjectSettingsRead(project: String, read: feed.SettingsRead)
+
+  /// The settings form was submitted with what its four boxes held.
+  ProjectSettingsSaved(form: project_page.Form)
+
+  /// A publishing button was pressed.
+  ProjectPublishChosen(how: project_page.Publishing)
+
+  /// The daemon's word on a settings write. It is the effect's own message.
+  ProjectSettingsSettled(project: String, write: feed.SettingsWrite)
+
+  /// The composer was submitted with its one field.
+  ProjectRequested(text: String)
+
+  /// The daemon's word on a post. It is the effect's own message.
+  ProjectPostSettled(project: String, posted: feed.Posted)
+
+  /// The project page's Back was pressed.
+  ProjectPageClosed
+
   /// A row's "Where" was pressed: open its detail. The orchestrator's key and
   /// the session are the group's and the row's, fixed when the tree was drawn,
   /// and the page honours the press only for a pair it holds.
@@ -1918,6 +1973,7 @@ pub fn new(start: Start) -> Model {
   Model(
     start:,
     groups: [],
+    machinery: [],
     activity: dict.new(),
     reports: dict.new(),
     selected: Unchosen,
@@ -3273,6 +3329,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ticket_heard(model, open, read)
         Ticketed(_)
         | ProjectCreating(_)
+        | Projected(_)
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3294,6 +3351,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Ticketed(_), Some(_), Ended(_)
         | Ticketed(_), None, _
         | ProjectCreating(_), _, _
+        | Projected(_), _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3310,6 +3368,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Ticketed(_), Some(_), Ended(_)
         | Ticketed(_), None, _
         | ProjectCreating(_), _, _
+        | Projected(_), _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3324,6 +3383,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           close_settled(model, open, closing)
         Ticketed(_)
         | ProjectCreating(_)
+        | Projected(_)
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3361,6 +3421,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | ProjectCreating(_), Some(_), Ended(_)
         | ProjectCreating(_), None, _
         | Ticketed(_), _, _
+        | Projected(_), _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3382,7 +3443,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ),
           effect.none(),
         )
-        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
+        Ticketed(_) | Projected(_) | NewSession | SessionList | Relayed(_) -> #(
           model,
           effect.none(),
         )
@@ -3398,6 +3459,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | ProjectCreating(_), Some(_), Ended(_)
         | ProjectCreating(_), None, _
         | Ticketed(_), _, _
+        | Projected(_), _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3420,7 +3482,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               )),
             ),
           )
-        Ticketed(_) | NewSession | SessionList | Relayed(_) ->
+        Ticketed(_) | Projected(_) | NewSession | SessionList | Relayed(_) ->
           // The owner left the page while the daemon worked, and a project it
           // made is still to be listed, so the boards are read all the same.
           case made {
@@ -3435,6 +3497,145 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     ProjectCreationClosed ->
       reading_boards(Model(..model, pane: resting_pane(model)))
 
+    // A project's page opens for a project the page holds, on a connected page
+    // with the capability. It reads the settings now and the boards with them.
+    ProjectOpened(project:) ->
+      case
+        model.start.projects,
+        model.status,
+        list.any(model.boards, fn(each) { each.id == project })
+      {
+        Some(_), Connected, True ->
+          project_settings_reading(
+            Model(
+              ..model,
+              pane: Projected(project_page.open(project)),
+              note: None,
+            ),
+            project,
+          )
+        Some(_), Connected, False
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // The settings read answers only for the project the page has open.
+    ProjectSettingsRead(project:, read:) ->
+      case model.pane {
+        Projected(page) if page.project == project -> #(
+          Model(
+            ..model,
+            pane: Projected(project_page.settings_heard(page, read)),
+          ),
+          effect.none(),
+        )
+        Projected(_)
+        | ProjectCreating(_)
+        | Ticketed(_)
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
+      }
+
+    // A form sends the four boxes. The page turns them into the changes that
+    // differ from what is in force, and asks the daemon once.
+    ProjectSettingsSaved(form:) ->
+      project_settings_sending(model, fn(held) {
+        #(project_page.changes(held, form), None)
+      })
+
+    ProjectPublishChosen(how:) ->
+      project_settings_sending(model, fn(held) {
+        project_page.publishing(held, how)
+      })
+
+    // The daemon's word on a write. A stale one is read again, because the
+    // revision the form carried is gone.
+    ProjectSettingsSettled(project:, write:) ->
+      case model.pane {
+        Projected(page) if page.project == project -> {
+          let settled =
+            Model(
+              ..model,
+              pane: Projected(project_page.settings_settled(page, write)),
+            )
+
+          // The message decides which part of the page moves.
+          case write {
+            feed.SettingsDeclined(code: "conflict", ..) ->
+              project_settings_reading(settled, project)
+            feed.SettingsDeclined(..) | feed.SettingsStored(..) -> #(
+              settled,
+              effect.none(),
+            )
+          }
+        }
+        Projected(_)
+        | ProjectCreating(_)
+        | Ticketed(_)
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
+      }
+
+    // The composer's text goes to the router once, under a request id the page
+    // counts, so a press that arrives twice is one request.
+    ProjectRequested(text:) ->
+      case model.pane, model.start.projects, model.status {
+        Projected(page), Some(Projects(post:, ..)), Connected ->
+          case project_page.posting(page, text) {
+            Ok(#(waiting, trimmed)) -> #(
+              Model(..model, pane: Projected(waiting)),
+              {
+                use dispatch <- effect.from
+                post(
+                  page.project,
+                  project_page.request_id(page),
+                  trimmed,
+                  fn(posted) {
+                    dispatch(ProjectPostSettled(page.project, posted))
+                  },
+                )
+              },
+            )
+            Error(unchanged) -> #(
+              Model(..model, pane: Projected(unchanged)),
+              effect.none(),
+            )
+          }
+        Projected(_), Some(_), Connecting
+        | Projected(_), Some(_), Ended(_)
+        | Projected(_), None, _
+        | ProjectCreating(_), _, _
+        | Ticketed(_), _, _
+        | NewSession, _, _
+        | SessionList, _, _
+        | Relayed(_), _, _
+        -> #(model, effect.none())
+      }
+
+    ProjectPostSettled(project:, posted:) ->
+      case model.pane {
+        Projected(page) if page.project == project ->
+          reading_boards(
+            Model(
+              ..model,
+              pane: Projected(project_page.post_settled(page, posted)),
+            ),
+          )
+        Projected(_)
+        | ProjectCreating(_)
+        | Ticketed(_)
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
+      }
+
+    ProjectPageClosed ->
+      reading_boards(Model(..model, pane: resting_pane(model)))
+
     // The daemon's word on an answer. A recorded one leaves an empty box, and a
     // refusal keeps the text and says why in words. Either way the ticket is read
     // again, so the page shows the question the daemon now has.
@@ -3444,6 +3645,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           settled(model, open, answer)
         Ticketed(_)
         | ProjectCreating(_)
+        | Projected(_)
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -4842,6 +5044,7 @@ fn reopened(state: create.State, outcome: Outcome) -> create.State {
 fn observing(model: Model) -> Effect(Msg) {
   let running =
     list.flat_map(model.groups, fn(group) { group.entries })
+    |> list.append(model.machinery)
     |> list.filter(fn(entry) { entry.residency == Live })
     |> list.take(sessions.activity_limit)
     |> list.map(fn(entry) { entry.id })
@@ -4886,6 +5089,7 @@ fn relay_reading(
     | Some(_), SessionList
     | Some(_), Ticketed(_)
     | Some(_), ProjectCreating(_)
+    | Some(_), Projected(_)
     | None, _
     -> #(model, effect.none())
   }
@@ -4917,7 +5121,11 @@ fn relay_heard(model: Model, read: relayed.Read) -> Model {
         ..model,
         pane: Relayed(relayed_session.heard(state, read, model.start.now())),
       )
-    NewSession | SessionList | Ticketed(_) | ProjectCreating(_) -> model
+    NewSession
+    | SessionList
+    | Ticketed(_)
+    | ProjectCreating(_)
+    | Projected(_) -> model
   }
 }
 
@@ -4977,10 +5185,11 @@ fn relay_after(
   case model.pane {
     Relayed(state) ->
       relay_reading(Model(..model, pane: Relayed(apply(state))), RelayAnswered)
-    NewSession | SessionList | Ticketed(_) | ProjectCreating(_) -> #(
-      model,
-      effect.none(),
-    )
+    NewSession
+    | SessionList
+    | Ticketed(_)
+    | ProjectCreating(_)
+    | Projected(_) -> #(model, effect.none())
   }
 }
 
@@ -5287,7 +5496,7 @@ fn boards_heard(
             True -> reading_ticket_thread(model, opened.key)
             False -> #(model, effect.none())
           }
-        ProjectCreating(_), _ -> #(model, effect.none())
+        ProjectCreating(_), _ | Projected(_), _ -> #(model, effect.none())
         NewSession, None | SessionList, None | Relayed(_), None -> #(
           model,
           effect.none(),
@@ -5372,7 +5581,8 @@ fn ticket_heard(
 /// own way back does.
 fn inbox_pane(model: Model) -> Pane {
   case model.pane {
-    Ticketed(_) | Relayed(_) | ProjectCreating(_) -> resting_pane(model)
+    Ticketed(_) | Relayed(_) | ProjectCreating(_) | Projected(_) ->
+      resting_pane(model)
     NewSession | SessionList -> model.pane
   }
 }
@@ -5432,6 +5642,90 @@ fn answering(
         })
       },
     )
+  }
+}
+
+/// Starts the read of the open project's settings.
+fn project_settings_reading(
+  model: Model,
+  project: String,
+) -> #(Model, Effect(Msg)) {
+  case model.start.projects {
+    Some(Projects(settings:, ..)) -> #(model, {
+      use dispatch <- effect.from
+      settings(project, fn(read) {
+        dispatch(ProjectSettingsRead(project, read))
+      })
+    })
+    None -> #(model, effect.none())
+  }
+}
+
+/// Sends a settings write the open page asked for. `build` turns the settings
+/// held into the changes and the URL a publish names. A page that holds no
+/// settings, one with nothing to change and one already sending asks nothing,
+/// and the first two say why.
+fn project_settings_sending(
+  model: Model,
+  build: fn(settings_view.Settings) ->
+    #(List(#(String, Option(List(String)))), Option(String)),
+) -> #(Model, Effect(Msg)) {
+  case model.pane, model.start.projects, model.status {
+    Projected(page), Some(Projects(set_settings:, ..)), Connected ->
+      case page.settings, page.composing {
+        project_page.Held(held), project_page.Ready ->
+          case build(held) {
+            #([], _) -> #(
+              Model(
+                ..model,
+                pane: Projected(
+                  project_page.Page(
+                    ..page,
+                    notice: Some(project_page.Told("Nothing changed.")),
+                  ),
+                ),
+              ),
+              effect.none(),
+            )
+            #(changes, publish_to) -> #(
+              Model(
+                ..model,
+                pane: Projected(
+                  project_page.Page(
+                    ..page,
+                    composing: project_page.Sending,
+                    notice: None,
+                  ),
+                ),
+              ),
+              {
+                use dispatch <- effect.from
+                set_settings(
+                  page.project,
+                  held.revision,
+                  changes,
+                  publish_to,
+                  fn(write) {
+                    dispatch(ProjectSettingsSettled(page.project, write))
+                  },
+                )
+              },
+            )
+          }
+        project_page.Unread, _ | project_page.Held(_), project_page.Sending -> #(
+          model,
+          effect.none(),
+        )
+      }
+    Projected(_), Some(_), Connecting
+    | Projected(_), Some(_), Ended(_)
+    | Projected(_), None, _
+    | ProjectCreating(_), _, _
+    | Ticketed(_), _, _
+    | NewSession, _, _
+    | SessionList, _, _
+    | Relayed(_), _, _
+    -> #(model, effect.none())
   }
 }
 
@@ -5663,10 +5957,17 @@ fn answered(model: Model, listing: Listing) -> Model {
   // nothing and a closed page keeps what it drew.
   case listing {
     Listed(entries:) -> {
+      // A project's router and workers are the project's machinery: they stay out
+      // of the groups every list draws and are kept for the inbox.
+      let #(ordinary, machinery) =
+        list.partition(entries, fn(entry) {
+          entry.standing == sessions.Ordinary
+        })
       let listed =
         Model(
           ..model,
-          groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
+          groups: sessions.grouped(list.take(ordinary, sessions.listed_limit)),
+          machinery:,
           now: model.start.now(),
           status: Connected,
         )
@@ -5833,6 +6134,7 @@ pub fn view(model: Model) -> Element(Msg) {
         SessionList, False -> "Sessions"
         Ticketed(_), _ -> "Ticket"
         ProjectCreating(_), _ -> "New project"
+        Projected(_), _ -> "Project"
         Relayed(_), _ -> "Session"
       },
       who: home_bar.account(
@@ -5888,7 +6190,8 @@ pub fn view(model: Model) -> Element(Msg) {
 fn centre_head(model: Model) -> Element(Msg) {
   // The peer strip belongs to the list alone, as it did before the section.
   case model.pane {
-    NewSession | Relayed(_) | Ticketed(_) | ProjectCreating(_) -> element.none()
+    NewSession | Relayed(_) | Ticketed(_) | ProjectCreating(_) | Projected(_) ->
+      element.none()
     SessionList -> elsewhere_view.strip(elsewhere_offer(model))
   }
 }
@@ -5905,9 +6208,41 @@ fn projects_offer(model: Model) -> projects_view.Offer(Msg) {
         projects: model.boards,
         now: model.now,
         open: OpeningTicket,
+        open_project: ProjectOpened,
         create: Some(ProjectCreationOpened),
       )
     None, _ -> projects_view.Hidden
+  }
+}
+
+/// The open project's page, from the board the page holds for it. A project the
+/// board no longer lists is drawn as a sentence and the way back.
+fn project_page_view_of(model: Model, page: project_page.Page) -> Element(Msg) {
+  case list.find(model.boards, fn(each) { each.id == page.project }) {
+    Ok(loaded) ->
+      project_page_view.view(project_page_view.Offer(
+        page:,
+        loaded:,
+        now: model.now,
+        open_ticket: fn(ticket) { OpeningTicket(page.project, ticket) },
+        open_router: worker_press(model, loaded.router_session),
+        request: ProjectRequested,
+        save: ProjectSettingsSaved,
+        publish: ProjectPublishChosen,
+        back: ProjectPageClosed,
+      ))
+    Error(Nil) ->
+      html.p([attribute.class("home-empty")], [
+        html.text("This project is not on the board."),
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("home-new"),
+            event.on_click(ProjectPageClosed),
+          ],
+          [html.text("Back")],
+        ),
+      ])
   }
 }
 
@@ -6013,17 +6348,73 @@ fn centre_body(model: Model) -> Element(Msg) {
 /// list does not hold is not drawn: the list is what the daemon authorized, and
 /// a saved session has no report to read.
 fn inbox_threads(model: Model) -> List(inbox_rule.Thread) {
-  list.filter_map(listing.entries(model.groups), fn(entry) {
-    case entry.residency {
-      Live ->
-        dict.get(model.reports, entry.id)
-        |> result.map(thread_of(entry, _))
-      sessions.Saved
-      | sessions.Blocked
-      | sessions.FailedStart(_)
-      | sessions.Moving(_) -> Error(Nil)
+  let listed =
+    list.filter_map(listing.entries(model.groups), fn(entry) {
+      case entry.residency {
+        Live ->
+          dict.get(model.reports, entry.id)
+          |> result.map(thread_of(entry, _))
+        sessions.Saved
+        | sessions.Blocked
+        | sessions.FailedStart(_)
+        | sessions.Moving(_) -> Error(Nil)
+      }
+    })
+
+  list.append(listed, machinery_threads(model))
+}
+
+/// The project sessions that are threads: a running router or worker whose
+/// activity says an approval is pending. One that is idle, working or settled is
+/// the project's own business and is not listed, so a project with tickets in
+/// flight adds nothing to the inbox until a session needs the owner. An ask or a
+/// stuck strand of one reaches the inbox through the feed, named by
+/// `session_name`.
+fn machinery_threads(model: Model) -> List(inbox_rule.Thread) {
+  list.filter_map(model.machinery, fn(entry) {
+    case entry.residency, dict.get(model.reports, entry.id) {
+      Live, Ok(report) ->
+        case inbox_rule.kind(report) {
+          inbox_rule.ApprovalPending ->
+            Ok(inbox_rule.Thread(
+              id: entry.id,
+              name: standing_name(model, entry),
+              workspace: entry.workspace,
+              report:,
+            ))
+          inbox_rule.Idle
+          | inbox_rule.Failed
+          | inbox_rule.Working
+          | inbox_rule.Settled -> Error(Nil)
+        }
+      Live, Error(Nil)
+      | sessions.Saved, _
+      | sessions.Blocked, _
+      | sessions.FailedStart(_), _
+      | sessions.Moving(_), _
+      -> Error(Nil)
     }
   })
+}
+
+/// What a project session is called in the inbox: "Worker for ticket" and the
+/// ticket's title when the board holds it (its id otherwise), or "Router of" and
+/// the project's workspace. These words are the page's own around the daemon's
+/// ticket title, which is drawn as text.
+fn standing_name(model: Model, entry: Entry) -> String {
+  case entry.standing {
+    sessions.ProjectWorker(project:, ticket:) ->
+      case feed.find(model.boards, project, ticket) {
+        Ok(found) -> "Worker for " <> board.title_words(found)
+        Error(Nil) -> "Worker for ticket " <> ticket
+      }
+    sessions.ProjectRouter(project:) ->
+      case list.find(model.boards, fn(each) { each.id == project }) {
+        Ok(loaded) -> "Router of " <> loaded.workspace
+        Error(Nil) -> "Router of " <> project
+      }
+    sessions.Ordinary -> sessions.label(entry)
+  }
 }
 
 /// One session as the inbox draws it, from its catalogue row and a report.
@@ -6243,6 +6634,7 @@ fn landed_inbox(model: Model) -> Bool {
     NewSession, Decided(InboxCentre) | SessionList, Decided(InboxCentre) -> True
     Ticketed(_), _
     | ProjectCreating(_), _
+    | Projected(_), _
     | Relayed(_), _
     | NewSession, Awaiting
     | SessionList, Awaiting
@@ -6481,19 +6873,24 @@ fn dismissing(
 }
 
 /// Every item the last feed read holds, for the sessions the page's list still
-/// holds as running. The rows are taken in the order of the session identity so
-/// two renders of one read agree.
+/// holds as running, and for the project sessions it keeps apart: an ask or a
+/// stuck strand of a router or a worker reaches the owner like any other. The
+/// rows are taken in the order of the session identity so two renders of one read
+/// agree.
 fn current_items(model: Model) -> List(attention_rule.Item) {
   let running =
-    list.filter_map(listing.entries(model.groups), fn(entry) {
-      case entry.residency {
-        Live -> Ok(entry.id)
-        sessions.Saved
-        | sessions.Blocked
-        | sessions.FailedStart(_)
-        | sessions.Moving(_) -> Error(Nil)
-      }
-    })
+    list.filter_map(
+      list.append(listing.entries(model.groups), model.machinery),
+      fn(entry) {
+        case entry.residency {
+          Live -> Ok(entry.id)
+          sessions.Saved
+          | sessions.Blocked
+          | sessions.FailedStart(_)
+          | sessions.Moving(_) -> Error(Nil)
+        }
+      },
+    )
 
   model.feed
   |> dict.to_list
@@ -6587,6 +6984,7 @@ fn attending(model: Model) -> Effect(Msg) {
       let entries = listing.entries(model.groups)
       let live =
         entries
+        |> list.append(model.machinery)
         |> list.filter(fn(entry) { entry.residency == Live })
         |> list.take(sessions.activity_limit)
         |> list.map(fn(entry) { entry.id })
@@ -7506,7 +7904,11 @@ fn session_name(model: Model, session: String) -> String {
     list.find(listing.entries(model.groups), fn(entry) { entry.id == session })
   {
     Ok(entry) -> sessions.label(entry)
-    Error(Nil) -> "Session " <> string.slice(session, 0, 8)
+    Error(Nil) ->
+      case list.find(model.machinery, fn(entry) { entry.id == session }) {
+        Ok(entry) -> standing_name(model, entry)
+        Error(Nil) -> "Session " <> string.slice(session, 0, 8)
+      }
   }
 }
 
@@ -7521,6 +7923,7 @@ fn inbox_return(model: Model) -> Option(Msg) {
     | SessionList, _, _
     | Ticketed(_), _, _
     | ProjectCreating(_), _, _
+    | Projected(_), _, _
     | Relayed(_), _, _
     -> None
   }
@@ -7546,6 +7949,7 @@ fn centre_pane(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
     Ticketed(open), _ -> ticket_page(model, open)
+    Projected(page), _ -> project_page_view_of(model, page)
     ProjectCreating(creation), _ ->
       project_create_view.view(project_create_view.Offer(
         creation:,

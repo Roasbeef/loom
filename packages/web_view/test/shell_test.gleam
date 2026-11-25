@@ -20,9 +20,42 @@ import web_view/sessions.{Entry, Live, Saved}
 
 fn listing() -> List(sessions.Entry) {
   [
-    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None, None),
-    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
-    Entry("C", "hex release", "/src/weft", 900, Saved, None, None, None, None),
+    Entry(
+      "B",
+      "vetting lint",
+      "/src/loom",
+      300,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
+    Entry(
+      "A",
+      "web ui",
+      "/src/loom",
+      100,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
+    Entry(
+      "C",
+      "hex release",
+      "/src/weft",
+      900,
+      Saved,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
   ]
 }
 
@@ -112,6 +145,7 @@ pub fn the_sidebar_attribute_is_a_fixed_word_test() {
       None,
       None,
       None,
+      sessions.Ordinary,
     ),
   ]
   let html = element.to_string(operator_page.view(listed(hostile)))

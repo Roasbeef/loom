@@ -434,6 +434,14 @@ pub type Board {
     would_have_done: List(JsonValue),
     /// How each configured source is doing, shown on the first page.
     sources: List(JsonValue),
+    /// What the router decided about the triggers it was given, newest first
+    /// and at most `decision_limit`, shown on the first page. Each row names a
+    /// trigger, the decision as one fixed word and the ticket it touched, and
+    /// carries none of the trigger's text.
+    decisions: List(JsonValue),
+    /// Whether the router has a batch out, and how many candidates wait for it,
+    /// shown on the first page.
+    router: JsonValue,
   )
 }
 
@@ -4297,7 +4305,97 @@ fn board_page(host: Host, page: Int) -> Board {
       0 -> sources_json(host)
       _ -> []
     },
+    decisions: case page {
+      0 -> decisions_json(host)
+      _ -> []
+    },
+    router: router_json(host),
   )
+}
+
+/// The most routing decisions the board carries.
+const decision_limit = 20
+
+/// The router's state: whether a batch is out with it, and how many candidates
+/// wait to be offered.
+fn router_json(host: Host) -> JsonValue {
+  json.Object([
+    #("phase", case host.engine.router {
+      state.RouterBusy -> json.String("busy")
+      state.RouterIdle -> json.String("idle")
+    }),
+    #("queued", json.Int(list.length(host.engine.queue))),
+    #("offered", json.Int(list.length(host.engine.offered))),
+  ])
+}
+
+/// What became of the triggers that were decided, newest first. A trigger still
+/// waiting for the router or held by it has no decision yet and is left out.
+/// A row carries references and fixed words, never the trigger's text: the
+/// router's choice is the fact, and a person who wants the words reads the
+/// ticket.
+fn decisions_json(host: Host) -> List(JsonValue) {
+  dict.values(host.engine.triggers)
+  |> list.filter_map(fn(stored) {
+    case stored.fate {
+      state.Decided(decision) -> Ok(#(stored, decision))
+      state.Awaiting | state.Offered -> Error(Nil)
+    }
+  })
+  |> list.sort(fn(a, b) {
+    case int.compare(b.0.trigger.at_ms, a.0.trigger.at_ms) {
+      order.Eq -> string.compare(a.0.trigger.id.value, b.0.trigger.id.value)
+      other -> other
+    }
+  })
+  |> list.take(decision_limit)
+  |> list.map(fn(found) { decision_json(found.0, found.1) })
+}
+
+/// One decision: the trigger, who and where it came from, the decision's word,
+/// the ticket it opened or reached, and the reason when the word has one.
+fn decision_json(
+  stored: state.TriggerRecord,
+  decision: state.Decision,
+) -> JsonValue {
+  // The decision names the word, the ticket it touched and the reason it carries.
+  let #(word, ticket, reason) = case decision {
+    state.OwnMessage -> #("own_message", None, None)
+    state.RecordedOnly -> #("recorded_only", None, None)
+    state.Delivered(ticket:) -> #("delivered", Some(ticket.value), None)
+    state.Accepted(ticket:) -> #("accepted", Some(ticket.value), None)
+    state.Attached(ticket:) -> #("attached", Some(ticket.value), None)
+    state.Resumed(ticket:) -> #("resumed", Some(ticket.value), None)
+    state.StoppedTicket(ticket:) -> #("stopped", Some(ticket.value), None)
+    state.Ignored -> #("ignored", None, None)
+    state.Shed -> #("shed", None, None)
+    state.WouldAccept -> #("would_accept", None, None)
+    state.Held(hold: state.HeldByGate(..)) -> #("held", None, Some("gate"))
+    state.Held(hold: state.HeldByAttention) -> #(
+      "held",
+      None,
+      Some("attention"),
+    )
+    state.Held(hold: state.HeldByCeiling) -> #("held", None, Some("ceiling"))
+    state.Unrouted(..) -> #("unrouted", None, Some("no_decision"))
+  }
+
+  let text = fn(found) {
+    case found {
+      Some(value) -> json.String(value)
+      None -> json.Null
+    }
+  }
+
+  json.Object([
+    #("trigger", json.String(stored.trigger.id.value)),
+    #("source", json.String(stored.trigger.source.value)),
+    #("actor", json.String(stored.trigger.actor.value)),
+    #("decision", json.String(word)),
+    #("ticket", text(ticket)),
+    #("reason", text(reason)),
+    #("at_ms", json.Int(stored.trigger.at_ms)),
+  ])
 }
 
 /// One message the router was offered and decided nothing about, with the text

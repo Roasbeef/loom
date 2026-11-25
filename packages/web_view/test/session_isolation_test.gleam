@@ -40,6 +40,7 @@ fn listing() -> List(sessions.Entry) {
       None,
       None,
       None,
+      sessions.Ordinary,
     ),
     Entry(
       "second",
@@ -51,6 +52,7 @@ fn listing() -> List(sessions.Entry) {
       None,
       None,
       None,
+      sessions.Ordinary,
     ),
   ]
 }

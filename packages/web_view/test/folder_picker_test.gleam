@@ -220,6 +220,7 @@ fn owner(asked: Subject(creations.Place), browsed: Subject(List(String))) {
             role: None,
             project: None,
             executor: None,
+            standing: sessions.Ordinary,
           ),
         ]),
       )

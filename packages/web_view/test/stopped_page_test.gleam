@@ -23,9 +23,42 @@ import web_view/sessions.{type Entry, Entry, Live}
 // The page is on session `A`, and two other sessions run beside it.
 fn listing() -> List(Entry) {
   [
-    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None, None),
-    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
-    Entry("C", "census", "/src/loom", 50, Live, None, None, None, None),
+    Entry(
+      "B",
+      "vetting lint",
+      "/src/loom",
+      300,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
+    Entry(
+      "A",
+      "web ui",
+      "/src/loom",
+      100,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
+    Entry(
+      "C",
+      "census",
+      "/src/loom",
+      50,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
   ]
 }
 

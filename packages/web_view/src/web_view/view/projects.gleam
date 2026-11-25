@@ -75,6 +75,9 @@ pub type Offer(message) {
     /// The message a ticket's button sends, given the project's id and the
     /// ticket's.
     open: fn(String, String) -> message,
+    /// The message a project's "Open project" button sends, given the project's
+    /// id.
+    open_project: fn(String) -> message,
     /// The message the "New project" button sends, or none on a page that may
     /// not make a project.
     create: Option(message),
@@ -159,7 +162,7 @@ pub fn keyed(offer: Offer(message)) -> Option(#(List(Loaded), Int)) {
 pub fn section(offer: Offer(message)) -> Element(message) {
   case offer {
     Hidden -> element.none()
-    Shown(projects:, now:, open:, create:) ->
+    Shown(projects:, now:, open:, open_project:, create:) ->
       html.section(
         [
           attribute.class("home-group"),
@@ -179,7 +182,7 @@ pub fn section(offer: Offer(message)) -> Element(message) {
                 ),
               ]),
             ]
-            _ -> list.map(projects, project(_, now, open))
+            _ -> list.map(projects, project(_, now, open, open_project))
           }
         ],
       )
@@ -207,12 +210,21 @@ fn project(
   loaded: Loaded,
   now: Int,
   open: fn(String, String) -> message,
+  open_project: fn(String) -> message,
 ) -> Element(message) {
   html.div([attribute.class("home-project")], [
     html.div([attribute.class("home-group-head")], [
       html.span([attribute.class("home-folder-name")], [
         html.text(loaded.workspace),
       ]),
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("home-new"),
+          event.on_click(open_project(loaded.id)),
+        ],
+        [html.text("Open project")],
+      ),
     ]),
     case loaded.board {
       None ->

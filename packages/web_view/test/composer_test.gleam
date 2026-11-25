@@ -84,6 +84,7 @@ fn entry(id: String, workspace: String, created_at: Int) -> Entry {
     role: None,
     project: None,
     executor: None,
+    standing: sessions.Ordinary,
   )
 }
 

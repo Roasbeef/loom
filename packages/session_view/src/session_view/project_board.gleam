@@ -267,10 +267,53 @@ pub type Board {
     /// The configured rules with their modes and where each stands on its
     /// verdict, in the order the owner wrote them.
     rules: List(Rule),
+    /// What the router decided about the triggers it was given, newest first,
+    /// or none from a daemon that predates the read.
+    decisions: List(Decision),
+    /// Whether the router has a batch out, or none from a daemon that predates
+    /// the read.
+    router: Option(Router),
     /// What each source said about itself, such as why it is not being read or
     /// when a rate limit ends, in the order sent. A source with nothing to say
     /// adds none, so an empty list means every source is reading normally.
     notes: List(String),
+  )
+}
+
+/// What the router decided about one trigger. It carries references and fixed
+/// words and none of the trigger's text.
+pub type Decision {
+  Decision(
+    /// The trigger's id.
+    trigger: String,
+    /// Where it came from, such as `composer` or `github`.
+    source: String,
+    /// Who wrote it.
+    actor: String,
+    /// The daemon's word: `accepted`, `attached`, `resumed`, `stopped`,
+    /// `delivered`, `ignored`, `shed`, `held`, `unrouted`, `recorded_only`,
+    /// `own_message`, `would_accept`, or a word this client does not know, kept
+    /// as text.
+    decision: String,
+    /// The ticket it opened or reached, when it did.
+    ticket: Option(String),
+    /// The reason that goes with the word, when it has one.
+    reason: Option(String),
+    /// When the trigger arrived, in Unix milliseconds, when known.
+    at_ms: Option(Int),
+  )
+}
+
+/// The router's state as the board reports it.
+pub type Router {
+  Router(
+    /// Whether a batch is out with the router: `idle`, `busy`, or a word this
+    /// client does not know.
+    phase: String,
+    /// How many candidates wait to be offered.
+    queued: Int,
+    /// How many the router holds now.
+    offered: Int,
   )
 }
 
@@ -1136,6 +1179,8 @@ fn board_of(fields: List(#(String, JsonValue))) -> Result(Board, String) {
         tickets:,
         unreadable: list.length(rows) - list.length(tickets),
         would: rows_in(fields, "would_have_done", would_row),
+        decisions: rows_in(fields, "decisions", decision_row),
+        router: router_in(fields),
         rules: rules_in(fields),
         notes: notes_in(fields),
       ))
@@ -1465,6 +1510,69 @@ fn would_row(value: JsonValue) -> Result(Would, Nil) {
       |> string.slice(0, would_text_limit),
     link: option.map(text_in(fields, "link"), text_hygiene.single_line),
   )
+}
+
+/// One routing decision. It needs a trigger and a word.
+fn decision_row(value: JsonValue) -> Result(Decision, Nil) {
+  use fields <- result.try(fields_of(value))
+  use trigger <- result.try(option.to_result(text_in(fields, "trigger"), Nil))
+  use decision <- result.map(option.to_result(text_in(fields, "decision"), Nil))
+  Decision(
+    trigger: text_hygiene.single_line(trigger),
+    source: safe_in(fields, "source"),
+    actor: safe_in(fields, "actor"),
+    decision: text_hygiene.single_line(decision),
+    ticket: option.map(text_in(fields, "ticket"), text_hygiene.single_line),
+    reason: option.map(text_in(fields, "reason"), text_hygiene.single_line),
+    at_ms: int_in(fields, "at_ms"),
+  )
+}
+
+/// The router's state, when the board carries one.
+fn router_in(fields: List(#(String, JsonValue))) -> Option(Router) {
+  case list.key_find(fields, "router") {
+    Ok(json.Object(inner)) ->
+      Some(Router(
+        phase: safe_in(inner, "phase"),
+        queued: option.unwrap(int_in(inner, "queued"), 0),
+        offered: option.unwrap(int_in(inner, "offered"), 0),
+      ))
+    Ok(_) | Error(Nil) -> None
+  }
+}
+
+/// A decision in a sentence: what the router did with a trigger, and to which
+/// ticket. The words are fixed here, one for each of the daemon's, and a word
+/// this client does not know is drawn as the daemon spelled it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let each = project_board.Decision("tr-1", "composer", "owner", "accepted", Some("t-1"), None, None)
+/// assert project_board.decision_words(each) == "Opened ticket t-1"
+/// ```
+pub fn decision_words(each: Decision) -> String {
+  let ticket = option.unwrap(each.ticket, "a ticket")
+
+  // Each of the daemon's decision words has one fixed sentence; any other is kept as sent.
+  case each.decision, each.reason {
+    "accepted", _ -> "Opened ticket " <> ticket
+    "attached", _ -> "Attached to ticket " <> ticket
+    "resumed", _ -> "Resumed ticket " <> ticket
+    "stopped", _ -> "Stopped ticket " <> ticket
+    "delivered", _ -> "Delivered to ticket " <> ticket
+    "ignored", _ -> "Ignored"
+    "shed", _ -> "Shed under load"
+    "would_accept", _ -> "Would have been accepted (observe mode)"
+    "recorded_only", _ -> "Recorded, not admitted"
+    "own_message", _ -> "The project's own message, dropped"
+    "held", Some("gate") -> "Held: the gate would refuse it"
+    "held", Some("attention") -> "Held: too many tickets wait on a person"
+    "held", Some("ceiling") -> "Held: the token ceiling is reached"
+    "held", _ -> "Held"
+    "unrouted", _ -> "Offered to the router without a decision"
+    other, _ -> other
+  }
 }
 
 /// The rules of every source on the board, in the order sent. A source or a

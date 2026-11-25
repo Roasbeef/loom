@@ -49,6 +49,8 @@ pub type Listed {
     /// The workspace the project is bound to, which the section words as the
     /// project's name.
     workspace: String,
+    /// The router's session, which the project page opens.
+    router_session: String,
     /// The `projects.board` reply, to be decoded by
     /// `session_view/project_board.decode_board`.
     board: JsonValue,
@@ -176,6 +178,61 @@ pub type Settled {
   )
 }
 
+/// What the daemon said to a read of a project's settings.
+pub type SettingsRead {
+  /// The `projects.settings` reply, to be decoded by
+  /// `session_view/project_settings_view.decode_settings`.
+  SettingsHeard(
+    /// The reply, as the daemon sent it.
+    body: JsonValue,
+  )
+
+  /// The daemon did not answer, or the page may not ask. The page keeps what it
+  /// drew.
+  SettingsUnread
+}
+
+/// What the daemon said to a write of a project's settings.
+pub type SettingsWrite {
+  /// The settings were stored. The body is the reply, the settings now in
+  /// force, as `SettingsHeard` carries them.
+  SettingsStored(
+    /// The reply, as the daemon sent it.
+    body: JsonValue,
+  )
+
+  /// The daemon refused the write, in its own sentence. A stale revision is the
+  /// code `conflict`, and the page reads the settings again.
+  SettingsDeclined(
+    /// The daemon's error code.
+    code: String,
+    /// The daemon's sentence, drawn as a text node.
+    words: String,
+  )
+}
+
+/// What the daemon said to a request posted from the composer.
+pub type Posted {
+  /// The request was recorded as an explicit trigger.
+  Posted(
+    /// The trigger's id.
+    trigger: String,
+  )
+
+  /// This request id was posted before, so nothing changed.
+  Reposted(
+    /// The trigger's id.
+    trigger: String,
+  )
+
+  /// The daemon refused the post. The code is the daemon's, such as
+  /// `not_found` for a project that is gone.
+  NotPosted(
+    /// The daemon's error code.
+    code: String,
+  )
+}
+
 /// A project as the page holds it: its id, its workspace, and its board once
 /// the reply decoded.
 pub type Loaded {
@@ -184,6 +241,8 @@ pub type Loaded {
     id: String,
     /// The workspace, which names the project on the page.
     workspace: String,
+    /// The router's session id, which the project page opens.
+    router_session: String,
     /// The decoded board, or none when the reply could not be decoded. A project
     /// with no board is drawn as one line that says so, and not as a healthy one.
     board: Option(project_board.Board),
@@ -204,6 +263,7 @@ pub fn decode(listed: List(Listed)) -> List(Loaded) {
     Loaded(
       id: each.id,
       workspace: each.workspace,
+      router_session: each.router_session,
       board: project_board.decode_board(each.board) |> option.from_result,
     )
   })

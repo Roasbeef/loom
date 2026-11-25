@@ -36,6 +36,7 @@ fn entry(id: String, name: String) -> Entry {
     role: None,
     project: None,
     executor: None,
+    standing: sessions.Ordinary,
   )
 }
 

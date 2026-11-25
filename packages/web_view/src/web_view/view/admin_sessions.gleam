@@ -364,6 +364,7 @@ fn named(entries: List(Entry), session: String) -> String {
         None,
         None,
         None,
+        sessions.Ordinary,
       ))
   }
 }

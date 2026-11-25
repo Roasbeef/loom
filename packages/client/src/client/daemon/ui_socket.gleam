@@ -216,6 +216,7 @@ import client/gateway
 import client/peer_mail
 import client/peers
 import client/project_repo
+import client/project_standing
 import client/protocol as session_protocol
 import client/remote/top_relay
 import client/remote_escalation
@@ -1243,6 +1244,29 @@ pub fn upgrade_home(
           retry: fn(project, ticket, deliver) {
             read_task(deliver, fn() {
               retry_ticket_for(standing, open, feed, project, ticket)
+            })
+          },
+          settings: fn(project, deliver) {
+            read_task(deliver, fn() {
+              settings_for(standing, open, feed, project)
+            })
+          },
+          set_settings: fn(project, revision, changes, publish_to, deliver) {
+            read_task(deliver, fn() {
+              set_settings_for(
+                standing,
+                open,
+                feed,
+                project,
+                revision,
+                changes,
+                publish_to,
+              )
+            })
+          },
+          post: fn(project, request, text, deliver) {
+            read_task(deliver, fn() {
+              post_for(standing, open, feed, project, request, text)
             })
           },
           propose: fn(folder, deliver) {
@@ -3857,7 +3881,7 @@ fn listed(
 ) -> List(sessions.Entry) {
   // This branch resolves manager authorized_page registry credential after before the operation continues.
   case manager.authorized_page(registry, credential, after: "") {
-    Ok(#(_, views)) -> held_entries(registry, views) |> with_projects
+    Ok(#(_, views)) -> home_entries(registry, views) |> with_projects
     Error(_) -> []
   }
 }
@@ -5737,6 +5761,83 @@ pub fn retry_ticket_for(
   case authorized_owner(standing, open) {
     Ok(_) -> feed.retry(project, ticket)
     Error(_) -> page_projects.Declined("forbidden")
+  }
+}
+
+/// A project's settings for the owner's page, after the same owner check. A
+/// page that fails it learns nothing of them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.settings_for(standing, open, feed, "p1")
+/// ```
+@internal
+pub fn settings_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+) -> page_projects.SettingsRead {
+  // The check comes before the actor, so a page that fails it asks none.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.settings(project)
+    Error(_) -> page_projects.SettingsUnread
+  }
+}
+
+/// A change to a project's settings for the owner's page, after the same owner
+/// check. A page that fails it writes nothing and is told `forbidden`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.set_settings_for(standing, open, feed, "p1", 3, [#("check", Some(["make"]))], None)
+/// ```
+@internal
+pub fn set_settings_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  revision: Int,
+  changes: List(#(String, Option(List(String)))),
+  publish_to: Option(String),
+) -> page_projects.SettingsWrite {
+  // The check comes before the actor, so a page that may not write writes
+  // nothing to a project's ledger.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.set_settings(project, revision, changes, publish_to)
+    Error(_) ->
+      page_projects.SettingsDeclined(
+        "forbidden",
+        "Only the owner can change a project's settings.",
+      )
+  }
+}
+
+/// The owner's request from the composer, after the same owner check. A page
+/// that fails it posts nothing and is told `forbidden`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.post_for(standing, open, feed, "p1", "web-1", "fix the flaky test")
+/// ```
+@internal
+pub fn post_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  request: String,
+  text: String,
+) -> page_projects.Posted {
+  // The check comes before the actor, so a page that may not post writes
+  // nothing to a project's ledger.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.post(project, request, text)
+    Error(_) -> page_projects.NotPosted("forbidden")
   }
 }
 
@@ -8846,6 +8947,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
       "" -> None
       executor -> Some(executor)
     },
+    standing: sessions.Ordinary,
   )
 }
 
@@ -8865,7 +8967,36 @@ pub fn held_entries(
   registry: manager.Manager(instance),
   views: List(manager.View),
 ) -> List(sessions.Entry) {
-  let entries = list.map(not_in_a_project(registry, views), listed_entry)
+  home_entries(registry, views)
+  |> list.filter(fn(entry) { entry.standing == sessions.Ordinary })
+}
+
+/// Every entry the daemon holds, with what each session is to a project and the
+/// move each is in. The router and the workers of a project are the project's
+/// machinery and are reached from a ticket (`web_view/projects`), so a list of
+/// conversations leaves them out (`held_entries`): listing them in the sidebar
+/// and the home would bury the conversations a person started under one worker
+/// for each ticket. The home's inbox reads this list as well, because a router
+/// or a worker that asks or waits on an approval must still reach the owner
+/// (`web_view/home`, "project sessions in the inbox"), and a worker the owner
+/// cannot see would otherwise wait for ever.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.home_entries(registry, views)
+/// ```
+@internal
+pub fn home_entries(
+  registry: manager.Manager(instance),
+  views: List(manager.View),
+) -> List(sessions.Entry) {
+  let standings =
+    project_start.standings(
+      registry,
+      list.map(views, fn(view) { view.registration.id }),
+    )
+  let entries = entries_with_standings(views, standings)
 
   // This branch resolves manager custodies registry list map entries fn entry entry id before the operation continues.
   case manager.custodies(registry, list.map(entries, fn(entry) { entry.id })) {
@@ -8874,22 +9005,32 @@ pub fn held_entries(
   }
 }
 
-/// The views of the sessions a person lists, which leaves out the router and
-/// the workers of a project. They are the project's machinery and are reached
-/// from a ticket (`web_view/projects`), so listing them in the sidebar and the
-/// home would bury the conversations a person started under one worker for
-/// each ticket. The registry's own listing still returns every session.
-fn not_in_a_project(
-  registry: manager.Manager(instance),
+/// The entries of the views, each with what the session is to a project as the
+/// catalogue's standings say it: a session with no standing is ordinary, and the
+/// router and the workers of a project carry theirs. The home's lists keep the
+/// ordinary entries (`held_entries`) and its inbox reads the rest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.entries_with_standings(views, [#("0198...", project_standing.Router("p-1"))])
+/// ```
+@internal
+pub fn entries_with_standings(
   views: List(manager.View),
-) -> List(manager.View) {
-  let kept =
-    project_start.standings(
-      registry,
-      list.map(views, fn(view) { view.registration.id }),
+  standings: List(#(String, project_standing.Standing)),
+) -> List(sessions.Entry) {
+  list.map(views, fn(view) {
+    sessions.Entry(
+      ..listed_entry(view),
+      standing: case list.key_find(standings, view.registration.id) {
+        Ok(project_standing.Router(project:)) ->
+          sessions.ProjectRouter(project:)
+        Ok(project_standing.Worker(project:, ticket:, ..)) ->
+          sessions.ProjectWorker(project:, ticket:)
+        Ok(project_standing.Ordinary) | Error(Nil) -> sessions.Ordinary
+      },
     )
-  list.filter(views, fn(view) {
-    !list.any(kept, fn(found) { found.0 == view.registration.id })
   })
 }
 
@@ -8963,11 +9104,16 @@ pub fn admin_rows(
 pub fn with_projects(entries: List(sessions.Entry)) -> List(sessions.Entry) {
   list.map(entries, fn(entry) {
     // This branch resolves entry executor before the operation continues.
-    case entry.executor {
+    case entry.executor, entry.standing {
       // A registered workspace is a name, not a directory on this host, so
       // there is nothing here to stat and it is its own project.
-      Some(_) -> entry
-      None ->
+      Some(_), _ -> entry
+
+      // A project's router and workers are the project's own and never a
+      // project the list groups under.
+      None, sessions.ProjectRouter(_) | None, sessions.ProjectWorker(..) ->
+        entry
+      None, sessions.Ordinary ->
         sessions.Entry(..entry, project: ui_project.locate(entry.workspace))
     }
   })

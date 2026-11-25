@@ -11524,6 +11524,11 @@ pub fn a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test() {
     let feed =
       ui_projects.Feed(
         propose: fn(_) { page_projects.ProposalRefused(creations.Unavailable) },
+        settings: fn(_) { page_projects.SettingsUnread },
+        set_settings: fn(_, _, _, _) {
+          page_projects.SettingsDeclined("unused", "unused")
+        },
+        post: fn(_, _, _) { page_projects.NotPosted("unused") },
         create: fn(_, _, _) { page_projects.NotMade(creations.Unavailable) },
         boards: fn() { page_projects.Unread },
         ticket: fn(_, _) { page_projects.TicketUnread },
@@ -11572,6 +11577,11 @@ pub fn a_project_is_proposed_and_made_only_for_the_owner_and_a_usable_folder_tes
     let reached = process.new_subject()
     let feed =
       ui_projects.Feed(
+        settings: fn(_) { page_projects.SettingsUnread },
+        set_settings: fn(_, _, _, _) {
+          page_projects.SettingsDeclined("unused", "unused")
+        },
+        post: fn(_, _, _) { page_projects.NotPosted("unused") },
         propose: fn(folder) {
           process.send(reached, "propose " <> folder)
           page_projects.Proposed(json.Null)
