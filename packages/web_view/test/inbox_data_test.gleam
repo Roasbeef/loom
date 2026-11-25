@@ -477,10 +477,15 @@ pub fn a_code_that_is_not_in_the_table_gets_the_generic_words_test() {
 
 pub fn only_the_open_thread_is_read_and_a_refresh_waits_fifteen_seconds_test() {
   let #(model, clock, calls) = fresh(full_evidence(), None)
-  let _ = recorded(calls)
-  let model = run(model, home.InboxOpened("W"))
 
-  // Opening the working thread reads its brief once, and no other session's.
+  // The working session is in Updates, so its card reads its brief at the first
+  // refresh, before any thread is open, beside the shown approval's read.
+  assert list.contains(recorded(calls), #("W", 0))
+
+  // Opening the thread after the debounce reads its brief once, and no other
+  // session's.
+  set_clock(clock, now + 2000)
+  let model = run(model, home.InboxOpened("W"))
   assert recorded(calls) == [#("W", 0)]
 
   // A refresh a few seconds later does not read it again.
@@ -489,14 +494,15 @@ pub fn only_the_open_thread_is_read_and_a_refresh_waits_fifteen_seconds_test() {
   assert recorded(calls) == []
 
   // One after fifteen seconds does.
-  set_clock(clock, now + 16_000)
+  set_clock(clock, now + 18_000)
   let _ = run(model, home.Ticked)
   assert recorded(calls) == [#("W", 0)]
 }
 
 pub fn pressing_the_open_row_again_reads_once_test() {
-  let #(model, _, calls) = fresh(full_evidence(), None)
+  let #(model, clock, calls) = fresh(full_evidence(), None)
   let _ = recorded(calls)
+  set_clock(clock, now + 2000)
   let model = run(model, home.InboxOpened("W"))
   let _ = run(model, home.InboxOpened("W"))
 
@@ -613,7 +619,11 @@ pub fn an_older_brief_is_not_the_idle_sessions_latest_message_test() {
   let #(model, _, _) = fresh(full_evidence(), None)
   let html = drawn(run(model, home.InboxOpened("B")))
 
-  assert !string.contains(html, "List renders;")
+  // The working session's card in the list quotes that brief; the idle session's
+  // own pane does not.
+  let assert Ok(#(_, pane)) =
+    string.split_once(html, "<section class=\"inbox-reading")
+  assert !string.contains(pane, "List renders;")
 }
 
 // With no time on the overview's message there is nothing newer to contradict
