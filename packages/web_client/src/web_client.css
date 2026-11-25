@@ -2698,9 +2698,10 @@
     :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
     :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
     loom-shell.loom-inbox .session-head .workspace{display:none;}
-    loom-shell.loom-inbox:not(.loom-home) .session-head .home-who{display:none;}
-    loom-shell.loom-home .session-head .home-who{display:flex;min-width:0;}
-    loom-shell.loom-home .session-head .home-who-button{min-height:36px;max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    /* The final design's phone bar is the brand, the crumb and the need pill: the
+       role chip is hidden on every page, Home's included. The owner's menu and
+       Admin stay in the sidebar's foot. */
+    loom-shell.loom-inbox .session-head .home-who{display:none;}
     loom-shell.loom-inbox .session-head{gap:0 10px;padding-right:12px;}
     loom-shell.loom-session:not(.loom-home) .session-head{padding-left:16px;}
     loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
