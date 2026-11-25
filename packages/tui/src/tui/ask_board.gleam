@@ -59,13 +59,12 @@ pub const rest_ms = 4000
 /// milliseconds.
 ///
 /// Every read opens a connection of its own, and most of the time a terminal
-/// has nothing to ask. The `ask` tool ends the run that calls it, and
-/// `ask_control.watch` cuts the rest short when the session's last running
-/// strand stops, so a plain ask is read at once. Three asks wait out the rest:
-/// one a `code_mode` program raises, since its run goes on; one a sub-strand
-/// raises while another strand keeps running, since no edge is seen; and one a
-/// peer or another client raised. Fifteen seconds bounds that wait, and an idle
-/// terminal reconnects four times a minute instead of fifteen.
+/// has nothing to ask. A committed `ask` tool result cuts the rest short
+/// (`ask_committed`), on any strand, so a plain ask is read at once. Three kinds
+/// of ask still wait out the rest: one a `code_mode` program raises, since no
+/// `ask` result is committed, one a peer or another client raised, and any ask
+/// on a terminal with no session channel, which never receives a capture. Fifteen seconds bounds that wait, and an
+/// idle terminal reconnects four times a minute instead of fifteen.
 pub const idle_rest_ms = 15_000
 
 /// How long the board rests after a request failed, in milliseconds.
@@ -110,6 +109,9 @@ pub type Board {
     phase: Phase,
     /// Who has the keyboard.
     focus: Focus,
+    /// The session's `newest_ask_seq` the board has acted on. A newer value
+    /// means an `ask` result was committed since, so an ask may exist.
+    ask_seen: Int,
   )
 }
 
@@ -137,26 +139,39 @@ pub type Feed {
 /// assert ask_board.empty().forms == []
 /// ```
 pub fn empty() -> Board {
-  Board(session: "", forms: [], open: 0, phase: ReadDue, focus: Composer)
+  Board(
+    session: "",
+    forms: [],
+    open: 0,
+    phase: ReadDue,
+    focus: Composer,
+    ask_seen: 0,
+  )
 }
 
-/// The board when a read should not wait out its rest. A rest is cut short and
-/// a read already due, in flight or sending is left as it is.
+/// The board once the newest `ask` tool result of the session is at sequence
+/// `newest`: a value other than the one the board acted on cuts a rest short,
+/// so the read that follows sees the ask.
 ///
-/// The terminal calls this when the last run of the session ends, because an
-/// `ask` ends its asker's run and the owner should not wait out the poll to see
-/// the question.
+/// The terminal calls this on every tick with `Shared.newest_ask_seq`, which a
+/// capture raises for a result on any strand. The board compares and does not
+/// watch for an event, so how fast the run was changes nothing. A rest or a due
+/// read takes the new value at once. A read in flight or an answer being sent
+/// keeps the old one, since the read may have started before the ask existed,
+/// and the next call after it settles cuts the rest short.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let board = ask_board.read_failed(ask_board.empty(), 0)
-/// assert ask_board.due(board).phase == ask_board.ReadDue
+/// assert ask_board.ask_committed(board, 7).phase == ask_board.ReadDue
 /// ```
-pub fn due(board: Board) -> Board {
-  case board.phase {
-    Resting(..) -> Board(..board, phase: ReadDue)
-    ReadDue | Reading(..) | Sending(..) -> board
+pub fn ask_committed(board: Board, newest: Int) -> Board {
+  case board.ask_seen == newest, board.phase {
+    True, _ -> board
+    False, Resting(..) | False, ReadDue ->
+      Board(..board, phase: ReadDue, ask_seen: newest)
+    False, Reading(..) | False, Sending(..) -> board
   }
 }
 
