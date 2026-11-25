@@ -139,6 +139,7 @@ pub fn apply_event(
         usage:,
         remote_usage:,
         records: list.reverse(entries),
+        ask_results: count_ask_results(entries),
         streams: [],
         // A new session or strand has its own generations; the previous
         // view's start time is not theirs.
@@ -374,6 +375,13 @@ pub fn apply_event(
           },
         )
       let updated = surfaces.retire_delivered_nudges(updated, record)
+
+      // A committed `ask` result is when the ask is open, so the terminal's
+      // ask poll reads it at once and does not wait out its rest.
+      let updated = case is_ask_result(record) {
+        True -> session_model.note_ask_result(updated)
+        False -> updated
+      }
 
       // Invalidate transcript only when the active strand commits a record.
       case strand == shared.active_strand {
@@ -789,6 +797,36 @@ fn schedule_line(row: protocol.ScheduleRow) -> String {
     ],
     "  ",
   )
+}
+
+/// How many of these records are results of the `ask` tool.
+///
+/// A capture replaces the records wholesale, so the terminal's count of asked
+/// questions is re-derived from what the capture holds rather than carried
+/// over from the pushed entries it replaces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert event_fold.count_ask_results([]) == 0
+/// ```
+@internal
+pub fn count_ask_results(records: List(protocol.EntryRecord)) -> Int {
+  list.count(records, is_ask_result)
+}
+
+/// Whether a committed record is the result of the `ask` tool.
+fn is_ask_result(record: protocol.EntryRecord) -> Bool {
+  case record.entry {
+    entry.MessageEntry(
+      message: message.ToolResultMessage(tool_name: "ask", ..),
+      ..,
+    ) -> True
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> False
+  }
 }
 
 /// Updates live phase state for the target strand in the strand roster.

@@ -311,16 +311,25 @@ pub fn another_session_starts_a_fresh_board_test() {
   assert fresh.session == "s-2"
 }
 
-pub fn a_rest_can_be_cut_short_and_a_request_in_flight_cannot_test() {
+pub fn a_committed_ask_result_cuts_a_rest_short_and_waits_for_a_request_in_flight_test() {
   let resting = ask_board.read_failed(ask_board.empty(), 0)
-  assert ask_board.due(resting).phase == ask_board.ReadDue
+  let cut = ask_board.ask_committed(resting, 1)
+  assert cut.phase == ask_board.ReadDue
+  assert cut.results_seen == 1
 
-  // A read already due or in flight is left as it is.
-  assert ask_board.due(ask_board.empty()).phase == ask_board.ReadDue
+  // The same count again changes nothing, so a read that rests afterwards is
+  // not cut short a second time for the one result.
+  let rested = ask_board.read_failed(cut, 0)
+  assert ask_board.ask_committed(rested, 1) == rested
+
+  // A read in flight or an answer being sent keeps the count it had, so the
+  // result is acted on once the request settles.
   let reading = ask_board.reading(resting, a_read())
-  assert ask_board.due(reading).phase == reading.phase
+  assert ask_board.ask_committed(reading, 1) == reading
   let sending = ask_board.sending(resting, "ask-0000000001")
-  assert ask_board.due(sending).phase == ask_board.Sending("ask-0000000001")
+  assert ask_board.ask_committed(sending, 1) == sending
+  let settled = ask_board.read_failed(reading, 0)
+  assert ask_board.ask_committed(settled, 1).phase == ask_board.ReadDue
 }
 
 // The keyboard follows an ask, not a position: when an earlier ask is answered

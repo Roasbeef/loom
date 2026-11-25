@@ -503,6 +503,14 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// Bumped by operator or traffic activity (`mark_activity`); idle pacing
     /// reads it.
     activity_revision: Int,
+    /// How many results of the `ask` tool the held records contain: a pushed
+    /// entry adds one, and a capture or snapshot recounts. The tool creates
+    /// the ask before its result is committed, so a count that moved means an
+    /// ask may now be open. A reader keeps the count it last acted on and
+    /// compares, which holds however fast the run was and however the entry
+    /// arrived. The strand roster and the pushed phases are display labels
+    /// that a short run can skip, so they cannot stand in for it.
+    ask_results: Int,
     /// Whether the last connection drain stopped at its batch rather than
     /// at an empty buffer, so the mailbox may still hold frames whose wakes
     /// were already spent on earlier ticks (`inbound.drain_connection`).
@@ -960,6 +968,20 @@ pub fn invalidate_frame(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   Shared(..shared, frame_revision: shared.frame_revision + 1)
+}
+
+/// Counts one committed `ask` result by bumping `ask_results`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.note_ask_result(shared)
+/// ```
+@internal
+pub fn note_ask_result(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, ask_results: shared.ask_results + 1)
 }
 
 /// Records operator or traffic activity by bumping `activity_revision`.

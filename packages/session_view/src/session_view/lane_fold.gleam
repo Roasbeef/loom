@@ -947,6 +947,7 @@ fn render_cut(
     todo_asked:,
     summaries:,
     records: branch.records,
+    ask_results: event_fold.count_ask_results(branch.records),
     scrollback: history,
     parked_scrollback:,
     activity_started_ms: case same_operation {
