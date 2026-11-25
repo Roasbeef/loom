@@ -11721,7 +11721,8 @@ ordinary top-level worker session per ticket assignment
   The board record gains `opened_ms` (the opening message's arrival time, or null),
   the only source of an age, `check` and `review`, and the board gains `unrouted`.
 - `client/daemon/ui_projects` is the owner's home page's feed over the same actors
-  (`boards`, `ticket`, `answer`), returning the daemon's JSON for
+  (`boards`, `ticket`, `answer`, and `propose` and `create` for making a project
+  from the page, judged first by `ui_socket.project_folder`), returning the daemon's JSON for
   `session_view/project_board` to decode; `board_body` is shared with
   `projects.board`. The socket hands it to the owner's operating page alone
   (`ui_socket.home_projects_capability`, repeated by `projects_for`,

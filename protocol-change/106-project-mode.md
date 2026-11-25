@@ -168,7 +168,7 @@ question's `seq`, and an answer whose `seq` is not the ticket's open question is
 `conflict` and records nothing. The board record gains `opened_ms`, the arrival time of the
 ticket's opening message, or null; a client shows an age only from it.
 
-**The page.** The owner's home draws a Projects section above its centre, and a ticket
+**The page.** The owner's home draws a Projects section above its centre (moved into the inbox's Projects folder by the addendum on creating a project; its clicks are beneath `home.table_path` and the region `home.projects_path` was removed), and a ticket
 opens as a pane of the centre. Both are part of the home's existing socket, so they add
 no route. Their authority is the creation capability's own, stated here because each new
 reach needs it written down:
@@ -830,3 +830,23 @@ read. The ledger gains a line per change, kept for good. A release is about 2.9 
 needs the network for one more module, which it already needed for two. The probe copy of a template
 costs one git-cow copy once per build, which copies the bytes where the file system cannot clone.
 `token_ceiling` and the sources still need the file and a restart.
+
+## Addendum: creating a project from the web view (2026-11-24)
+
+**Affects**: the home page's project capability (`web_view/home.Projects`, `client/daemon/ui_projects.Feed`) by two functions, and the owner's home by one page. No new HTTP route, no new WebSocket route, no content security policy change, no new control command and no change to `projects.create`, `projects.propose` or `projects.set_settings`.
+
+**The problem.** A project could be made only from a terminal (`loom project init`). The web view lists projects and their tickets, and an owner with none saw no Projects section at all, so there was no way to begin from the page.
+
+**What was considered.** A new `projects.propose` form that takes a folder instead of a project: rejected, because the control command and the page would then read two shapes for one fact, and no other client needs it. The page calling `projects.create` and then the settings commands as three round trips: rejected, because the page would hold a half-made project between them, and the daemon already does the same two writes in one place for `loom project init`. Offering a free-text path alone: rejected in favour of the folders the new-session composer already offers, with the composer's typed field kept for another folder.
+
+**The decision.**
+
+- `Projects.propose(folder)` answers `projects.Proposed(body)`, the `projects.propose` reply, or `ProposalRefused(reason)`. `Projects.create(folder, check, setup)` answers `Made(project, settled)`, `NotMade(reason)` or `MakeFailed(words)`. They are the feed's `propose` and `create`, in `ui_projects`.
+- The folder is judged by `ui_socket.project_folder` before either runs, as a new session's folder is: the owner check, then a workspace the owner holds a session in or remembers (judged again by `new_folder.check` when only remembered), and otherwise the text as a typed path (`new_folder.check`: inside the owner's home, not the home itself, not hidden, not the daemon's state folder). A folder that fails answers with the same `creations.Reason` and the same fixed words a new session gets, and nothing is read from it. The proposal reads at most twelve named files and runs nothing, as `projects.propose` does.
+- `create` calls the control's `create` (a folder that already has a project keeps it) and then writes the confirmed `check` and `setup` through `project_overrides.parse` and `project_host.change_settings` at the revision read just before, by `owner`. A blank command stores nothing for its key. The two writes are separate, as they are for `loom project init`: a project that was made while its settings were refused answers `Made(_, SettingsRefused(words))`, the page says so, and nothing is undone.
+- The page is a pane of the centre (`web_view/project_create`, `view/project_create`) reached from a "New project" button in the Projects section, which a page that holds the capability at the owner's ceiling now draws even with no project. Nothing is created before Create is pressed, and the page draws the daemon's proposals and reasons as text nodes. The two command boxes start as the proposal and are the owner's own text after an edit.
+- The folder choice is one function of the page, `home.project_folder_choices`, which today is `composer.folders_offered` less the folders that already hold a project, so the searchable picker of the new-session form can replace it.
+
+**Authority.** Only the owner's operating page holds the capability (`ui_socket.home_projects_capability`), the button and every form of the page sit beneath `home.table_path`, where the home's socket already admits a click (to every home) and a submit (to the owner's only). A member's or observer's page holds no capability, so it draws no section and the component ignores the messages. Each of the two functions repeats the owner check and the folder judgement in the daemon. The browser supplies three strings: a folder, a check and a setup. Each form accepts exactly its fields and no other.
+
+**What it costs.** An owner with no project sees a Projects section where the page drew none. A project can exist without the settings the owner confirmed. A proposal is read from the folder when the owner chooses it, which is a bounded read of a dozen files.

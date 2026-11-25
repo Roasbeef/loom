@@ -19,7 +19,9 @@ import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
 import session_view/project_board as board
+import web_view/creations
 import web_view/home
+import web_view/inbox_rule
 import web_view/projects as feed
 import web_view/sessions.{Entry, Live}
 import web_view/signins
@@ -174,6 +176,12 @@ fn projects_with(
   answer: fn(String, String, Int, String) -> feed.Answer,
 ) -> home.Projects {
   home.Projects(
+    propose: fn(_, deliver) {
+      deliver(feed.ProposalRefused(creations.Unavailable))
+    },
+    create: fn(_, _, _, deliver) {
+      deliver(feed.NotMade(creations.Unavailable))
+    },
     boards: fn(deliver) {
       process.send(asked, ReadBoards)
       deliver(boards())
@@ -281,6 +289,12 @@ fn drawn(model: home.Model) -> String {
   element.to_string(home.view(model))
 }
 
+// The page drawn with the inbox's "Projects" folder chosen, which is where the
+// Projects section lives since the fidelity pass took it out of the page's flow.
+fn shown(model: home.Model) -> String {
+  drawn(run(model, home.FolderPicked(inbox_rule.Projecting)))
+}
+
 // The byte offset of the first occurrence of `needle`, or a number past the end.
 fn at(haystack: String, needle: String) -> Int {
   case string.split_once(haystack, needle) {
@@ -293,7 +307,7 @@ fn at(haystack: String, needle: String) -> Int {
 
 pub fn the_section_lists_what_needs_the_owner_in_the_shared_order_test() {
   let #(start, _) = serving(mixed())
-  let html = drawn(opened(start))
+  let html = shown(opened(start))
 
   assert string.contains(html, "Projects")
   assert string.contains(html, "/src/loom")
@@ -309,7 +323,7 @@ pub fn the_section_lists_what_needs_the_owner_in_the_shared_order_test() {
 
 pub fn the_section_draws_the_tickets_in_the_order_the_terminal_does_test() {
   let assert Ok(decoded) = board.decode_board(mixed())
-  let html = drawn(opened(serving(mixed()).0))
+  let html = shown(opened(serving(mixed()).0))
   let positions =
     list.map(board.needing(decoded), fn(each) {
       at(html, board.title_words(each))
@@ -325,22 +339,25 @@ pub fn a_healthy_project_is_one_line_and_no_row_test() {
       ticket("t-1", "working", 1, "first quiet one"),
       ticket("t-2", "queued", 2, "second quiet one"),
     ])
-  let html = drawn(opened(serving(healthy).0))
+  let html = shown(opened(serving(healthy).0))
 
   assert string.contains(html, "Nothing needs you. 1 queued, 1 working.")
   assert !string.contains(html, "first quiet one")
   assert !string.contains(html, "WORKING")
 }
 
-pub fn the_section_is_above_the_session_list_test() {
-  let html = drawn(opened(serving(mixed()).0))
+pub fn the_section_is_in_the_projects_folder_and_not_in_the_flow_test() {
+  let model = opened(serving(mixed()).0)
 
-  assert at(html, "home-projects") < at(html, "home-sessions")
+  // The page's own flow starts with the list, so the first screen is not a
+  // section of projects; the section is what the Projects folder shows.
+  assert !string.contains(drawn(model), "home-projects")
+  assert string.contains(shown(model), "home-projects")
 }
 
 pub fn a_stage_from_a_newer_daemon_is_drawn_as_text_test() {
   let html =
-    drawn(opened(
+    shown(opened(
       serving(
         board_body(3, [
           ticket("t-1", "person/triage", 5, "a new kind of look"),
@@ -372,7 +389,7 @@ pub fn what_observe_would_have_done_is_listed_as_escaped_text_test() {
       #("tickets", json.Array([ticket("t-1", "working", 1, "quiet")])),
       #("would_have_done", json.Array([would])),
     ])
-  let html = drawn(opened(serving(document).0))
+  let html = shown(opened(serving(document).0))
 
   // The heading, the rule, the actor and the address appear, the text is
   // escaped, and no address was made into a link.
@@ -423,7 +440,7 @@ pub fn the_rule_list_shows_each_verdict_state_as_escaped_text_test() {
         ]),
       ),
     ])
-  let html = drawn(opened(serving(document).0))
+  let html = shown(opened(serving(document).0))
 
   assert string.contains(html, "RULES")
   assert string.contains(
@@ -469,14 +486,14 @@ pub fn a_sources_note_is_drawn_escaped_above_the_rules_test() {
         ]),
       ),
     ])
-  let html = drawn(opened(serving(document).0))
+  let html = shown(opened(serving(document).0))
 
   assert string.contains(html, "not read: origin is &lt;script&gt;")
   assert !string.contains(html, "<script>alert(1)")
   assert at(html, "not read: origin") < at(html, "RULES")
 
   // A board whose sources have no note draws no such paragraph.
-  let quiet = drawn(opened(serving(mixed()).0))
+  let quiet = shown(opened(serving(mixed()).0))
   assert !string.contains(quiet, "home-source-note")
 }
 
@@ -506,7 +523,7 @@ pub fn the_rule_row_draws_each_run_state_as_escaped_text_test() {
       ),
     ])
   }
-  let page = fn(run) { drawn(opened(serving(with_run(run)).0)) }
+  let page = fn(run) { shown(opened(serving(with_run(run)).0)) }
 
   let going =
     page(
@@ -546,7 +563,7 @@ pub fn the_rule_row_draws_each_run_state_as_escaped_text_test() {
 }
 
 pub fn a_project_whose_board_cannot_be_read_says_so_test() {
-  let html = drawn(opened(serving(json.String("garbage")).0))
+  let html = shown(opened(serving(json.String("garbage")).0))
 
   assert string.contains(html, "board could not be read.")
 }
@@ -557,7 +574,7 @@ pub fn a_hostile_title_is_escaped_text_test() {
   let hostile =
     "<script>alert(1)</script><img src=x onerror=alert(2)>\u{1b}[2J\u{7}"
   let html =
-    drawn(opened(
+    shown(opened(
       serving(board_body(2, [ticket("t-evil", "person/answer", 1, hostile)])).0,
     ))
 
@@ -748,6 +765,12 @@ pub fn a_refused_close_is_said_in_words_test() {
   let asked = process.new_subject()
   let projects =
     home.Projects(
+      propose: fn(_, deliver) {
+        deliver(feed.ProposalRefused(creations.Unavailable))
+      },
+      create: fn(_, _, _, deliver) {
+        deliver(feed.NotMade(creations.Unavailable))
+      },
       boards: fn(deliver) {
         deliver(listed(board_body(12, [asking("t-ask", 9, "pick")])))
       },
@@ -786,6 +809,12 @@ pub fn a_failed_start_shows_the_reason_and_offers_what_is_listed_test() {
     ])
   let projects =
     home.Projects(
+      propose: fn(_, deliver) {
+        deliver(feed.ProposalRefused(creations.Unavailable))
+      },
+      create: fn(_, _, _, deliver) {
+        deliver(feed.NotMade(creations.Unavailable))
+      },
       boards: fn(deliver) { deliver(listed(board_body(12, [failed]))) },
       ticket: fn(_, _, deliver) {
         deliver(
@@ -819,6 +848,12 @@ pub fn an_ended_ticket_has_no_close_button_test() {
   let done = ticket("t-done", "ended/closed", 1000, "done")
   let projects =
     home.Projects(
+      propose: fn(_, deliver) {
+        deliver(feed.ProposalRefused(creations.Unavailable))
+      },
+      create: fn(_, _, _, deliver) {
+        deliver(feed.NotMade(creations.Unavailable))
+      },
       boards: fn(deliver) { deliver(listed(board_body(12, [done]))) },
       ticket: fn(_, _, deliver) {
         deliver(
@@ -889,8 +924,8 @@ pub fn a_board_with_a_new_revision_replaces_the_tickets_test() {
   let after =
     run(model, home.BoardsRead(home.board_reads(model), listed(newer)))
 
-  assert string.contains(drawn(after), "just arrived")
-  assert !string.contains(drawn(after), "newer question")
+  assert string.contains(shown(after), "just arrived")
+  assert !string.contains(shown(after), "newer question")
 }
 
 pub fn an_answer_that_a_newer_read_overtook_is_dropped_test() {
@@ -914,14 +949,18 @@ pub fn a_page_without_the_capability_draws_nothing_and_ignores_the_messages_test
 }
 
 pub fn every_handler_of_the_section_is_beneath_its_own_region_test() {
-  let model = opened(serving(mixed()).0)
+  let model =
+    run(opened(serving(mixed()).0), home.FolderPicked(inbox_rule.Projecting))
   let keys = handlers(home.view(model))
   let ticket_keys =
-    list.filter(keys, string.starts_with(_, home.projects_path <> "\t"))
+    list.filter(keys, string.starts_with(_, home.table_path <> "\t"))
 
+  // The section is the inbox's, so its buttons are beneath the table region,
+  // where the home's socket admits a click and the owner's a submit. A member's
+  // or observer's page holds no capability, so it draws no section and ignores
+  // the messages.
   assert ticket_keys != []
-  assert list.all(ticket_keys, string.ends_with(_, "\nclick"))
-  assert home.projects_path == "0\t2\t0"
+  assert list.any(ticket_keys, string.ends_with(_, "\nclick"))
   assert home.table_path == "0\t2\t1"
 }
 
@@ -974,6 +1013,12 @@ fn serving_check(output: String) -> home.Model {
   let ticket = checking(output)
   let projects =
     home.Projects(
+      propose: fn(_, deliver) {
+        deliver(feed.ProposalRefused(creations.Unavailable))
+      },
+      create: fn(_, _, _, deliver) {
+        deliver(feed.NotMade(creations.Unavailable))
+      },
       boards: fn(deliver) { deliver(listed(board_body(12, [ticket]))) },
       ticket: fn(_, _, deliver) {
         deliver(
@@ -1000,7 +1045,7 @@ fn serving_check(output: String) -> home.Model {
 // worker has it, and the ticket page says what the check did.
 pub fn a_failed_check_is_listed_as_needing_the_owner_and_its_output_is_drawn_test() {
   let listing =
-    drawn(
+    shown(
       opened(
         start_with(
           Some(
@@ -1064,4 +1109,295 @@ pub fn the_page_has_no_recheck_or_publish_control_yet_test() {
   let page = drawn(serving_check("exit status 1"))
   assert !string.contains(page, "Run the check again")
   assert !string.contains(page, "Publish")
+}
+
+// --- making a project ---------------------------------------------------------
+
+// What the page asked of the daemon while a project was made, in order.
+type Making {
+  Proposing(folder: String)
+  Creating(
+    folder: String,
+    check: option.Option(String),
+    setup: option.Option(String),
+  )
+}
+
+fn proposal_body() -> json.JsonValue {
+  json.Object([
+    #("project", json.String("")),
+    #(
+      "check",
+      json.Object([
+        #("command", json.String("make check")),
+        #("because", json.String("the Makefile has a check target")),
+      ]),
+    ),
+    #("setup", json.Null),
+    #("notes", json.Array([json.String("go.mod was present and not read")])),
+  ])
+}
+
+// A page with no project yet whose daemon proposes `proposal_body` for any
+// folder and answers a creation with `made`.
+fn making(
+  asked: Subject(Making),
+  proposal: feed.Proposal,
+  made: feed.Creation,
+) -> home.Model {
+  let projects =
+    home.Projects(
+      ..projects_with(
+        process.new_subject(),
+        fn() { feed.Heard([]) },
+        fn(_, _) { feed.TicketGone },
+        fn(_, _, _, _) { feed.Recorded },
+      ),
+      propose: fn(folder, deliver) {
+        process.send(asked, Proposing(folder))
+        deliver(proposal)
+      },
+      create: fn(folder, check, setup, deliver) {
+        process.send(asked, Creating(folder, check, setup))
+        deliver(made)
+      },
+    )
+
+  opened(start_with(Some(projects)))
+}
+
+fn drain_making(asked: Subject(Making)) -> List(Making) {
+  case process.receive(asked, 0) {
+    Ok(next) -> [next, ..drain_making(asked)]
+    Error(Nil) -> []
+  }
+}
+
+// A page that holds the capability and lists no project still draws the section,
+// because it holds the button that makes the first one.
+pub fn a_page_with_no_project_offers_to_make_one_test() {
+  let asked = process.new_subject()
+  let html =
+    shown(making(asked, feed.Proposed(proposal_body()), feed.MakeFailed("no")))
+
+  assert string.contains(html, "New project")
+  assert string.contains(html, "No project yet.")
+}
+
+// A page with no capability, which is every member's and observer's page, has no
+// button and draws no section.
+pub fn a_page_without_the_capability_has_no_button_test() {
+  assert !string.contains(shown(opened(start_with(None))), "New project")
+}
+
+// A press on a page with no capability opens nothing.
+pub fn a_page_without_the_capability_ignores_the_press_test() {
+  let model = run(opened(start_with(None)), home.ProjectCreationOpened)
+
+  assert !string.contains(drawn(model), "Choose the folder")
+}
+
+// The whole path: choose a folder, read the proposal, confirm, see the project.
+// Nothing is created before the confirmation, and the folder the page offers is
+// the one the sessions it lists run in.
+pub fn a_project_is_made_from_a_folder_and_its_proposal_test() {
+  let asked = process.new_subject()
+  let model =
+    making(
+      asked,
+      feed.Proposed(proposal_body()),
+      feed.Made("p-new", feed.SettingsHeld),
+    )
+
+  let model = run(model, home.ProjectCreationOpened)
+  assert string.contains(drawn(model), "Choose the folder it is for.")
+  assert string.contains(drawn(model), "/src/loom")
+  assert drain_making(asked) == []
+
+  let model = run(model, home.ProjectFolderChosen("/src/loom"))
+  assert drain_making(asked) == [Proposing("/src/loom")]
+  let html = drawn(model)
+  assert string.contains(html, "make check")
+  assert string.contains(
+    html,
+    "Proposed because the Makefile has a check target",
+  )
+  assert string.contains(html, "go.mod was present and not read")
+  assert string.contains(html, "Nothing in the folder suggests one.")
+
+  let model = run(model, home.ProjectConfirmed("make check", " "))
+  assert drain_making(asked)
+    == [Creating("/src/loom", Some("make check"), None)]
+  assert string.contains(drawn(model), "Project created for /src/loom.")
+  assert string.contains(drawn(model), "p-new")
+}
+
+// The folder text names a folder the owner may use only if the daemon says so,
+// and a refusal sends the person back to choose, in the fixed words.
+pub fn a_refused_folder_sends_the_owner_back_to_choose_test() {
+  let asked = process.new_subject()
+  let model =
+    making(
+      asked,
+      feed.ProposalRefused(creations.OutsideHome),
+      feed.MakeFailed(""),
+    )
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/etc"))
+  let html = drawn(model)
+
+  assert string.contains(html, creations.reason_words(creations.OutsideHome))
+  assert string.contains(html, "Choose the folder it is for.")
+  assert drain_making(asked) == [Proposing("/etc")]
+}
+
+// A refused creation keeps what the owner typed, so a retry is not a retype.
+pub fn a_refused_creation_keeps_the_typed_commands_test() {
+  let asked = process.new_subject()
+  let model =
+    making(
+      asked,
+      feed.Proposed(proposal_body()),
+      feed.MakeFailed("the workspace is not a directory"),
+    )
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+    |> run(home.ProjectConfirmed("make verify", "make deps"))
+  let html = drawn(model)
+
+  assert string.contains(html, "the workspace is not a directory")
+  assert string.contains(html, "make verify")
+  assert string.contains(html, "make deps")
+  assert !string.contains(html, "Project created")
+}
+
+// A project that exists while its settings were refused is shown as made, with
+// the daemon's sentence, because a retry would find the same project.
+pub fn a_project_made_with_refused_settings_is_shown_as_made_test() {
+  let asked = process.new_subject()
+  let html =
+    making(
+      asked,
+      feed.Proposed(proposal_body()),
+      feed.Made("p-new", feed.SettingsRefused("project.check is not a command")),
+    )
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+    |> run(home.ProjectConfirmed("make check", ""))
+    |> drawn
+
+  assert string.contains(html, "Project created for /src/loom.")
+  assert string.contains(
+    html,
+    "The settings were not stored: project.check is not a command",
+  )
+}
+
+// A second press while the read or the creation is out asks nothing more.
+pub fn a_repeated_press_asks_the_daemon_once_test() {
+  let asked = process.new_subject()
+  let model =
+    making(
+      asked,
+      feed.Proposed(proposal_body()),
+      feed.Made("p-new", feed.SettingsHeld),
+    )
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+  let _ = drain_making(asked)
+
+  // The step now holds a proposal; a confirmation moves it to Done, and a press
+  // on Create after that finds no form to confirm.
+  let model = run(model, home.ProjectConfirmed("make check", ""))
+  let _ = run(model, home.ProjectConfirmed("make check", ""))
+
+  assert list.length(drain_making(asked)) == 1
+}
+
+// Cancel returns to the page the owner came from.
+pub fn cancel_returns_to_the_list_test() {
+  let asked = process.new_subject()
+  let html =
+    making(asked, feed.Proposed(proposal_body()), feed.MakeFailed(""))
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectCreationClosed)
+    |> drawn
+
+  assert !string.contains(html, "Choose the folder it is for.")
+  assert string.contains(html, "Projects")
+}
+
+// A folder that already has a project says so and stores nothing. The page goes
+// back to the choice with the daemon's id and does not call the project made.
+pub fn a_folder_that_has_a_project_is_not_called_created_test() {
+  let asked = process.new_subject()
+  let html =
+    making(asked, feed.Proposed(proposal_body()), feed.Existing("p-old"))
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+    |> run(home.ProjectConfirmed("make check", ""))
+    |> drawn
+
+  assert string.contains(html, "That folder already has a project, p-old.")
+  assert !string.contains(html, "Project created")
+}
+
+// An owner who cancels while the daemon is making the project still gets the
+// project listed: the settled answer reads the boards again on whatever page the
+// owner is on.
+pub fn a_creation_settled_after_cancel_still_reads_the_boards_test() {
+  let asked = process.new_subject()
+  let reads = process.new_subject()
+  let projects =
+    home.Projects(
+      ..projects_with(
+        asked_unused(),
+        fn() { feed.Heard([]) },
+        fn(_, _) { feed.TicketGone },
+        fn(_, _, _, _) { feed.Recorded },
+      ),
+      boards: fn(deliver) {
+        process.send(reads, Nil)
+        deliver(feed.Heard([]))
+      },
+      propose: fn(_, deliver) { deliver(feed.Proposed(proposal_body())) },
+      create: fn(_, _, _, _) { Nil },
+    )
+  let _ = asked
+  let model =
+    opened(start_with(Some(projects)))
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+    |> run(home.ProjectConfirmed("make check", ""))
+    |> run(home.ProjectCreationClosed)
+  let _ = drain_reads(reads)
+
+  let _ =
+    run(
+      model,
+      home.ProjectCreateSettled("/src/loom", feed.Made("p", feed.SettingsHeld)),
+    )
+  assert list.length(drain_reads(reads)) == 1
+}
+
+fn asked_unused() -> Subject(Asked) {
+  process.new_subject()
+}
+
+fn drain_reads(reads: Subject(Nil)) -> List(Nil) {
+  case process.receive(reads, 0) {
+    Ok(next) -> [next, ..drain_reads(reads)]
+    Error(Nil) -> []
+  }
+}
+
+// The Projects folder draws each waiting ticket once: in the section, and not
+// again as a band of threads.
+pub fn the_projects_folder_draws_a_waiting_ticket_once_test() {
+  let html = shown(opened(serving(mixed()).0))
+  let title = "newer question"
+
+  assert at(html, title) < string.byte_size(html)
+  let assert Ok(#(_, after_first)) = string.split_once(html, title)
+  assert !string.contains(after_first, title)
 }
