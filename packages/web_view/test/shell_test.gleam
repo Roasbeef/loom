@@ -170,6 +170,7 @@ pub fn the_frame_carries_the_workspace_digest_test() {
         workspace: "/home/me/src/loom",
         executor: "",
         pool: "",
+        branch: "",
       )),
       workspace_digest: workspace_hash,
     )

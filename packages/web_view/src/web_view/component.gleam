@@ -677,6 +677,10 @@ pub type Label {
     executor: String,
     /// The `[pools.<name>]` the session was created in, or the empty string.
     pool: String,
+    /// The branch of the session's own Git worktree, `loom/<session id>`, or
+    /// the empty string for a session that works in its folder
+    /// (protocol-change/133). `workspace` is still the folder.
+    branch: String,
   )
 }
 
@@ -8806,6 +8810,29 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
     option.map(session_model.generation_started_ms(shared), fn(started) {
       int.max(0, shared.stamp.now_ms - started)
     })
+
+  // The capture's agent projection maps the durable retry constructor to this
+  // status and label; use its operation identity rather than infer from errors.
+  let current_operation =
+    option.then(shared.captured, fn(capture) {
+      case dict.get(capture.1.operations, shared.active_strand) {
+        Ok(operation) -> Some(operation)
+        Error(Nil) -> None
+      }
+    })
+
+  // Only the active operation's captured retry status can replace Thinking.
+  let provider_retry_waiting = case
+    list.find(shared.agent_rows, fn(row) { row.id == shared.active_strand })
+  {
+    Ok(row) ->
+      current_operation != None
+      && row.operation == current_operation
+      && row.status == agent_view.Waiting
+      && row.activity == "Waiting for provider retry"
+    Error(Nil) -> False
+  }
+
   let streamed =
     list.filter_map(model.view.streams, fn(stream) {
       let text = stream.fragments |> list.reverse |> string.concat
@@ -8833,9 +8860,15 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
   // event or a first fragment, the row says `Thinking` with no time: the
   // operation's own clock also counts earlier generations of the turn, so it
   // would read minutes under an answer that just landed.
-  let streamed = case streamed, session_model.active_strand_phase(shared) {
-    [], Some("assistant") -> [live.Opened(elapsed_ms:)]
-    _, _ -> streamed
+  let streamed = case
+    streamed,
+    session_model.active_strand_phase(shared),
+    provider_retry_waiting
+  {
+    [], Some("assistant"), True -> [live.RetryWait]
+    [], Some("assistant"), False -> [live.Opened(elapsed_ms:)]
+    [_, ..], Some("assistant"), True -> list.append(streamed, [live.RetryWait])
+    _, _, _ -> streamed
   }
 
   // The held inputs are the newest thing on the page: typed after the run
@@ -8852,11 +8885,14 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
 
   // The line that says which request this is stands while a generation runs,
   // which is the strand's `assistant` phase, after the rows it describes.
-  let generating = case session_model.active_strand_phase(shared) {
-    Some("assistant") -> [
+  let generating = case
+    session_model.active_strand_phase(shared),
+    provider_retry_waiting
+  {
+    Some("assistant"), False -> [
       live.Generating(elapsed_ms:, request: model.view.requests),
     ]
-    _ -> []
+    _, _ -> []
   }
 
   list.flatten([streamed, generating, held])
@@ -10172,6 +10208,13 @@ pub fn stream_head(
   let folder = case option.map(label, fn(label) { label.workspace }) {
     Some(path) -> heading.last_folder(path)
     None -> ""
+  }
+
+  // A session in its own worktree says so, with the branch it works on, so the
+  // person knows where its changes are.
+  let folder = case option.map(label, fn(label) { label.branch }) {
+    Some(branch) if branch != "" -> folder <> " · worktree " <> branch
+    Some(_) | None -> folder
   }
 
   let strand = agent_roster.short_name(model.shared.active_strand)

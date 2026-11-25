@@ -23,6 +23,7 @@ import client/daemon/manager
 import client/daemon/project_book
 import client/daemon/project_host
 import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
@@ -32,6 +33,7 @@ import client/history
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/internal/shared_history
+import client/jev as transport
 import client/owned_assembly_test
 import client/peer_mail
 import client/project_records
@@ -552,7 +554,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       },
       domain_configuration: "",
       worktrees_for: fn(workspace) {
-        worktrees.start(
+        worktrees.start_with(
           worktrees.Config(
             state_root: ready.state_root,
             ledger_path: ledger,
@@ -563,11 +565,13 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
             logger: log.discard(),
           ),
           [workspace],
+          fn() { Error(Nil) },
         )
       },
       now_ms: ffi_os.system_time_ms,
       max_workers: 2,
       policy: project_host.idle_policy,
+      jev: transport.client_with(None, 3000, fn(_, _, _) { Error("no network") }),
       logger: log.discard(),
     )
   let control =
@@ -575,6 +579,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       book:,
       create: fn(workspace, name) { project_start.create(env, workspace, name) },
       judge: fn(_) { Error("not used") },
+      jev: project_verdict.jev_off(),
     )
   let config =
     server.Config(

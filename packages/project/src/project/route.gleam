@@ -205,6 +205,26 @@ fn settle(current: State, id: TriggerId, decision: state.Decision) -> State {
   )
 }
 
+/// Keep the agent that Jev chose for the work an offered candidate may open.
+/// A choice made again for the same trigger replaces the first, since the
+/// last pass is the one whose routing follows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(NotOffered(id)) for a trigger the router was not shown
+/// ```
+pub fn choose_agent(current: State, trigger: TriggerId, agent: String) -> Step {
+  use stored <- result.try(state.record(current, trigger))
+
+  // Only an offered candidate has routing still to come.
+  case stored.fate {
+    Offered -> Ok(#(state.set_agent(current, trigger, agent), []))
+    Decided(_) -> Error(event.NotOffered(trigger))
+    state.Awaiting -> Error(event.NotOffered(trigger))
+  }
+}
+
 /// The router stopped a ticket on a person's explicit message.
 ///
 /// ## Examples

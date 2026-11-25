@@ -281,6 +281,7 @@ import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -308,6 +309,7 @@ import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
 import web_view/folder_browse
+import web_view/get_started
 import web_view/inbox_rule
 import web_view/item_pane
 import web_view/landing_rule
@@ -333,9 +335,12 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
 }
 import web_view/signins.{type Signin}
+import web_view/span_feed
 import web_view/thread_send
 import web_view/thread_words
 import web_view/ticket_rule
+import web_view/timeline_feed
+import web_view/timeline_rule
 import web_view/view/archiving
 import web_view/view/attention_thread
 import web_view/view/brief_view
@@ -343,6 +348,7 @@ import web_view/view/create.{type Create}
 import web_view/view/elsewhere as elsewhere_view
 import web_view/view/ended
 import web_view/view/folders as folders_view
+import web_view/view/get_started as get_started_view
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
@@ -362,6 +368,7 @@ import web_view/view/sidebar
 import web_view/view/signins as signins_view
 import web_view/view/switch
 import web_view/view/ticket_thread
+import web_view/view/timeline_view
 import web_view/view/your_name
 import web_view/watch_rule
 
@@ -495,6 +502,7 @@ pub type Start {
         Sharing,
         creations.Roles,
         agency_limits.AgencyLimits,
+        Option(String),
         String,
         fn(creations.Answer) -> Nil,
       ) -> Nil,
@@ -764,6 +772,14 @@ pub type Folders {
     /// that leaves it, and checks the page and the owner again, whatever this page
     /// said.
     browse: fn(List(String), fn(folder_browse.Answer) -> Nil) -> Nil,
+    /// Starts the build of the index of folder names below the owner's home, for
+    /// the composer's folder search (protocol-change/132, the addendum on
+    /// searching). The argument is the remembered folders, whose parents the
+    /// daemon reads first. The answer is one bounded index or a refusal,
+    /// dispatched as `FolderIndexed`. The daemon builds it in a task of its own,
+    /// follows no link, checks the page and the owner, and treats the seeds as
+    /// hints, whatever this page said.
+    index: fn(List(String), fn(folder_browse.IndexAnswer) -> Nil) -> Nil,
   )
 }
 
@@ -877,6 +893,31 @@ pub type Attention {
     /// the credential's brief allowance for it.
     brief: fn(String, Int, fn(Result(session_brief.Brief, String)) -> Nil) ->
       Nil,
+    /// Starts the read of a running session's timeline cards
+    /// (protocol-change/134) and returns at once: the session, the `from_seq`
+    /// the cards must be older than (none for the newest page), the most cards
+    /// wanted and the function the daemon's answer goes to. The answer is its
+    /// page or its fixed words and arrives as `TimelineRead`. It reads and never
+    /// writes, and the daemon spends the credential's brief allowance for it.
+    timeline: fn(
+      String,
+      Option(Int),
+      Int,
+      fn(Result(timeline_feed.Feed, String)) -> Nil,
+    ) -> Nil,
+    /// Starts the read of one timeline span's lines (protocol-change/134) and
+    /// returns at once: the session, the id of the span's last record, the
+    /// sequences of its first and last records and the function the daemon's
+    /// answer goes to. The answer is its lines or its fixed words and arrives as
+    /// `SpanRead`. It reads and never writes, and the daemon spends the
+    /// credential's brief allowance for it.
+    span: fn(
+      String,
+      String,
+      Int,
+      Int,
+      fn(Result(span_feed.Feed, String)) -> Nil,
+    ) -> Nil,
     /// Starts the read of a running session's worktree as a review
     /// (protocol-change/123) and returns at once. The answer is the daemon's
     /// review or its fixed words for why there is none, and arrives as
@@ -1069,8 +1110,10 @@ pub opaque type Model {
     /// The approval evidence read for the sessions whose thread was shown, by
     /// session, replaced by each read.
     evidence: Dict(String, approval_evidence.Seen),
-    /// The brief of each session whose thread was shown, by session, replaced by
-    /// each read (protocol-change/125).
+    /// The brief of the open thread's session and of each session in Updates, by
+    /// session, replaced by each read (protocol-change/125). A session that is in
+    /// neither is dropped at the next card read (`pruned`), so the three briefs
+    /// maps stay bounded by what the page draws.
     briefs: Dict(String, session_brief.Seen),
     /// The last brief read the page started of each session, which
     /// `brief_rule.due` counts the next read from.
@@ -1079,6 +1122,32 @@ pub opaque type Model {
     /// it wanted, so a thread draws them only under a label they fit
     /// (`brief_rule.shown`).
     brief_since: Dict(String, Int),
+    /// The last timeline read the page started of each session, which
+    /// `brief_rule.due` counts the next newest-page read from.
+    timeline_reads: Dict(String, brief_rule.Read),
+    /// The sessions whose "Earlier cards" read is out, so a second press before
+    /// the answer asks nothing.
+    timeline_older_out: Set(String),
+    /// The timeline cards the page has read of each session whose thread was
+    /// shown, by session (protocol-change/134).
+    timelines: Dict(String, timeline_rule.Held),
+    /// How much of a timeline the person chose to see. One choice serves every
+    /// thread.
+    timeline_density: timeline_rule.Density,
+    /// The cards whose detail the person opened, by session and `from_seq`.
+    timeline_open: Set(#(String, Int)),
+    /// The lines of each span the person opened, by session and `from_seq`.
+    spans: Dict(#(String, Int), span_feed.Seen),
+    /// The sessions whose Updates card is open. It is the page's own and is never
+    /// stored: a reload closes every card, and a session that leaves Updates is
+    /// dropped from it (`pruned`).
+    expanded: Set(String),
+    /// The timer that starts the next card read (`CardTicked`), made by the
+    /// runtime, and whether one is set.
+    card_timer: Option(Subject(Nil)),
+    card_rearm: Rearm,
+    /// Whether the reading pane shows the "Watch all" board of live cards.
+    watch: inbox_view.Watch,
     /// The open item thread and what is staged in it.
     item: item_pane.State,
     /// How many item threads have been opened, which keys their forms so each
@@ -1120,6 +1189,16 @@ pub opaque type Model {
     /// where it goes: a completed action, or why one could not be done. It is
     /// drawn beside the row or heading it is about and never moves the list.
     note: Option(Note),
+    /// Whether the first-session hint may still be drawn.
+    suggestion: Suggestion,
+    /// Whether the session list has answered at least once, which the Get
+    /// started checklist needs to tell an empty list from an unread one.
+    listing_known: get_started.Heard,
+    /// Whether the projects' boards have answered at least once, for the same
+    /// reason.
+    boards_known: get_started.Heard,
+    /// The Get started steps the person skipped, for the page's life.
+    skipped: List(get_started.Key),
     /// The running session whose open is out, if one is. It is set when a press
     /// asks the daemon, so its row can say `Opening…`, and a second press while
     /// it is set asks nothing. A ticket leaves it set, since the page is about
@@ -1276,6 +1355,17 @@ pub type Selection {
   Pressed(session: String)
 }
 
+/// Whether the first-session hint may be drawn. The page holds this for its own
+/// life only; a later slice moves it to the client so a dismissal survives a
+/// reload.
+pub type Suggestion {
+  /// The hint may be drawn when its facts hold.
+  Suggesting
+
+  /// The person pressed "Not now".
+  Declined
+}
+
 /// Which centre the home shows. The composer is where a session is started and
 /// is the owner's default; the list is the page that held every control before
 /// the sidebar took over listing, and stays reachable for the controls that have
@@ -1293,6 +1383,10 @@ pub type Pane {
   /// The owner is making a project (`view/project_create`): a folder, the
   /// daemon's proposal for its check and setup, and the confirmation.
   ProjectCreating(creation: project_create.Creation)
+
+  /// The "Get started" checklist (`view/get_started`): what setup has been done
+  /// and what is left, read from what the page already holds.
+  GettingStarted
 
   /// The new-session composer (`view/new_session`).
   NewSession
@@ -1364,6 +1458,26 @@ pub type Msg {
     since: Int,
     read: Result(session_brief.Brief, String),
   )
+
+  /// The daemon's answer to the read of a session's timeline page. `before` is the
+  /// `from_seq` the page asked the cards to be older than, none for the newest.
+  TimelineRead(
+    session: String,
+    before: Option(Int),
+    read: Result(timeline_feed.Feed, String),
+  )
+
+  /// The daemon's answer to the read of one span's lines.
+  SpanRead(session: String, from_seq: Int, read: Result(span_feed.Feed, String))
+
+  /// A density was chosen for every timeline.
+  TimelineDensityChosen(density: timeline_rule.Density)
+
+  /// A card's head was pressed: open its detail, or close it.
+  TimelineCardToggled(session: String, from_seq: Int)
+
+  /// "Earlier cards" was pressed in a session's timeline.
+  TimelineOlderAsked(session: String)
 
   /// The daemon's answer to the read of a session's approval evidence.
   ApprovalsRead(
@@ -1595,6 +1709,11 @@ pub type Msg {
   /// waiting for that trail.
   FolderBrowsed(trail: List(String), answer: folder_browse.Answer)
 
+  /// The index of folder names for the composer's folder search arrived. It is
+  /// the effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it; the composer applies it only while a build is out.
+  FolderIndexed(answer: folder_browse.IndexAnswer)
+
   /// A read of the other orchestrators' first pages arrived, numbered by the read
   /// it answers. It is the effect's own message, dispatched from the daemon's
   /// task, and no handler carries it, so a browser cannot put a row on the page.
@@ -1633,6 +1752,21 @@ pub type Msg {
   /// one. Only a page that holds the projects capability at the owner's ceiling
   /// takes it.
   ProjectCreationOpened
+
+  /// The rail's "Get started" entry, or the hint's button, was pressed: show the
+  /// checklist.
+  GettingStartedOpened
+
+  /// A step's "Skip" was pressed. The page forgets nothing else: the step reads
+  /// as skipped until the page is loaded again.
+  StepSkipped(key: get_started.Key)
+
+  /// The checklist's "Done" was pressed: return to where the page rests.
+  GettingStartedClosed
+
+  /// The first-session hint's "Not now" was pressed. The page forgets it was
+  /// ever offered until it is loaded again.
+  SuggestionDeclined
 
   /// A folder was chosen for the new project: a button of the list, whose text
   /// is a folder the server drew, or the typed field, whose text is the
@@ -1870,6 +2004,22 @@ pub type Msg {
   /// and sends the daemon nothing.
   FolderPicked(folder: inbox_rule.Folder)
 
+  /// An Updates card's disclosure was pressed: open or close that card. The
+  /// session is the card's, fixed when the tree was drawn, and the page honours it
+  /// only for a session the Updates group holds.
+  CardToggled(session: String)
+
+  /// The inbox's "Watch all" control was pressed: put the board of live cards in
+  /// the reading pane, or take it away.
+  WatchAllToggled
+
+  /// The runtime made the timer that starts the next Updates card read.
+  CardTimerReady(timer: Subject(Nil))
+
+  /// The card timer fired: read the briefs of the Updates cards that are due, and
+  /// set the timer again while any card is on screen.
+  CardTicked
+
   /// The reading pane's back control on a narrow screen: show the list. It
   /// closes the open thread's pane, so a thread's own state is dropped as a press
   /// on another thread drops it.
@@ -1994,6 +2144,16 @@ pub fn new(start: Start) -> Model {
     briefs: dict.new(),
     brief_reads: dict.new(),
     brief_since: dict.new(),
+    timeline_reads: dict.new(),
+    timeline_older_out: set.new(),
+    timelines: dict.new(),
+    timeline_density: timeline_rule.starting_density,
+    timeline_open: set.new(),
+    spans: dict.new(),
+    expanded: set.new(),
+    card_timer: None,
+    card_rearm: Unscheduled,
+    watch: inbox_view.WatchOne,
     item: item_pane.closed(),
     item_presses: 0,
     reviews: dict.new(),
@@ -2007,6 +2167,10 @@ pub fn new(start: Start) -> Model {
     reads: 0,
     departure: None,
     note: None,
+    suggestion: Suggesting,
+    listing_known: get_started.Unheard,
+    boards_known: get_started.Unheard,
+    skipped: [],
     opening: None,
     resuming: None,
     creating: create.Idle,
@@ -2077,15 +2241,20 @@ fn wire() -> Effect(Msg) {
   let relay_timer = process.new_subject()
   let side_timer = process.new_subject()
   let review_timer = process.new_subject()
+  let card_timer = process.new_subject()
+
+  // Each subject is handed to `update`, which arms it when the page needs it.
   dispatch(TimerReady(timer))
   dispatch(RelayTimerReady(relay_timer))
   dispatch(SideTimerReady(side_timer))
   dispatch(ReviewTimerReady(review_timer))
+  dispatch(CardTimerReady(card_timer))
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked })
   |> process.select_map(relay_timer, fn(_) { RelayTicked })
   |> process.select_map(side_timer, fn(_) { SideTicked })
   |> process.select_map(review_timer, fn(_) { ReviewTicked })
+  |> process.select_map(card_timer, fn(_) { CardTicked })
 }
 
 /// Applies one message.
@@ -2208,6 +2377,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     InboxClosed -> #(
       Model(
         ..model,
+        watch: inbox_view.WatchOne,
         selected: Unchosen,
         item: item_pane.closed(),
         ticket: None,
@@ -2339,10 +2509,54 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // words saying so. A refusal puts the form back.
     Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
+    // A card's disclosure opens or closes that card in place. A session the
+    // Updates group does not hold is ignored, so the set stays bounded by them.
+    CardToggled(session:) ->
+      case
+        list.any(updates_threads(model), fn(thread) { thread.id == session })
+      {
+        False -> #(model, effect.none())
+        True -> #(
+          Model(..model, expanded: case set.contains(model.expanded, session) {
+            True -> set.delete(model.expanded, session)
+            False -> set.insert(model.expanded, session)
+          }),
+          effect.none(),
+        )
+      }
+
+    // The card timer is made once. A page that shows cards starts reading them.
+    CardTimerReady(timer:) ->
+      card_arming(Model(..model, card_timer: Some(timer)))
+
+    // The timer fires once for each interval while a card is on screen: read what
+    // is due, then set it again.
+    CardTicked ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> {
+          let #(read, reads) =
+            card_briefing(Model(..model, card_rearm: Unscheduled))
+          let #(armed, arm) = card_arming(read)
+          #(armed, effect.batch([reads, arm]))
+        }
+      }
+
+    // The board is a view of the same cards; pressing the control again returns
+    // to the thread the pane showed before.
+    WatchAllToggled -> #(
+      Model(..model, watch: case model.watch {
+        inbox_view.WatchOne -> inbox_view.WatchAll
+        inbox_view.WatchAll -> inbox_view.WatchOne
+      }),
+      effect.none(),
+    )
+
     InboxOpened(session:) -> {
       let next =
         Model(
           ..model,
+          watch: inbox_view.WatchOne,
           selected: Pressed(session),
           presses: model.presses + 1,
           opened: set.insert(model.opened, session),
@@ -2458,8 +2672,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
-    // The brief replaces what the page held for that session, kept for each
-    // session whose thread was shown and so bounded by the sessions viewed. A
+    // The brief replaces what the page held for that session, which is the open
+    // thread's session or one in Updates and so bounded by them (`pruned`). A
     // refusal leaves a brief the page already holds, since the daemon allows six
     // reads in four seconds and a refused read says nothing about what the
     // session did.
@@ -2495,6 +2709,107 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             )
             Error(_), Ok(session_brief.Seen(_)) -> #(model, effect.none())
           }
+      }
+
+    // A timeline read joins what the page held for that session: the newest page
+    // replaces it and an older page goes in front. It is kept for each session
+    // whose thread was shown, so it is bounded by the sessions viewed, and a
+    // refusal keeps the cards the page already has.
+    TimelineRead(session:, before:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(
+            ..model,
+            timeline_older_out: case before {
+              Some(_) -> set.delete(model.timeline_older_out, session)
+              None -> model.timeline_older_out
+            },
+            timelines: dict.insert(
+              model.timelines,
+              session,
+              timeline_rule.merged(
+                option.from_result(dict.get(model.timelines, session)),
+                before,
+                read,
+              ),
+            ),
+          ),
+          effect.none(),
+        )
+      }
+
+    // The density is a choice about what to show, so it asks the daemon nothing.
+    TimelineDensityChosen(density:) -> #(
+      Model(..model, timeline_density: density),
+      effect.none(),
+    )
+
+    // A card's detail opens and closes on its head's press, and no read follows.
+    TimelineCardToggled(session:, from_seq:) -> {
+      let key = #(session, from_seq)
+      let opening = !set.contains(model.timeline_open, key)
+      let toggled =
+        Model(..model, timeline_open: case opening {
+          True -> set.insert(model.timeline_open, key)
+          False -> set.delete(model.timeline_open, key)
+        })
+
+      // Opening a card asks for its lines once, and again only after a refusal.
+      case opening {
+        True -> spanning(toggled, session, from_seq)
+        False -> #(toggled, effect.none())
+      }
+    }
+
+    // The lines replace what the page held for that span, kept for each span the
+    // person opened. A refusal says its words and the next opening asks again.
+    SpanRead(session:, from_seq:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(
+            ..model,
+            spans: dict.insert(model.spans, #(session, from_seq), case read {
+              Ok(feed) -> span_feed.Read(feed)
+              Error(words) -> span_feed.Refused(words)
+            }),
+          ),
+          effect.none(),
+        )
+      }
+
+    // "Earlier cards" reads the page before the oldest card held, for a page
+    // that reads the feed and has a cursor to ask from.
+    TimelineOlderAsked(session:) ->
+      case model.start.attention, dict.get(model.timelines, session) {
+        Some(reads), Ok(timeline_rule.Held(older: Some(before), ..)) ->
+          case set.contains(model.timeline_older_out, session) {
+            True -> #(model, effect.none())
+            False -> #(
+              Model(
+                ..model,
+                timeline_older_out: set.insert(
+                  model.timeline_older_out,
+                  session,
+                ),
+              ),
+              effect.from(fn(dispatch) {
+                reads.timeline(
+                  session,
+                  Some(before),
+                  timeline_feed.default_limit,
+                  fn(read) {
+                    dispatch(TimelineRead(session, Some(before), read))
+                  },
+                )
+              }),
+            )
+          }
+        Some(_), Ok(timeline_rule.Held(older: None, ..))
+        | Some(_), Error(Nil)
+        | None, _
+        -> #(model, effect.none())
       }
 
     // The evidence replaces what the page held for that session. It is kept
@@ -2672,6 +2987,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             briefing(
               Model(
                 ..model,
+                watch: inbox_view.WatchOne,
                 item: state,
                 item_presses: model.item_presses + 1,
                 opened: set.insert(model.opened, attention_rule.opened_key(key)),
@@ -2933,6 +3249,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           reading_ticket_thread(
             Model(
               ..model,
+              watch: inbox_view.WatchOne,
               item: item_pane.closed(),
               opened: set.insert(model.opened, ticket_rule.opened_key(key)),
               ticket: Some(thread_reopened(model.ticket, key)),
@@ -3197,6 +3514,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 creations.Shareable,
                 roles,
                 agency_limits.empty,
+                None,
                 "",
               ),
             )
@@ -3221,6 +3539,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 sharing,
                 roles,
                 agency_limits.empty,
+                None,
                 "",
               ),
             )
@@ -3268,6 +3587,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         None -> #(model, effect.none())
       }
 
+    // The index for the composer's folder search, dated by the page's clock. The
+    // composer drops one that arrives when no build is out.
+    FolderIndexed(answer:) ->
+      case model.start.folders {
+        Some(_) -> #(
+          Model(
+            ..model,
+            compose: composer.indexed(model.compose, answer, model.start.now()),
+          ),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
     // The projects' boards. An answer a newer read overtook is dropped, and so is
     // one for a page that lists no projects; a read that could not ask keeps the
     // boards the page has. A board with the revision the page already holds
@@ -3277,7 +3610,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     BoardsRead(serial:, read:) ->
       case serial == model.board_reads, model.start.projects, read {
         True, Some(_), feed.Heard(projects: listed) ->
-          boards_heard(model, feed.decode(listed))
+          boards_heard(
+            Model(..model, boards_known: get_started.Heard),
+            feed.decode(listed),
+          )
 
         // A read that told nothing, or that a newer one overtook, still ends the
         // wait for the first board, so the round is not held open for ever.
@@ -3330,6 +3666,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Ticketed(_)
         | ProjectCreating(_)
         | Projected(_)
+        | GettingStarted
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3352,6 +3689,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Ticketed(_), None, _
         | ProjectCreating(_), _, _
         | Projected(_), _, _
+        | GettingStarted, _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3369,6 +3707,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Ticketed(_), None, _
         | ProjectCreating(_), _, _
         | Projected(_), _, _
+        | GettingStarted, _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3384,6 +3723,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Ticketed(_)
         | ProjectCreating(_)
         | Projected(_)
+        | GettingStarted
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3420,6 +3760,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         ProjectCreating(_), Some(_), Connecting
         | ProjectCreating(_), Some(_), Ended(_)
         | ProjectCreating(_), None, _
+        | GettingStarted, _, _
         | Ticketed(_), _, _
         | Projected(_), _, _
         | NewSession, _, _
@@ -3443,10 +3784,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ),
           effect.none(),
         )
-        Ticketed(_) | Projected(_) | NewSession | SessionList | Relayed(_) -> #(
-          model,
-          effect.none(),
-        )
+        Ticketed(_)
+        | Projected(_)
+        | GettingStarted
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
       }
 
     // The owner pressed Create. The daemon is asked once: the step that waits
@@ -3458,6 +3801,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         ProjectCreating(_), Some(_), Connecting
         | ProjectCreating(_), Some(_), Ended(_)
         | ProjectCreating(_), None, _
+        | GettingStarted, _, _
         | Ticketed(_), _, _
         | Projected(_), _, _
         | NewSession, _, _
@@ -3482,7 +3826,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               )),
             ),
           )
-        Ticketed(_) | Projected(_) | NewSession | SessionList | Relayed(_) ->
+        Ticketed(_)
+        | Projected(_)
+        | GettingStarted
+        | NewSession
+        | SessionList
+        | Relayed(_) ->
           // The owner left the page while the daemon worked, and a project it
           // made is still to be listed, so the boards are read all the same.
           case made {
@@ -3533,6 +3882,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
         Projected(_)
         | ProjectCreating(_)
+        | GettingStarted
         | Ticketed(_)
         | NewSession
         | SessionList
@@ -3574,6 +3924,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         }
         Projected(_)
         | ProjectCreating(_)
+        | GettingStarted
         | Ticketed(_)
         | NewSession
         | SessionList
@@ -3609,6 +3960,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Projected(_), Some(_), Ended(_)
         | Projected(_), None, _
         | ProjectCreating(_), _, _
+        | GettingStarted, _, _
         | Ticketed(_), _, _
         | NewSession, _, _
         | SessionList, _, _
@@ -3627,6 +3979,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           )
         Projected(_)
         | ProjectCreating(_)
+        | GettingStarted
         | Ticketed(_)
         | NewSession
         | SessionList
@@ -3635,6 +3988,34 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     ProjectPageClosed ->
       reading_boards(Model(..model, pane: resting_pane(model)))
+
+    // The checklist opens for any page that lists projects or sessions, because
+    // it only reads what the page holds. Its one button, New project, still goes
+    // through `ProjectCreationOpened` and its capability check.
+    GettingStartedOpened ->
+      case model.start.create {
+        Some(_) -> #(
+          Model(..model, pane: GettingStarted, note: None),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    StepSkipped(key:) ->
+      case list.contains(model.skipped, key) {
+        True -> #(model, effect.none())
+        False -> #(
+          Model(..model, skipped: [key, ..model.skipped]),
+          effect.none(),
+        )
+      }
+
+    GettingStartedClosed -> #(
+      Model(..model, pane: resting_pane(model)),
+      effect.none(),
+    )
+
+    SuggestionDeclined -> #(Model(..model, suggestion: Declined), effect.none())
 
     // The daemon's word on an answer. A recorded one leaves an empty box, and a
     // refusal keeps the text and says why in words. Either way the ticket is read
@@ -3646,6 +4027,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Ticketed(_)
         | ProjectCreating(_)
         | Projected(_)
+        | GettingStarted
         | NewSession
         | SessionList
         | Relayed(_) -> #(model, effect.none())
@@ -3745,6 +4127,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 sharing,
                 roles,
                 agency_limits.empty,
+                None,
                 "",
               ),
             )
@@ -4589,26 +4972,67 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
         )
       let model = Model(..model, compose:) |> after_agent(model.compose.agent)
 
-      // Translate composer update intent into home page side effects.
-      case intent {
-        composer.Stay -> #(model, effect.none())
-        composer.ReadPlacements -> reading_cards(model)
-        composer.Browse(trail:) -> browsing(model, trail)
-        composer.ReadAgents -> reading_offers(model, names_of(model))
-        composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
-        composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
-          founding(model, orchestrator, place, roles, prompt)
-        composer.Create(place:, name:, prompt:, roles:, agency:) -> #(
-          Model(..model, note: None),
-          creating(ask, place, name, creations.Private, roles, agency, prompt),
-        )
-        composer.Depart(path:) -> #(
-          Model(..model, departure: Some(path)),
-          effect.none(),
-        )
+      // The folder index is owed while the Code list is open and none is held, so
+      // it is asked in step with whatever else the message owed.
+      let #(compose, seeds) = case model.start.folders {
+        Some(_) -> composer.indexing(model.compose, offers(model, entries))
+        None -> #(model.compose, None)
+      }
+
+      let model = Model(..model, compose:)
+      let #(model, owed) = acted(model, ask, intent)
+
+      // With no index owed the composer's own effect is returned untouched.
+      case seeds {
+        Some(_) -> #(model, effect.batch([owed, indexing(model, seeds)]))
+        None -> #(model, owed)
       }
     }
     Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(model, effect.none())
+  }
+}
+
+/// Carries out what the composer said the page owes.
+fn acted(
+  model: Model,
+  ask: fn(
+    creations.Place,
+    String,
+    creations.Sharing,
+    creations.Roles,
+    agency_limits.AgencyLimits,
+    Option(String),
+    String,
+    fn(creations.Answer) -> Nil,
+  ) -> Nil,
+  intent: composer.Intent,
+) -> #(Model, Effect(Msg)) {
+  // Translate composer update intent into home page side effects.
+  case intent {
+    composer.Stay -> #(model, effect.none())
+    composer.ReadPlacements -> reading_cards(model)
+    composer.Browse(trail:) -> browsing(model, trail)
+    composer.ReadAgents -> reading_offers(model, names_of(model))
+    composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
+    composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
+      founding(model, orchestrator, place, roles, prompt)
+    composer.Create(place:, name:, prompt:, roles:, agency:, worktree:) -> #(
+      Model(..model, note: None),
+      creating(
+        ask,
+        place,
+        name,
+        creations.Private,
+        roles,
+        agency,
+        worktree,
+        prompt,
+      ),
+    )
+    composer.Depart(path:) -> #(
+      Model(..model, departure: Some(path)),
+      effect.none(),
+    )
   }
 }
 
@@ -4636,6 +5060,8 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
         here:,
         agents:,
         typing: composer.MayType,
+        projects: list.map(model.boards, fn(each) { each.workspace }),
+        now: model.start.now(),
       )
     composer.Orchestrator(name:) as agent ->
       case orchestrators.standing(model.machines, name) {
@@ -4650,6 +5076,8 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             here:,
             agents:,
             typing: composer.MayNotType,
+            projects: [],
+            now: model.start.now(),
           )
         orchestrators.Asking | orchestrators.Refusing(_) ->
           composer.Offers(
@@ -4662,6 +5090,8 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             here:,
             agents:,
             typing: composer.MayNotType,
+            projects: [],
+            now: model.start.now(),
           )
       }
   }
@@ -4907,6 +5337,7 @@ fn creating(
     Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -4915,10 +5346,11 @@ fn creating(
   sharing: Sharing,
   roles: creations.Roles,
   agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
   prompt: String,
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, roles, agency, prompt, fn(answer) {
+  ask(place, name, sharing, roles, agency, worktree, prompt, fn(answer) {
     dispatch(Created(answer))
   })
 }
@@ -4972,6 +5404,21 @@ fn browsing(model: Model, trail: List(String)) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+  }
+}
+
+/// Asks the daemon for the folder index when the composer owes one, which is when
+/// it handed back seeds. At most one build is ever out, because the composer
+/// holds `Indexing` until the answer comes.
+fn indexing(model: Model, seeds: Option(List(String))) -> Effect(Msg) {
+  // Seeds mean the composer put a build out; a page with no folder capability
+  // never gets that far, so a missing one is answered with nothing.
+  case seeds, model.start.folders {
+    Some(held), Some(Folders(index:, ..)) -> {
+      use dispatch <- effect.from
+      index(held, fn(answer) { dispatch(FolderIndexed(answer)) })
+    }
+    Some(_), None | None, _ -> effect.none()
   }
 }
 
@@ -5090,6 +5537,7 @@ fn relay_reading(
     | Some(_), Ticketed(_)
     | Some(_), ProjectCreating(_)
     | Some(_), Projected(_)
+    | Some(_), GettingStarted
     | None, _
     -> #(model, effect.none())
   }
@@ -5125,7 +5573,8 @@ fn relay_heard(model: Model, read: relayed.Read) -> Model {
     | SessionList
     | Ticketed(_)
     | ProjectCreating(_)
-    | Projected(_) -> model
+    | Projected(_)
+    | GettingStarted -> model
   }
 }
 
@@ -5189,7 +5638,8 @@ fn relay_after(
     | SessionList
     | Ticketed(_)
     | ProjectCreating(_)
-    | Projected(_) -> #(model, effect.none())
+    | Projected(_)
+    | GettingStarted -> #(model, effect.none())
   }
 }
 
@@ -5497,6 +5947,7 @@ fn boards_heard(
             False -> #(model, effect.none())
           }
         ProjectCreating(_), _ | Projected(_), _ -> #(model, effect.none())
+        GettingStarted, _ -> #(model, effect.none())
         NewSession, None | SessionList, None | Relayed(_), None -> #(
           model,
           effect.none(),
@@ -5581,8 +6032,11 @@ fn ticket_heard(
 /// own way back does.
 fn inbox_pane(model: Model) -> Pane {
   case model.pane {
-    Ticketed(_) | Relayed(_) | ProjectCreating(_) | Projected(_) ->
-      resting_pane(model)
+    Ticketed(_)
+    | Relayed(_)
+    | ProjectCreating(_)
+    | Projected(_)
+    | GettingStarted -> resting_pane(model)
     NewSession | SessionList -> model.pane
   }
 }
@@ -5721,6 +6175,7 @@ fn project_settings_sending(
     | Projected(_), Some(_), Ended(_)
     | Projected(_), None, _
     | ProjectCreating(_), _, _
+    | GettingStarted, _, _
     | Ticketed(_), _, _
     | NewSession, _, _
     | SessionList, _, _
@@ -5968,6 +6423,7 @@ fn answered(model: Model, listing: Listing) -> Model {
           ..model,
           groups: sessions.grouped(list.take(ordinary, sessions.listed_limit)),
           machinery:,
+          listing_known: get_started.Heard,
           now: model.start.now(),
           status: Connected,
         )
@@ -6135,6 +6591,7 @@ pub fn view(model: Model) -> Element(Msg) {
         Ticketed(_), _ -> "Ticket"
         ProjectCreating(_), _ -> "New project"
         Projected(_), _ -> "Project"
+        GettingStarted, _ -> "Get started"
         Relayed(_), _ -> "Session"
       },
       who: home_bar.account(
@@ -6186,13 +6643,37 @@ pub fn view(model: Model) -> Element(Msg) {
 /// daemon lists a peer orchestrator, on the list alone, and nothing otherwise.
 /// The Projects section is not here: it was 211 px of every page's first screen,
 /// and it now lives where projects do, in the inbox's "Projects" folder
-/// (`view/inbox`), so the inbox list starts at the top of the page.
+/// (`view/inbox`), so the inbox list starts at the top of the page. Nothing drawn
+/// here may carry a handler: the socket admits a press only beneath `table_path`,
+/// the sidebar and the sign-ins, and this child is none of them, which is why the
+/// first-session hint is the inbox's and not this head's.
 fn centre_head(model: Model) -> Element(Msg) {
   // The peer strip belongs to the list alone, as it did before the section.
   case model.pane {
-    NewSession | Relayed(_) | Ticketed(_) | ProjectCreating(_) | Projected(_) ->
-      element.none()
+    NewSession
+    | Relayed(_)
+    | Ticketed(_)
+    | ProjectCreating(_)
+    | Projected(_)
+    | GettingStarted -> element.none()
     SessionList -> elsewhere_view.strip(elsewhere_offer(model))
+  }
+}
+
+/// The one line that suggests a project after a first session, for the inbox's
+/// list, which is where the socket admits its buttons: the head sits outside the
+/// admitted regions (`ui_socket.home_event`). It is drawn only while the facts
+/// say a project is the person's next move, on a page that may make one, and not
+/// after "Not now".
+fn first_session_hint(model: Model) -> Element(Msg) {
+  case
+    model.suggestion,
+    model.start.create,
+    get_started.hint(setup_facts(model))
+  {
+    Suggesting, Some(_), True ->
+      get_started_view.hint(GettingStartedOpened, SuggestionDeclined)
+    Suggesting, _, _ | Declined, _, _ -> element.none()
   }
 }
 
@@ -6635,6 +7116,7 @@ fn landed_inbox(model: Model) -> Bool {
     Ticketed(_), _
     | ProjectCreating(_), _
     | Projected(_), _
+    | GettingStarted, _
     | Relayed(_), _
     | NewSession, Awaiting
     | SessionList, Awaiting
@@ -6677,15 +7159,160 @@ fn approval_session(model: Model) -> Option(String) {
 }
 
 /// Starts the reads of the shown session that its thread draws: its pending
-/// approvals and its brief. Both return at once and answer later. The model
-/// comes back with the time the brief read was started, which the next read
-/// counts from.
+/// approvals and its brief, and, when the page's own refresh asks, the briefs of
+/// the Updates cards that are due. All return at once and answer later. The model
+/// comes back with the time each brief read was started, which the next read
+/// counts from. Opening a thread reads that thread and no card: the cards have
+/// their own timer.
 fn approving(
   model: Model,
   trigger: brief_rule.Trigger,
 ) -> #(Model, Effect(Msg)) {
   let #(model, brief) = briefing(model, trigger)
-  #(model, effect.batch([approval_read(model), brief]))
+
+  // A card read follows a refresh and the card timer, and never an opening.
+  let #(model, cards) = case trigger {
+    brief_rule.Refreshed -> {
+      let #(read, reads) = card_briefing(model)
+      let #(armed, arm) = card_arming(read)
+      #(armed, effect.batch([reads, arm]))
+    }
+    brief_rule.Opened -> #(model, effect.none())
+  }
+
+  #(model, effect.batch([approval_read(model), brief, cards]))
+}
+
+/// How many Updates cards the page reads a brief for: the first sessions of the
+/// group, in the order it lists them (by name), so the list and the board agree on
+/// which come first. A page with more working sessions draws the rest without a
+/// brief, so the reads stay bounded.
+pub const card_limit = 8
+
+/// How many card reads one tick starts. The daemon allows six brief reads in four
+/// seconds for each credential, and a tick is `card_tick_ms` long, so two reads a
+/// tick is a rate of 1.6 reads in four seconds, which leaves room for the open
+/// thread's read and for a refresh.
+pub const card_per_tick = 2
+
+/// How long the card timer waits between ticks, in milliseconds.
+pub const card_tick_ms = 5000
+
+/// The sessions in the Updates group, as the inbox's list holds them.
+fn updates_threads(model: Model) -> List(inbox_rule.Thread) {
+  case list.key_find(model_groups(model), inbox_rule.Updates) {
+    Ok(found) -> found
+    Error(Nil) -> []
+  }
+}
+
+/// Sets the card timer, once, while a connected page that reads the feed has
+/// Updates cards to draw. The timer is the page's own (`CardTimerReady`) and fires
+/// as `CardTicked`; a timer already set, a page with no cards and one that has
+/// ended set none, so the ticks stop by themselves when the last card goes.
+fn card_arming(model: Model) -> #(Model, Effect(Msg)) {
+  // The timer is set only for a page that shows cards and has not set one.
+  case
+    model.card_timer,
+    model.card_rearm,
+    model.status,
+    model.start.attention,
+    updates_threads(model)
+  {
+    Some(timer), Unscheduled, Connected, Some(_), [_, ..] -> #(
+      Model(..model, card_rearm: Scheduled),
+      {
+        use _ <- effect.from
+        let _ = process.send_after(timer, card_tick_ms, Nil)
+        Nil
+      },
+    )
+    _, _, _, _, _ -> #(model, effect.none())
+  }
+}
+
+/// Starts the reads of the Updates cards' briefs and returns at once. At most
+/// `card_per_tick` start, for the sessions whose last read is oldest among those
+/// that are due (`brief_rule.card_due`, ten seconds), and only among the first
+/// `card_limit` sessions of the group. The open thread's session is left to the
+/// thread's own read, so two readers never alternate on one session's entry. A page
+/// that reads no feed or is not connected reads none. Sessions that left Updates
+/// are dropped from what the page holds first (`pruned`).
+fn card_briefing(model: Model) -> #(Model, Effect(Msg)) {
+  let model = pruned(model)
+  let now = model.start.now()
+  let open = brief_session(model)
+  let due =
+    updates_threads(model)
+    |> list.take(card_limit)
+    |> list.filter(fn(thread) {
+      Some(thread.id) != open
+      && brief_rule.card_due(
+        option.from_result(dict.get(model.brief_reads, thread.id)),
+        now,
+      )
+    })
+
+  // The session read longest ago goes first; a session never read is first of all.
+  let chosen =
+    list.sort(due, fn(a, b) {
+      int.compare(read_time(model, a.id), read_time(model, b.id))
+    })
+    |> list.take(card_per_tick)
+
+  // Only a connected page that reads the feed starts a read.
+  case model.start.attention, model.status {
+    Some(reads), Connected -> #(
+      Model(
+        ..model,
+        brief_reads: list.fold(chosen, model.brief_reads, fn(held, thread) {
+          dict.insert(held, thread.id, brief_rule.Read(started: now, since: 0))
+        }),
+      ),
+      effect.batch(
+        list.map(chosen, fn(thread) {
+          use dispatch <- effect.from
+          reads.brief(thread.id, 0, fn(read) {
+            dispatch(BriefRead(thread.id, 0, read))
+          })
+        }),
+      ),
+    )
+    Some(_), _ | None, _ -> #(model, effect.none())
+  }
+}
+
+/// The model with what it holds for sessions that no card and no open thread draw
+/// dropped: their briefs, the times of their reads and the times those reads named,
+/// and their open cards. A page that has watched many sessions come and go keeps
+/// only the ones it draws.
+fn pruned(model: Model) -> Model {
+  let updating = list.map(updates_threads(model), fn(thread) { thread.id })
+
+  // The open thread's session is kept too, whatever group it is in.
+  let kept =
+    set.from_list(case brief_session(model) {
+      Some(open) -> [open, ..updating]
+      None -> updating
+    })
+  let keep = fn(key: String) { set.contains(kept, key) }
+
+  Model(
+    ..model,
+    briefs: dict.filter(model.briefs, fn(key, _) { keep(key) }),
+    brief_reads: dict.filter(model.brief_reads, fn(key, _) { keep(key) }),
+    brief_since: dict.filter(model.brief_since, fn(key, _) { keep(key) }),
+    expanded: set.filter(model.expanded, keep),
+  )
+}
+
+/// When the last read of a session's brief was started, or zero for a session
+/// never read.
+fn read_time(model: Model, session: String) -> Int {
+  case dict.get(model.brief_reads, session) {
+    Ok(brief_rule.Read(started:, ..)) -> started
+    Error(Nil) -> 0
+  }
 }
 
 /// The session whose brief the open thread's pane draws, or nothing when the
@@ -6693,7 +7320,8 @@ fn approving(
 /// session stopped, and a session's thread draws its approval's peer messages,
 /// its latest message and steps, or its review's last command. A stuck strand,
 /// a find, a ticket, a failed run and a session with nothing to say draw no
-/// brief, so none is read for them, and no thread that is not open is read.
+/// brief, so none is read for them. A session in Updates has its brief read for
+/// its card by `card_briefing`, which is not this thread's read.
 fn brief_session(model: Model) -> Option(String) {
   // An open item thread decides first, then an open ticket, then the session
   // thread the list shows.
@@ -6734,6 +7362,84 @@ fn evidence_awaited(model: Model, session: String) -> Bool {
   }
 }
 
+/// Starts the reads an open thread draws from, and returns at once: its brief and
+/// its timeline, each paced by `brief_rule.due` on its own last read.
+fn briefing(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  let #(model, brief) = brief_reading(model, trigger)
+  let #(model, timeline) = timeline_reading(model, trigger)
+
+  #(model, effect.batch([brief, timeline]))
+}
+
+/// Starts the read of the newest page of the open thread's session's timeline.
+/// Unlike the brief, a timeline is drawn for every kind of session thread, a
+/// failed or settled one included, since what a finished run did is what the
+/// owner opens it to see. A ticket's pane draws none, and no thread that is not
+/// open is read.
+fn timeline_reading(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  // Only a connected page that reads the feed, with a session thread open, reads.
+  case model.start.attention, model.status, timeline_session(model) {
+    Some(reads), Connected, Some(session) -> {
+      let now = model.start.now()
+      let last = option.from_result(dict.get(model.timeline_reads, session))
+
+      // A thread read a moment ago is not read again.
+      case brief_rule.due(last, now, 0, trigger) {
+        True -> #(
+          Model(
+            ..model,
+            timeline_reads: dict.insert(
+              model.timeline_reads,
+              session,
+              brief_rule.Read(started: now, since: 0),
+            ),
+          ),
+          effect.from(fn(dispatch) {
+            reads.timeline(session, None, timeline_feed.default_limit, fn(read) {
+              dispatch(TimelineRead(session, None, read))
+            })
+          }),
+        )
+        False -> #(model, effect.none())
+      }
+    }
+    Some(_), Connected, _
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// The session whose timeline the open thread draws: an ask's session, or the
+/// session thread the list shows whatever its state. Nothing for a ticket, a
+/// stuck strand or a find, or when no thread is open.
+fn timeline_session(model: Model) -> Option(String) {
+  // An open item thread decides first, then an open ticket, then the session
+  // thread the list shows.
+  case model.item.key, model.ticket {
+    Some(key), _ ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.AskItem(session:, ..)) -> Some(session)
+        Some(attention_rule.FindItem(..))
+        | Some(attention_rule.StuckItem(..))
+        | None -> None
+      }
+    None, Some(_) -> None
+    None, None ->
+      inbox_rule.selection(
+        model_groups(model),
+        selected_session(model.selected),
+      )
+  }
+}
+
 /// Starts the read of the open thread's session's brief and returns at once; the
 /// answer arrives later as `BriefRead`. The time after which peer messages are
 /// wanted is the raise time of the session's oldest pending approval, so a
@@ -6742,7 +7448,7 @@ fn evidence_awaited(model: Model, session: String) -> Bool {
 /// that reads no feed, one that has not connected or has ended, and a thread
 /// that has no brief to draw ask nothing, and so does a thread whose last read
 /// is too recent (`brief_rule.due`).
-fn briefing(
+fn brief_reading(
   model: Model,
   trigger: brief_rule.Trigger,
 ) -> #(Model, Effect(Msg)) {
@@ -7312,6 +8018,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
           ))
         None -> None
       },
+      hint: first_session_hint(model),
       projects: case projects_offer(model) {
         projects_view.Hidden -> None
         shown -> Some(projects_view.section(shown))
@@ -7322,10 +8029,128 @@ fn inbox_page(model: Model) -> Element(Msg) {
       sized: sized_reviews(model),
       dated: dated_threads(model),
       briefs: fn(session) { shown_brief(model, session) },
+      timelines: fn(session) { timeline_section(model, session) },
       name_of: session_name(model, _),
       ask_of: fn(session) { ask_press(model, session) },
+      watch: model.watch,
+      toggle_watch: WatchAllToggled,
+      expanded: model.expanded,
+      toggle_card: CardToggled,
+      machine_of: fn(session) { machine_of(model, session) },
     ),
   )
+}
+
+/// Starts the read of the span a card names, when the page has not read it and
+/// the card is one the page holds, and marks it as being read. A page that reads
+/// no feed, or a card the page does not hold, asks nothing.
+fn spanning(
+  model: Model,
+  session: String,
+  from_seq: Int,
+) -> #(Model, Effect(Msg)) {
+  // The card is one of the cards the page holds for the session.
+  let held = case dict.get(model.timelines, session) {
+    Ok(timeline_rule.Held(cards:, ..)) ->
+      list.find(cards, fn(card) { card.from_seq == from_seq })
+    Error(Nil) -> Error(Nil)
+  }
+
+  // A card the page holds, on a page that reads the feed, and a span not read.
+  case
+    model.start.attention,
+    held,
+    dict.get(model.spans, #(session, from_seq))
+  {
+    Some(reads), Ok(card), Error(Nil)
+    | Some(reads), Ok(card), Ok(span_feed.Refused(_))
+    -> #(
+      Model(
+        ..model,
+        spans: dict.insert(model.spans, #(session, from_seq), span_feed.Loading),
+      ),
+      effect.from(fn(dispatch) {
+        reads.span(session, card.last, card.from_seq, card.to_seq, fn(read) {
+          dispatch(SpanRead(session, from_seq, read))
+        })
+      }),
+    )
+    Some(_), Ok(_), Ok(span_feed.Loading)
+    | Some(_), Ok(_), Ok(span_feed.Read(_))
+    | Some(_), Error(Nil), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// A session's timeline section for its thread: the cards the page holds, at the
+/// density the person chose, with the controls only a page that reads the feed
+/// has. Nothing before a read answers.
+fn timeline_section(model: Model, session: String) -> Element(Msg) {
+  timeline_view.pane(
+    timeline_view.Offer(
+      held: option.from_result(dict.get(model.timelines, session)),
+      density: model.timeline_density,
+      opened: set.fold(model.timeline_open, set.new(), fn(found, key) {
+        case key.0 == session {
+          True -> set.insert(found, key.1)
+          False -> found
+        }
+      }),
+      now: model.start.now(),
+      spans: dict.fold(model.spans, dict.new(), fn(found, key, seen) {
+        case key.0 == session {
+          True -> dict.insert(found, key.1, seen)
+          False -> found
+        }
+      }),
+      handlers: case model.start.attention {
+        Some(_) ->
+          Some(timeline_view.Handlers(
+            density: TimelineDensityChosen,
+            toggle: TimelineCardToggled(session, _),
+            older: TimelineOlderAsked(session),
+            open: Opening(session),
+          ))
+        None -> None
+      },
+    ),
+  )
+}
+
+/// Whether the reading pane is asked to show the "Watch all" board. A press on a
+/// thread of any kind (a session, an ask, a find, a stuck strand or a ticket)
+/// returns it to `WatchOne`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.board_asked(home.new(start)) == inbox_view.WatchOne
+/// ```
+pub fn board_asked(model: Model) -> inbox_view.Watch {
+  model.watch
+}
+
+/// The sessions whose Updates card is open, in no particular order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.open_cards(home.new(start)) == []
+/// ```
+pub fn open_cards(model: Model) -> List(String) {
+  set.to_list(model.expanded)
+}
+
+/// The executor a session's workspace is registered on, when it has one: the
+/// machine a card names because it is not this one.
+fn machine_of(model: Model, session: String) -> Option(String) {
+  case
+    list.find(listing.entries(model.groups), fn(entry) { entry.id == session })
+  {
+    Ok(entry) -> entry.executor
+    Error(Nil) -> None
+  }
 }
 
 /// What the page knows of when each session's thread began. An approval's age is
@@ -7924,6 +8749,7 @@ fn inbox_return(model: Model) -> Option(Msg) {
     | Ticketed(_), _, _
     | ProjectCreating(_), _, _
     | Projected(_), _, _
+    | GettingStarted, _, _
     | Relayed(_), _, _
     -> None
   }
@@ -7943,6 +8769,50 @@ fn running_sessions(model: Model) -> Int {
   })
 }
 
+/// What the page holds that bears on setup, which the checklist, the rail's
+/// entry and the hint are all derived from.
+fn setup_facts(model: Model) -> get_started.Facts {
+  let entries = listing.entries(model.groups)
+
+  get_started.Facts(
+    sessions: case entries {
+      [] -> get_started.Absent
+      [_, ..] -> get_started.Present
+    },
+    listing: model.listing_known,
+    folder: list.first(composer.folders_offered(entries, model.recent))
+      |> option.from_result,
+    models: model.start.models,
+    projects: list.length(model.boards),
+    boards: model.boards_known,
+    making: case model.start.projects, model.start.ceiling {
+      Some(_), OperatorCeiling -> get_started.MayMake
+      Some(_), _ | None, _ -> get_started.MayNot
+    },
+    skipped: model.skipped,
+  )
+}
+
+/// The checklist's page.
+fn get_started_page(model: Model) -> Element(Msg) {
+  let facts = setup_facts(model)
+
+  get_started_view.view(get_started_view.Offer(
+    heading: case model.status {
+      Connected -> "Daemon ready"
+      Connecting | Ended(_) -> "Daemon not reachable right now"
+    },
+    status: get_started.model_words(facts.models),
+    steps: get_started.checklist(facts),
+    new_project: case facts.making {
+      get_started.MayMake -> Some(ProjectCreationOpened)
+      get_started.MayNot -> None
+    },
+    skip: StepSkipped,
+    back: GettingStartedClosed,
+  ))
+}
+
 /// The centre's body when the inbox is not it: the composer, a ticket's page,
 /// a relayed session or the list.
 fn centre_pane(model: Model) -> Element(Msg) {
@@ -7950,6 +8820,7 @@ fn centre_pane(model: Model) -> Element(Msg) {
     NewSession, Some(_) -> new_session.view(new_pane(model))
     Ticketed(open), _ -> ticket_page(model, open)
     Projected(page), _ -> project_page_view_of(model, page)
+    GettingStarted, _ -> get_started_page(model)
     ProjectCreating(creation), _ ->
       project_create_view.view(project_create_view.Offer(
         creation:,
@@ -8018,6 +8889,8 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
       model: fn(model) { Composed(composer.ChoseModel(model)) },
       search: fn(text) { Composed(composer.Searched(text)) },
+      found: fn(index) { Composed(composer.ChoseFound(index)) },
+      enter: Composed(composer.Entered),
       browse: Composed(composer.OpenedBrowser),
       descend: fn(index) { Composed(composer.Descended(index)) },
       ascend: fn(depth) { Composed(composer.Ascended(depth)) },
@@ -8025,6 +8898,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       leave_browser: Composed(composer.ClosedBrowser),
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
       toggle_limits: Composed(composer.ToggledLimits),
+      toggle_worktree: Composed(composer.ToggledWorktree),
       start_with_limits: fn(name, typed, limits) {
         Composed(composer.StartedWithLimits(name, typed, limits))
       },
@@ -8602,6 +9476,13 @@ fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
     starting: case model.start.create {
       Some(_) -> Some(ShowingNew)
       None -> None
+    },
+    getting_started: case
+      model.start.create,
+      get_started.finished(setup_facts(model))
+    {
+      Some(_), False -> Some(GettingStartedOpened)
+      Some(_), True | None, _ -> None
     },
     administering: case model.start.admin, model.status {
       Some(_), Connected -> Some(AdminRequested)

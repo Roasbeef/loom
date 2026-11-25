@@ -77,6 +77,15 @@ dismissed strand is simply not handed in, and a strand that failed again is.
   one line of at most 120 graphemes, untrusted text for a text node; a peer
   message's head never claims relevance or that it is unanswered. Stuck
   strands and asks join the pinned group in phase 1.
+- `timeline.cut(records, step_limit)`, `Cut(cards, open)`, `Card`, `Facts`,
+  `Kind` (`Prompted`, `Worked`, `Ran`, `Reported`, `Asked`, `Compacted`,
+  `Answered`): the session timeline's cut (`docs/design-notes/session-timeline.md`).
+  It divides one strand's oldest-first records into spans at a prompt, an answer,
+  a compaction, an ask, a failed command, a command after file writes, a
+  sub-agent's result or the step limit. It is prefix-stable: the cards of a
+  prefix of the records are a prefix of the cards of the whole, so a card keeps
+  its `from_seq` while the strand grows. A command is kept reduced (executable and
+  subcommand, no tail). Every string in a card is session text for a text node.
 - `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
   `model_name(model)`, `task_words(title)` (a task, or nothing for the
   roster's placeholders and the advisor's feed prompt; a brief is cut to its
@@ -1266,3 +1275,10 @@ with the output made safe as several lines; `check_words` and `check_words_untim
 sentence, and `person/check` and the `recheck` action are known words. `command.Surface`
 has a `Project` variant for `/project`; the terminal opens its board screen for
 it.
+
+`span_lines.of_records(records)` turns one timeline span's records into at most
+100 lines (`Line`: sequence, time, `Kind` (`Prompted`, `Said`, `Step`,
+`Compacted`), words of at most 200 bytes, `Outcome`): a person's words, the
+agent's words, each tool call worded by `step_words` with the outcome its result
+reported, and a compaction. Harness and peer messages make no line. Pure and
+portable, like `timeline`.

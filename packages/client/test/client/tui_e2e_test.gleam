@@ -1017,6 +1017,7 @@ fn boot_with(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
@@ -1150,6 +1151,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
+    released: None,
   )
 }
 
@@ -2281,6 +2283,10 @@ fn ask_turns(driver) -> Result(Nil, String) {
     ux_await(driver, "the ask card", fn(sample) {
       string.contains(sample.frame, "Ask · waiting since")
       && string.contains(sample.frame, "Alt+A answers")
+    })
+    |> result.map_error(fn(reason) {
+      let held = tui_driver.play(driver, [])
+      reason <> "\nasks: " <> string.inspect(held.model.view.asks.phase)
     }),
   )
   use Nil <- result.try(

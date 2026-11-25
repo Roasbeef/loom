@@ -47,10 +47,12 @@ import broker/policy
 import client/daemon/manager
 import client/daemon/project_book.{type Book}
 import client/daemon/project_host
+import client/daemon/project_verdict
 import client/goalcheck
 import client/goalstate
 import client/install
 import client/internal/ffi_os
+import client/jev as transport
 import client/peer_mail
 import client/project_jail
 import client/project_judge
@@ -110,6 +112,10 @@ pub type Env {
     /// protected paths and whether it may publish. It comes from `[project]`
     /// and is the owner's alone.
     policy: project_host.Policy,
+    /// The transport to Jev, built once when the daemon starts from the key in
+    /// its environment. A daemon with no key holds a client that answers every
+    /// request with `NoKey`.
+    jev: transport.Client,
     /// Where startup reports.
     logger: Logger,
   )
@@ -128,6 +134,9 @@ pub type Control {
     /// is asked for only when a live verdict is, and answers a sentence when
     /// the router's model cannot be resolved.
     judge: fn(String) -> Result(project_judge.Judge, String),
+    /// What a verdict needs to measure Jev: the setting in force and the
+    /// transport with its key.
+    jev: project_verdict.Jev,
   )
 }
 
@@ -270,6 +279,7 @@ fn make_project(
         executor: "",
         pool: "",
         agency: agency_limits.empty,
+        worktree: None,
       ),
       directory: env.sessions,
       generator: env.generator(),
@@ -389,6 +399,7 @@ fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
       executor: "",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     ),
     directory: env.sessions,
     generator: env.generator(),
@@ -493,6 +504,7 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     publish: fn(request) { published(layout, request) },
     gh_runner: fn() { project_poller.runner(project_publish.tools()) },
     remote_url: fn() { option.from_result(project_repo.pinned_url(layout)) },
+    jev: env.jev,
     logger: env.logger,
   )
 }
@@ -790,11 +802,12 @@ fn start_worker(
       workspace: clone,
       name: request.title,
       configuration: "",
-      profile: None,
-      model: None,
+      profile: option.then(request.agent, fn(agent) { agent.profile }),
+      model: option.then(request.agent, fn(agent) { agent.model }),
       executor: "",
       pool: "",
       agency: agency_limits.empty,
+      worktree: None,
     )
   use registration <- result.try(
     manager.reserve(

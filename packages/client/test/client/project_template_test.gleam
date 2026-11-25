@@ -51,7 +51,7 @@ fn strict_with_path(rig: worktree_rig.Rig, path: String) -> Worktrees {
   let assert Ok(here) = simplifile.current_directory()
     as "the test runner has a working directory"
   let assert Ok(trees) =
-    worktrees.start(
+    worktrees.start_with(
       worktrees.Config(
         state_root: rig.state,
         ledger_path: rig.ledger_path,
@@ -62,6 +62,7 @@ fn strict_with_path(rig: worktree_rig.Rig, path: String) -> Worktrees {
         logger: log.discard(),
       ),
       [rig.workspace],
+      fn() { Error(Nil) },
     )
     as "the worktrees start"
   trees

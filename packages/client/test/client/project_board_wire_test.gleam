@@ -11,6 +11,7 @@
 import client/daemon/project_book
 import client/daemon/project_host
 import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/protocol
 import client/daemon/ui_projects
 import client/internal/ffi_os
@@ -135,13 +136,25 @@ pub fn the_label_and_verdict_frames_decode_to_their_commands_test() {
   assert protocol.decode(
       "{\"v\":2,\"id\":11,\"cmd\":\"projects.verdict\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\"}}",
     )
-    == Ok(protocol.Request(11, protocol.RunProjectVerdict("p1", "ci", None)))
+    == Ok(protocol.Request(
+      11,
+      protocol.RunProjectVerdict("p1", "ci", None, None),
+    ))
   assert protocol.decode(
       "{\"v\":2,\"id\":12,\"cmd\":\"projects.verdict\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\",\"lane\":\"live\"}}",
     )
     == Ok(protocol.Request(
       12,
-      protocol.RunProjectVerdict("p1", "ci", Some("live")),
+      protocol.RunProjectVerdict("p1", "ci", Some("live"), None),
+    ))
+
+  // The router measured is named by an optional word of its own.
+  assert protocol.decode(
+      "{\"v\":2,\"id\":13,\"cmd\":\"projects.verdict\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\",\"lane\":\"live\",\"router\":\"jev\"}}",
+    )
+    == Ok(protocol.Request(
+      13,
+      protocol.RunProjectVerdict("p1", "ci", Some("live"), Some("jev")),
     ))
 }
 
@@ -319,6 +332,7 @@ fn controlled(handle: project_host.Handle) -> project_start.Control {
     book:,
     create: fn(_, _) { Error("not used") },
     judge: fn(_) { Error("not used") },
+    jev: project_verdict.jev_off(),
   )
 }
 
@@ -417,6 +431,7 @@ fn creating(handle: project_host.Handle) -> project_start.Control {
       ))
     },
     judge: fn(_) { Error("not used") },
+    jev: project_verdict.jev_off(),
   )
 }
 
@@ -436,6 +451,7 @@ fn creating_for_a_new_folder(
       ))
     },
     judge: fn(_) { Error("not used") },
+    jev: project_verdict.jev_off(),
   )
 }
 

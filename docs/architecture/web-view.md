@@ -274,12 +274,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:646`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:660`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:9189`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:9305`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -830,6 +830,17 @@ not carry from one page to the next. The home opens the owner on a composer
 serving daemon and says why no other machine is offered; Code, whose list holds the
 folders the page drew, one section for each executor with what it reported (a
 disabled row with a reason where it is down) and one for each pool, with a search.
+The Code list opens under the chip with the cursor in the search field. Its folder
+rows are the remembered folders ("Recent", at most eight, the folder in force
+checked), the folders ranked from the daemon's index of names below the owner's home
+("Folders"; one bounded index built when the list opens and refreshed after five
+minutes), and the owner's projects, each drawn as a name with
+its parent dimmed beside it; "Open folder…" opens the folder picker. The arrow keys
+move down the rows, Enter chooses the first row from the field or the focused row,
+and Escape closes the list, which `<loom-picklist>` does in the browser. On a phone
+the list is a sheet over the full width with the same layout
+([protocol-change/132](../../protocol-change/132-folder-listing.md), the addendum on
+searching).
 A pool's heading says only what its report carries: "Any of linux: exec, other"
 when the report names its executors, "Any of 2 machines in linux" or "linux pool,
 1 machine" when the remote box only counts them, and "Any machine in linux" before

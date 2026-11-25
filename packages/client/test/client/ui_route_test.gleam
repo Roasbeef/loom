@@ -749,7 +749,7 @@ fn creating_from_home(
     Ok(chosen) -> Some(chosen)
     Error(Nil) -> None
   }
-  let ask = fn(place, name, sharing, roles, _agency, prompt, deliver) {
+  let ask = fn(place, name, sharing, roles, _agency, _worktree, prompt, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -796,6 +796,7 @@ fn creating_from_home(
         sharing,
         creations.Roles(profile:, model:),
         agency_limits.empty,
+        None,
         "",
         fn(answer) { process.send(answers, answer) },
       )
@@ -1682,6 +1683,7 @@ fn create_session_in(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
@@ -4153,6 +4155,7 @@ fn create_shared_session(
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
@@ -6572,6 +6575,53 @@ pub fn the_folder_listing_is_answered_for_the_owners_operating_page_only_test() 
   })
 }
 
+// The folder index is answered for the owner's operating page alone
+// (protocol-change/132, the addendum on searching), by the same owner check as the
+// listing, and the home is read only after it.
+pub fn the_folder_index_is_answered_for_the_owners_operating_page_only_test() {
+  fixture(fn(ready, _, credential) {
+    let home = owners_home("index")
+    let assert Ok(Nil) = simplifile.create_directory_all(home <> "/code/loomy")
+      as "a folder to index"
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+
+    let assert Ok(index) =
+      ui_socket.index_for(standing, page_open, fn() { Ok(home) }, [])
+    assert list.contains(list.map(index.entries, fn(entry) { entry.trail }), [
+      "code",
+      "loomy",
+    ])
+
+    let refused = Error(folder_browse.NotAFolder)
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    assert ui_socket.index_for(readonly, page_open, fn() { Ok(home) }, [])
+      == refused
+    assert ui_socket.index_for(
+        standing,
+        fn() { Error(Nil) },
+        fn() { Ok(home) },
+        [],
+      )
+      == refused
+    let existing = create_session(ready, "index-known", 1125)
+    let grant = member(ready, "ui-index", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-index")
+    assert ui_socket.index_for(members, page_open, fn() { Ok(home) }, [])
+      == refused
+
+    // The home is never read for a page that fails the check.
+    let read = process.new_subject()
+    let watching = fn() {
+      process.send(read, Nil)
+      Ok(home)
+    }
+    assert ui_socket.index_for(readonly, page_open, watching, []) == refused
+    assert ui_socket.index_for(members, page_open, watching, []) == refused
+    assert process.receive(read, 0) == Error(Nil)
+  })
+}
+
 // The other orchestrators are read for the owner's operating page alone. A page
 // that has ended, one minted to read and a member's page are told of nothing, and
 // the daemon's read, which dials the other orchestrators, is never made for them.
@@ -8554,6 +8604,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1231),
@@ -8596,6 +8647,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1241),

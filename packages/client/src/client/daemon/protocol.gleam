@@ -24,6 +24,7 @@
 //// 4. `event` encodes a reply or a push and refuses one past the outbound bound.
 
 import client/peer_mail
+import client/workspaces
 import core/agency_limits.{
   type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
 }
@@ -38,12 +39,17 @@ import gleam/string
 import storage/access
 import storage/catalogue
 import storage/domain
+import web_view/timeline_feed
 
 /// The only control envelope version accepted by this module.
 pub const version = 2
 
 /// A complete control frame or fragmented message may contain at most 64 KiB.
 pub const max_bytes = 65_536
+
+/// The most records a `sessions.span` request may name between its first and last
+/// sequence. It is the scan bound of `client/span_read`.
+pub const max_span_records = 5000
 
 /// The most sessions one `sessions.activity` request may name. Each answer
 /// is bounded to 2,400 encoded bytes, so this many fit the 60,000-byte reply
@@ -289,7 +295,12 @@ pub type Command {
 
   /// Runs a verdict for one rule on a lane, `replay` or `live`, and records
   /// it. Owner-only.
-  RunProjectVerdict(project: String, rule: String, lane: Option(String))
+  RunProjectVerdict(
+    project: String,
+    rule: String,
+    lane: Option(String),
+    router: Option(String),
+  )
 
   /// A person's publish of a ticket's current commit past a failing or missing
   /// check, recorded with the principal. Owner-only, and refused while the
@@ -365,6 +376,30 @@ pub type Command {
     epoch: String,
   )
 
+  /// Reads one page of a running session's timeline cards: the newest `limit`
+  /// cards older than the span `before` begins at, or the newest when it is
+  /// none, the cursor for the older ones and the span still open
+  /// (`protocol-change/134`). The owner, or a member that holds the session at
+  /// any role, as `SessionBrief` is. It reads and never writes.
+  SessionTimeline(
+    session: String,
+    before: Option(Int),
+    limit: Int,
+    epoch: String,
+  )
+
+  /// Reads the lines of one timeline span of a running session: the records from
+  /// `from_seq` to `to_seq`, scanned down from the span's last record `last`
+  /// (`protocol-change/134`). The owner, or a member that holds the session at
+  /// any role, as `SessionTimeline` is. It reads and never writes.
+  SessionSpan(
+    session: String,
+    last: String,
+    from_seq: Int,
+    to_seq: Int,
+    epoch: String,
+  )
+
   /// Reads the session's worktree as a review: the files its workspace
   /// changed, each file's hunks and a diff stat, bounded (`protocol-change/123`).
   /// The owner, or a member that holds the session as an Operator.
@@ -435,6 +470,10 @@ pub type Command {
     domain_scope: domain.Scope,
     /// Optional per-session subagent limits (protocol-change/113).
     agency: AgencyLimits,
+    /// The commit-ish a worktree of `workspace` branches from, or `None` for a
+    /// session that works in the folder itself. Present only beside a path on
+    /// this host (protocol-change/133).
+    worktree: Option(String),
   )
 
   /// Explicitly requests execution in the named daemon epoch.
@@ -924,8 +963,9 @@ fn decode_fields(
     "projects.verdict" -> {
       use project <- result.try(text_field(fields, "project", 64))
       use rule <- result.try(text_field(fields, "rule", 64))
-      use lane <- result.map(optional_text_field(fields, "lane", 16))
-      RunProjectVerdict(project, rule, lane)
+      use lane <- result.try(optional_text_field(fields, "lane", 16))
+      use router <- result.map(optional_text_field(fields, "router", 16))
+      RunProjectVerdict(project, rule, lane, router)
     }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
@@ -979,6 +1019,59 @@ fn decode_fields(
       use epoch <- result.map(text_field(fields, "epoch", 256))
       SessionBrief(session, since, epoch)
     }
+    "sessions.timeline" -> {
+      use session <- result.try(attention_session(fields))
+
+      // An absent `before` asks for the newest page, and a negative or mistyped
+      // one is refused.
+      use before <- result.try(case list.key_find(fields, "before") {
+        Error(Nil) -> Ok(None)
+        Ok(json.Int(before)) if before >= 0 -> Ok(Some(before))
+        Ok(_) -> Error("expected a nonnegative before")
+      })
+
+      // An absent `limit` asks for the default page, and one outside the bound
+      // is refused rather than clamped, so a caller learns its own mistake.
+      use limit <- result.try(case list.key_find(fields, "limit") {
+        Error(Nil) -> Ok(timeline_feed.default_limit)
+        Ok(json.Int(limit)) if limit >= 1 && limit <= timeline_feed.max_cards ->
+          Ok(limit)
+        Ok(_) -> Error("expected a limit of one to twenty")
+      })
+
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionTimeline(session, before, limit, epoch)
+    }
+    "sessions.span" -> {
+      use session <- result.try(attention_session(fields))
+      use last <- result.try(text_field(fields, "last", 64))
+      use last <- result.try(
+        ids.parse_entry_id(last)
+        |> result.map(ids.entry_id_to_string)
+        |> result.replace_error("expected a record id"),
+      )
+
+      // The span's first sequence is a nonnegative integer.
+      use from_seq <- result.try(case list.key_find(fields, "from_seq") {
+        Ok(json.Int(from_seq)) if from_seq >= 0 -> Ok(from_seq)
+        Ok(_) | Error(Nil) -> Error("expected a nonnegative from_seq")
+      })
+
+      // Its last is no earlier than its first.
+      use to_seq <- result.try(case list.key_find(fields, "to_seq") {
+        Ok(json.Int(to_seq)) if to_seq >= from_seq -> Ok(to_seq)
+        Ok(_) | Error(Nil) -> Error("expected a to_seq no less than from_seq")
+      })
+
+      // A span longer than the scan bound is refused, since the read would be cut.
+      use Nil <- result.try(case to_seq - from_seq < max_span_records {
+        True -> Ok(Nil)
+        False -> Error("expected a span of fewer than 5000 records")
+      })
+
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionSpan(session, last, from_seq, to_seq, epoch)
+    }
     "sessions.review" -> {
       use session <- result.try(attention_session(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
@@ -1031,7 +1124,8 @@ fn decode_fields(
       use profile <- result.try(profile_field(fields))
       use model <- result.try(model_field(fields))
       use scope <- result.try(domain_scope(fields, placed))
-      use agency <- result.map(agency_field(fields))
+      use agency <- result.try(agency_field(fields))
+      use worktree <- result.map(worktree_field(fields, placed))
       CreateSession(
         key,
         workspace,
@@ -1043,6 +1137,7 @@ fn decode_fields(
         pool,
         scope,
         agency,
+        worktree,
       )
     }
     "sessions.open" -> {
@@ -1555,6 +1650,51 @@ fn optional_depth_cap(
     Ok(json.Int(value)) -> Ok(Some(BoundedDepth(value)))
     Ok(json.String("unlimited")) -> Ok(Some(UnlimitedDepth))
     Ok(_) -> Error("agency.depth_cap must be an integer or \"unlimited\"")
+  }
+}
+
+// The optional `worktree` object of a creation: `{"base": "<commit-ish>"}`,
+// where `base` defaults to `HEAD`. Its presence is the choice, so `{}` asks for
+// a worktree from `HEAD`. A worktree is made of a folder on this host, so it is
+// refused beside an executor or a pool, whose workspaces choose their own mode
+// in the executor's `[workspaces]` table (protocol-change/095). An unknown key
+// is refused so that a typo fails closed instead of silently choosing the
+// folder.
+/// Decodes the optional `worktree` creation object into its base.
+fn worktree_field(
+  fields: List(#(String, JsonValue)),
+  placed: Option(String),
+) -> Result(Option(String), String) {
+  // Absence is the folder itself; presence is the choice, judged by what it
+  // is placed beside and then by its own members.
+  case list.key_find(fields, "worktree"), placed {
+    Error(Nil), _ -> Ok(None)
+    Ok(_), Some(_) ->
+      Error(
+        "worktree is for a folder on this host, not a registered workspace: drop executor or pool",
+      )
+    Ok(json.Object(nested)), None -> {
+      use Nil <- result.try(
+        list.try_each(nested, fn(pair) {
+          case pair.0 {
+            "base" -> Ok(Nil)
+            other -> Error("unknown worktree field: " <> other)
+          }
+        }),
+      )
+
+      // A base is optional and defaults to `HEAD`; one that is present is held
+      // to the rule that keeps Git from reading it as an option.
+      case list.key_find(nested, "base") {
+        Error(Nil) -> Ok(Some(workspaces.default_base))
+        Ok(json.String(text)) ->
+          workspaces.usable_base(text)
+          |> result.map(Some)
+          |> result.map_error(fn(reason) { "worktree.base " <> reason })
+        Ok(_) -> Error("worktree.base must be a string")
+      }
+    }
+    Ok(_), None -> Error("worktree must be an object")
   }
 }
 

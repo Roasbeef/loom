@@ -796,17 +796,31 @@ pub fn a_check_without_a_note_ends_at_its_sentence_test() {
 // word is kept as the daemon spelled it, and a daemon that predates the read
 // sends none.
 pub fn the_routers_decisions_and_state_decode_and_word_test() {
-  let row = fn(trigger, decision, ticket, reason) {
+  let model_row =
     json.Object([
-      #("trigger", json.String(trigger)),
-      #("source", json.String("composer")),
-      #("actor", json.String("owner")),
-      #("decision", json.String(decision)),
-      #("ticket", ticket),
-      #("reason", reason),
+      #("trigger", json.String("tr-1")),
+      #("decision", json.String("accepted")),
       #("at_ms", json.Int(5)),
+      #("decider", json.String("model")),
+      #("fallback", json.String("abstained")),
     ])
-  }
+  let jev_row =
+    json.Object([
+      #("trigger", json.String("tr-2")),
+      #("decision", json.String("attached")),
+      #("at_ms", json.Int(4)),
+      #("decider", json.String("jev")),
+      #("model", json.String("jev-3")),
+      #("probability", json.Int(9400)),
+      #("reason", json.Null),
+      #("agent", json.Null),
+    ])
+  let odd_row =
+    json.Object([
+      #("trigger", json.String("tr-3")),
+      #("decision", json.String("from-the-future")),
+      #("decider", json.String("model")),
+    ])
   let assert json.Object(fields) = body([])
   let document =
     json.Object(
@@ -814,9 +828,9 @@ pub fn the_routers_decisions_and_state_decode_and_word_test() {
         #(
           "decisions",
           json.Array([
-            row("tr-1", "accepted", json.String("t-1"), json.Null),
-            row("tr-2", "held", json.Null, json.String("attention")),
-            row("tr-3", "from-the-future", json.Null, json.Null),
+            model_row,
+            jev_row,
+            odd_row,
             json.Object([#("decision", json.String("accepted"))]),
           ]),
         ),
@@ -834,9 +848,9 @@ pub fn the_routers_decisions_and_state_decode_and_word_test() {
 
   assert list.map(decoded.decisions, board.decision_words)
     == [
-      "Opened ticket t-1",
-      "Held: too many tickets wait on a person",
-      "from-the-future",
+      "Opened a ticket, decided by the router, which Jev left: abstained",
+      "Attached to a ticket, decided by Jev (jev-3, 94%)",
+      "from-the-future, decided by the router",
     ]
   assert decoded.router == Some(board.Router("busy", 2, 1))
 

@@ -61,6 +61,8 @@ fn drop_own(current: State, trigger: Trigger) -> #(State, List(Effect)) {
       trigger:,
       admission: NotAdmitted(gate.OwnOutput),
       fate: Decided(state.OwnMessage),
+      judgement: option.None,
+      agent: option.None,
     )
   #(store(current, stored), [])
 }
@@ -75,11 +77,24 @@ fn admit(current: State, trigger: Trigger) -> #(State, List(Effect)) {
   case admission {
     NotAdmitted(_) -> {
       let stored =
-        TriggerRecord(trigger:, admission:, fate: Decided(state.RecordedOnly))
+        TriggerRecord(
+          trigger:,
+          admission:,
+          fate: Decided(state.RecordedOnly),
+          judgement: option.None,
+          agent: option.None,
+        )
       #(note_on_thread(store(current, stored), trigger, Recorded), [])
     }
     Admitted(strength, _, _) -> {
-      let stored = TriggerRecord(trigger:, admission:, fate: Awaiting)
+      let stored =
+        TriggerRecord(
+          trigger:,
+          admission:,
+          fate: Awaiting,
+          judgement: option.None,
+          agent: option.None,
+        )
       let seen = note_on_thread(store(current, stored), trigger, Received)
       follow_or_route(seen, trigger, strength)
     }

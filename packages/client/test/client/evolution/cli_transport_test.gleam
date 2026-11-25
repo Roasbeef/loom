@@ -100,6 +100,7 @@ fn exercise() {
               "",
               "",
               agency_limits.empty,
+              option.None,
             ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1_700_000_000_000), 807),

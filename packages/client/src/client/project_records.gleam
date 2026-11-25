@@ -119,6 +119,16 @@ pub type Record {
     text: String,
   )
 
+  /// Jev was tried for a trigger and the model router decided it instead, or
+  /// the pass never reached it. Evaluation counts these to see how often the
+  /// fallback runs and why, and the board shows the reason beside the trigger.
+  JevFallback(
+    /// The trigger.
+    trigger: String,
+    /// The reason, as `project/jev.why_word` spells it.
+    why: String,
+  )
+
   /// The marker a compaction writes about itself, so that the event it
   /// compacts to is never the engine's newest and the ledger's numbering
   /// continues past the point. It changes no table.
@@ -353,6 +363,12 @@ fn record_json(record: Record) -> Json {
         #("detail", json.string(detail)),
         #("at_ms", json.int(at_ms)),
       ])
+    JevFallback(trigger:, why:) ->
+      json.object([
+        #("host", json.string("jev_fallback")),
+        #("trigger", json.string(trigger)),
+        #("why", json.string(why)),
+      ])
     Retention(dropped:) ->
       json.object([
         #("host", json.string("retention")),
@@ -467,6 +483,11 @@ fn host_decoder() -> decode.Decoder(Record) {
         detail:,
         at_ms:,
       ))
+    }
+    "jev_fallback" -> {
+      use trigger <- decode.field("trigger", decode.string)
+      use why <- decode.field("why", decode.string)
+      decode.success(JevFallback(trigger:, why:))
     }
     "retention" -> {
       use dropped <- decode.field("dropped", decode.int)

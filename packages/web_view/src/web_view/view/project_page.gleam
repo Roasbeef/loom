@@ -184,7 +184,7 @@ fn router_words(state: board.Router) -> String {
 
 /// What the router decided about the triggers it was given, newest first, as the
 /// daemon records it: which trigger became which ticket, or was declined, with
-/// its reason. A trigger is named by its source and actor, never by its text.
+/// its reason. A trigger is never drawn by its text.
 fn decisions(
   offer: Offer(message),
   found: Option(board.Board),
@@ -202,20 +202,15 @@ fn decisions(
   }
 }
 
-/// One decision: the sentence, then who sent the trigger and how long ago.
+/// One decision: the sentence, which says who decided, then how long ago the
+/// trigger arrived.
 fn decision(offer: Offer(message), each: board.Decision) -> Element(message) {
   html.li([attribute.class("home-folder")], [
     html.span([attribute.class("home-folder-name")], [
       html.text(board.decision_words(each)),
     ]),
     html.span([attribute.class("home-folder-path")], [
-      html.text(
-        each.actor
-        <> " via "
-        <> each.source
-        <> " · "
-        <> board.age_words(each.at_ms, offer.now),
-      ),
+      html.text(board.age_words(each.at_ms, offer.now)),
     ]),
   ])
 }

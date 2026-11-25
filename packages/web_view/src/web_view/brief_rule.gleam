@@ -2,12 +2,14 @@
 //// (protocol-change/125).
 ////
 //// The daemon allows six brief reads in four seconds for each credential, and
-//// every read costs the session a bounded walk of its recent entries, so the
-//// page reads a brief only for the thread that is open: once when the thread is
-//// opened, and again when the page's own refresh finds the thread still open and
-//// the last read fifteen seconds old or older. A thread that is not open is
-//// never read. `due` decides that from the time of the last read, and nothing
-//// else, so it is a function of two numbers and a trigger.
+//// every read costs the session a bounded walk of its recent entries, so the page
+//// reads a brief for two kinds of session only. The open thread's session is read
+//// once when the thread is opened, and again when the page's own refresh finds the
+//// thread still open and the last read fifteen seconds old or older (`due`). The
+//// sessions in Updates, which the list draws as cards, are read on a timer of their
+//// own, two at most every five seconds and each at least ten seconds after its last
+//// read (`card_due`), and the open thread's session is left out of them. Any other
+//// session is never read.
 ////
 //// The brief's peer messages are those that arrived after a time the read
 //// named. That time is the raise time of an approval, and the label over the
@@ -26,6 +28,10 @@ import web_view/session_brief.{type Brief}
 /// How old the last read of an open thread's brief must be before the page's
 /// refresh reads it again, in milliseconds.
 pub const refresh_ms = 15_000
+
+/// How old the last read of an Updates card's brief must be before the card timer
+/// reads it again, in milliseconds.
+pub const card_stale_ms = 10_000
 
 /// How soon after a read a thread's opening reads again, in milliseconds: a
 /// person pressing the same row twice reads once.
@@ -115,5 +121,24 @@ pub fn current(read: Brief, finished_at: Option(Int)) -> Bool {
     Some(assistant), Some(finished) -> assistant.at >= finished
     Some(_), None -> True
     None, Some(_) | None, None -> False
+  }
+}
+
+/// Whether an Updates card's brief is worth reading at `now`, given the last read
+/// of the same session: one never read is, and so is one read `card_stale_ms` ago or
+/// earlier. A card's read asks for no peer messages, so the time they are counted
+/// from plays no part.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert brief_rule.card_due(None, 0)
+/// assert !brief_rule.card_due(Some(brief_rule.Read(0, 0)), 9999)
+/// assert brief_rule.card_due(Some(brief_rule.Read(0, 0)), 10_000)
+/// ```
+pub fn card_due(last: Option(Read), now: Int) -> Bool {
+  case last {
+    None -> True
+    Some(Read(started:, ..)) -> now - started >= card_stale_ms
   }
 }

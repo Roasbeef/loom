@@ -1550,6 +1550,46 @@ pub fn unclassified_responses_failure_does_not_walk_fallback_test() {
   assert process.receive(requests, within: 0) == Error(Nil)
 }
 
+pub fn streamed_capacity_failure_does_not_walk_fallback_test() {
+  list.each(["{}", "{\"Retry-After\":\"2\"}"], fn(headers) {
+    let requests = process.new_subject()
+    let public =
+      fixture.routing_transport(fn(sent) {
+        process.send(requests, sent.url)
+        fixture.ok_response(sse_event(
+          "error",
+          "{\"type\":\"error\",\"sequence_number\":3,\"error\":{\"code\":\"server_is_overloaded\",\"headers\":"
+            <> headers
+            <> "}}",
+        ))
+      })
+    let bridge =
+      gateway.CodexTransport(prepare_streaming: fn(profile, sent, events) {
+        process.send(requests, profile <> sent.url)
+        let http.Transport(prepare_streaming:) =
+          fixture.transport(fixture.ok_response(measured_success_transcript()))
+        prepare_streaming(sent, events)
+      })
+
+    let handle =
+      gateway.request(mixed_accounting_gateway(public, bridge), main_request())
+    let assert Ok(#([], stream.Failed(error, report))) =
+      stream.await_terminal(handle, within: 2000)
+      as "The gateway cannot bypass terminal capacity or its durable retry wait."
+    let assert stream.StreamError("responses.server_is_overloaded", _, hint) =
+      stream.underlying_error(error)
+    let expected_hint = case headers {
+      "{}" -> None
+      _ -> Some(2000)
+    }
+    assert hint == expected_hint
+    assert accounting.attempts(report) == 1
+    assert process.receive(requests, within: 0)
+      == Ok("https://primary.test/v1/responses")
+    assert process.receive(requests, within: 0) == Error(Nil)
+  })
+}
+
 pub fn fallback_retains_each_actual_target_price_and_final_context_usage_test() {
   let requests = process.new_subject()
   let public =

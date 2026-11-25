@@ -930,7 +930,7 @@ pub fn upgrade_home(
     home_create_capability(
       attachment.principal,
       ceiling,
-      fn(place, name, sharing, roles, agency, prompt, deliver) {
+      fn(place, name, sharing, roles, agency, worktree, prompt, deliver) {
         create_task_with_agency(
           standing,
           tickets,
@@ -952,6 +952,7 @@ pub fn upgrade_home(
           sharing,
           roles,
           agency,
+          worktree,
           prompt,
           first_message_for(attachment, gateway_of),
           deliver,
@@ -986,6 +987,8 @@ pub fn upgrade_home(
   // daemon's own door, which reads authority from the registry at each press;
   // the page's submit is admitted by the rule that admits the message form.
   let brief_of = attachment.brief
+  let timeline_of = attachment.timeline
+  let span_of = attachment.span
   let home_attention =
     home_attention_capability(
       attachment.principal,
@@ -1010,6 +1013,18 @@ pub fn upgrade_home(
         brief: fn(session, since, deliver) {
           read_task(deliver, fn() {
             brief_of(session, since)
+            |> result.map_error(fn(refusal) { refusal.words })
+          })
+        },
+        timeline: fn(session, before, limit, deliver) {
+          read_task(deliver, fn() {
+            timeline_of(session, before, limit)
+            |> result.map_error(fn(refusal) { refusal.words })
+          })
+        },
+        span: fn(session, last, from_seq, to_seq, deliver) {
+          read_task(deliver, fn() {
+            span_of(session, last, from_seq, to_seq)
             |> result.map_error(fn(refusal) { refusal.words })
           })
         },
@@ -1169,6 +1184,17 @@ pub fn upgrade_home(
           browse_within(
             fn() { browse_for(standing, open, new_folder.home, trail) },
             browse_ms,
+            deliver,
+          )
+        },
+        // The folder index (protocol-change/132, the addendum on searching) is
+        // one walk of the home, so it is a task of its own under a deadline, and
+        // the page asks for one build at a time.
+        index: fn(seeds, deliver) {
+          within_deadline(
+            fn() { index_for(standing, open, new_folder.home, seeds) },
+            browse_ms,
+            Error(folder_browse.Unreadable),
             deliver,
           )
         },
@@ -1857,7 +1883,13 @@ fn live_start(
       snapshot.Expected(target.session, attached.epoch, attached.incarnation),
     )
     Waiting | Crowded -> #(
-      component.Label(name: "", workspace: "", executor: "", pool: ""),
+      component.Label(
+        name: "",
+        workspace: "",
+        executor: "",
+        pool: "",
+        branch: "",
+      ),
       snapshot.Expected(target.session, "", ""),
     )
   }
@@ -1892,11 +1924,29 @@ fn live_start(
 fn labelled(label: remote_feed.Label) -> component.Label {
   case label.placement {
     remote_top.Folder(path:) ->
-      component.Label(name: label.name, workspace: path, executor: "", pool: "")
+      component.Label(
+        name: label.name,
+        workspace: path,
+        executor: "",
+        pool: "",
+        branch: "",
+      )
     remote_top.Workspace(executor:, name:) ->
-      component.Label(name: label.name, workspace: name, executor:, pool: "")
+      component.Label(
+        name: label.name,
+        workspace: name,
+        executor:,
+        pool: "",
+        branch: "",
+      )
     remote_top.Pooled(pool:, name:) ->
-      component.Label(name: label.name, workspace: name, executor: "", pool:)
+      component.Label(
+        name: label.name,
+        workspace: name,
+        executor: "",
+        pool:,
+        branch: "",
+      )
   }
 }
 
@@ -2180,6 +2230,7 @@ pub fn home_create_capability(
     creations.Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -2190,6 +2241,7 @@ pub fn home_create_capability(
     creations.Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -3216,6 +3268,7 @@ fn admit_home(
       creations.Sharing,
       creations.Roles,
       agency_limits.AgencyLimits,
+      Option(String),
       String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
@@ -3657,6 +3710,13 @@ fn admit(
         pool: case role {
           Owning -> registration.pool
           Observing | Operating -> ""
+        },
+        // A session in its own worktree says which branch it works on, to
+        // every role: the branch is named for the session, so it tells a
+        // reader nothing of the machine.
+        branch: case manager.worktree_base(attachment.registry, session_id) {
+          Ok(Some(_)) -> "loom/" <> session_id
+          Ok(None) | Error(_) -> ""
         },
       )),
       // The digest, not the path, is what the page's storage is keyed by.
@@ -5003,6 +5063,7 @@ pub fn create_with(
     sharing,
     roles,
     agency_limits.empty,
+    None,
     prompt,
     send,
     within:,
@@ -5030,6 +5091,7 @@ pub fn create_with_agency(
   sharing: creations.Sharing,
   roles: creations.Roles,
   agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
   prompt: String,
   send: fn(String, String) -> Result(Nil, String),
   within within: Int,
@@ -5060,6 +5122,7 @@ pub fn create_with_agency(
       executor_of(place),
       pool_of(place),
       agency,
+      worktree,
     )
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
@@ -5369,6 +5432,7 @@ fn creation_refusal(code: String) -> creations.Reason {
   case code {
     "forbidden" -> creations.NotOwner
     "invalid_workspace" -> creations.NotAFolder
+    "not_a_repository" -> creations.NotARepository
     "capacity" -> creations.Full
     "unknown_profile" -> creations.UnknownProfile
     "unknown_model" -> creations.UnknownModel
@@ -5431,6 +5495,7 @@ pub fn create_task(
     sharing,
     roles,
     agency_limits.empty,
+    None,
     prompt,
     send,
     deliver,
@@ -5458,6 +5523,7 @@ pub fn create_task_with_agency(
   sharing: creations.Sharing,
   roles: creations.Roles,
   agency: agency_limits.AgencyLimits,
+  worktree: Option(String),
   prompt: String,
   send: fn(String, String) -> Result(Nil, String),
   deliver: fn(creations.Answer) -> Nil,
@@ -5477,6 +5543,7 @@ pub fn create_task_with_agency(
           sharing,
           roles,
           agency,
+          worktree,
           prompt,
           send,
           within: resume_wait_ms,
@@ -5540,6 +5607,18 @@ pub fn browse_within(
   within: Int,
   deliver: fn(folder_browse.Answer) -> Nil,
 ) -> Nil {
+  within_deadline(attempt, within, Error(folder_browse.Unreadable), deliver)
+}
+
+/// Runs one attempt in a witnessed weft task under a deadline and delivers its
+/// answer, or `expired` when the deadline passed first. Both folder reads share
+/// it, so the deadline is one rule.
+fn within_deadline(
+  attempt: fn() -> answer,
+  within: Int,
+  expired: answer,
+  deliver: fn(answer) -> Nil,
+) -> Nil {
   let _ =
     weft.new([
       fn() {
@@ -5548,11 +5627,11 @@ pub fn browse_within(
           |> weft.deadline(within)
           |> weft.start
 
-        // A listing that passed its deadline is answered all the same, so the
+        // An attempt that passed its deadline is answered all the same, so the
         // picker never waits for one that will not come.
         case outcomes {
           [weft.Completed(value: answer, ..)] -> deliver(answer)
-          _ -> deliver(Error(folder_browse.Unreadable))
+          _ -> deliver(expired)
         }
 
         Ok(Nil)
@@ -5587,6 +5666,43 @@ pub fn browse_for(
     Ok(_) ->
       case home() {
         Ok(directory) -> folder_listing.list_in(directory, trail)
+        Error(_) -> Error(folder_browse.NoHome)
+      }
+    Error(_) -> Error(folder_browse.NotAFolder)
+  }
+}
+
+/// The index of folder names below the owner's home, for the composer's folder
+/// search (protocol-change/132, the addendum on searching). The same owner check as
+/// a creation and a listing runs first, so a page that may not create is told
+/// nothing about the filesystem and costs none, and the home is read only after
+/// it. A page that fails the check gets the refusal a missing folder gets. The
+/// seeds are hints that `folder_listing.index_in` checks itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.index_for(standing, open, fn() { Ok("/Users/o") }, [])
+/// ```
+@internal
+pub fn index_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: fn() -> Result(String, creations.Reason),
+  seeds: List(String),
+) -> folder_browse.IndexAnswer {
+  // The owner check comes first so a page that may not create costs no filesystem
+  // read, and the home is resolved only after it for the same reason.
+  case authorized_owner(standing, open) {
+    Ok(_) ->
+      case home() {
+        Ok(directory) ->
+          Ok(folder_listing.index_in(
+            directory,
+            seeds,
+            folder_listing.limits,
+            bootstrap.system_time_ms,
+          ))
         Error(_) -> Error(folder_browse.NoHome)
       }
     Error(_) -> Error(folder_browse.NotAFolder)

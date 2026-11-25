@@ -9385,12 +9385,48 @@ fn reads_for_one_turn(strands: Int) -> Int {
 
   // One turn lets the silent seeding writes fall behind the high-water, and
   // the second is the one measured.
-  let _warm = queued_request(socket, 2, protocol.Prompt("main", "warm"))
+  let _warm = queued_turn(socket, 2, "warm", harness.runtime)
   settle_reads(counter)
   let before = read_total(counter)
-  let _turn = queued_request(socket, 3, protocol.Prompt("main", "measured"))
+  let _turn = queued_turn(socket, 3, "measured", harness.runtime)
   settle_reads(counter)
   read_total(counter) - before
+}
+
+// Prompts main and returns once that run's terminal result is durable.
+//
+// The prompt's reply only says the user entry was admitted, so a counter that
+// has not moved for a quiet interval proves nothing about the turn: the run may
+// not have begun, or may be between commits, and under load that gap outlasts
+// the interval. The reads the hub makes follow the commits, so the turn is over
+// only once its last result register has been written. A cell's seq grows with
+// every write to it, which makes the seq read before the prompt the baseline
+// the run's terminal must pass.
+fn queued_turn(
+  socket: gateway.ConnectionHandle,
+  id: Int,
+  text: String,
+  runtime: api.Runtime,
+) -> protocol.Event {
+  let baseline = main_result_seq(runtime)
+  let reply = queued_request(socket, id, protocol.Prompt("main", text))
+  let assert poll.Answered(_) =
+    poll.until(within: 10_000, every: 10, attempt: fn() {
+      case main_result_seq(runtime) > baseline {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the prompted run reaches its terminal result"
+  reply
+}
+
+// The seq of main's last-result register, or zero before any run has ended.
+fn main_result_seq(runtime: api.Runtime) -> Int {
+  case session.last_result(runtime.session, "main") {
+    Ok(Some(session.Cell(seq:, ..))) -> seq
+    Ok(None) | Error(_) -> 0
+  }
 }
 
 fn seed_idle_strands(

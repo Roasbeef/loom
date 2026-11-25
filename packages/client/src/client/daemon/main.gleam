@@ -66,6 +66,7 @@ import client/daemon/profiles
 import client/daemon/project_book
 import client/daemon/project_host
 import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/restart
 import client/daemon/root
 import client/daemon/server
@@ -97,12 +98,14 @@ import client/host
 import client/install
 import client/internal/ffi_os
 import client/internal/ffi_tls_stream
+import client/jev as jev_transport
 import client/ledger_boot
 import client/ledger_control
 import client/ledger_holdings
 import client/ledger_reference
 import client/ledger_rows
 import client/ledger_service.{type Service}
+import client/local_trees
 import client/membership_ledger
 import client/move_checkout
 import client/node_report
@@ -114,6 +117,7 @@ import client/peer_outbox_drain
 import client/peers
 import client/pools
 import client/profile_switch
+import client/project_jev_judge
 import client/project_settings
 import client/relayed_session
 import client/remote/address
@@ -3602,6 +3606,10 @@ pub fn prepare_startup(
   // already reach the store.
   use node <- result.try(start_states(config, logger))
   let config = Config(..config, state_node: node)
+
+  // The registry of worktree services for sessions created in a worktree of a
+  // local folder. It starts no Git until the first such session is built.
+  use trees <- result.try(start_local_trees(config, logger))
   root.start(
     root.Config(
       config.state_root,
@@ -3624,6 +3632,16 @@ pub fn prepare_startup(
           |> diagnose_start(logger, identity, SettingsResolution),
         )
 
+        // A session created in a worktree works in its tree, which is made
+        // here, before the settings are resolved, because they are resolved
+        // against the directory the session works in. The registration keeps
+        // the folder; only the copy the settings are resolved from names the
+        // tree (protocol-change/133).
+        use placed <- result.try(
+          placed_in_worktree(trees, directory, registration, logger)
+          |> diagnose_start(logger, identity, SettingsResolution),
+        )
+
         // The file's fingerprint is read before the open loads it, so a save
         // that lands in between reopens the session once more than it needed
         // rather than never (`client/config_watch`).
@@ -3633,12 +3651,13 @@ pub fn prepare_startup(
         use settings <- result.try(
           serve.resolve_managed(
             config.session_defaults,
-            registration,
+            placed.registration,
             selected,
             state,
           )
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+        let settings = serve.Settings(..settings, released: placed.released)
 
         // A router or a worker is built from its standing: the registry, the
         // prompt, the model and the tool ceiling all follow from it. An
@@ -3774,6 +3793,145 @@ pub fn prepare_startup(
     ),
   )
   |> result.map(fn(daemon) { #(config, daemon) })
+}
+
+/// Starts the registry of worktree services that sessions created in a worktree
+/// of a local folder use (protocol-change/133). Each folder's service is built
+/// the way a project's workers' is: the executor machine, the execution
+/// ledger the tree records are written to, and a sandboxed Git. The ledger is
+/// made ready first because a daemon with no `[workspaces]` runs no executor
+/// host to have migrated it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.start_local_trees(config, logger)
+/// ```
+@internal
+pub fn start_local_trees(
+  config: Config,
+  logger: Logger,
+) -> Result(local_trees.LocalTrees, String) {
+  local_trees.start(fn(workspace) {
+    use domain_configuration <- result.try(captured_domain_configuration(
+      config.session_defaults,
+      "",
+    ))
+    use machine <- result.try(executor_plane.machine(
+      config.session_defaults,
+      domain_configuration,
+      config.state_root,
+      logger,
+    ))
+    use Nil <- result.try(executor_plane.ensure_ledger(machine.state_root))
+    executor_plane.worktrees_of(machine, [workspace])
+  })
+}
+
+/// The registration a session is resolved from, and what settles the session's
+/// tree once it has stopped.
+@internal
+pub type Placed {
+  Placed(
+    /// The registration whose `workspace` is the directory the session works
+    /// in: the folder for an ordinary session, the tree for one in a worktree.
+    registration: catalogue.Registration,
+    /// Removes the tree if it is clean, or keeps it, once the session's tools
+    /// have stopped. `None` for a session that works in its folder.
+    released: Option(fn() -> Nil),
+  )
+}
+
+/// Makes or finds the tree of a session created in a worktree, or leaves the
+/// registration as it is. A session on an executor or in a pool is never
+/// placed here: its workspace mode is the executor's own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.placed_in_worktree(trees, directory, registration, logger)
+/// ```
+@internal
+pub fn placed_in_worktree(
+  trees: local_trees.LocalTrees,
+  directory: manager.Manager(serve.Resident),
+  registration: catalogue.Registration,
+  logger: Logger,
+) -> Result(Placed, String) {
+  // A session on an executor or in a pool is placed by that machine, so only a
+  // local one is asked whether it has a tree.
+  case registration.executor, registration.pool {
+    "", "" -> placed_locally(trees, directory, registration, logger)
+    _, _ -> Ok(Placed(registration:, released: None))
+  }
+}
+
+/// The placement of a local session: its folder, or its tree when its
+/// catalogue row names a base.
+fn placed_locally(
+  trees: local_trees.LocalTrees,
+  directory: manager.Manager(serve.Resident),
+  registration: catalogue.Registration,
+  logger: Logger,
+) -> Result(Placed, String) {
+  use base <- result.try(
+    manager.worktree_base(directory, registration.id)
+    |> result.map_error(fn(_error) {
+      "the session's worktree choice could not be read"
+    }),
+  )
+
+  // A session with a base asked for a worktree when it was created; one
+  // without works in its folder and has nothing to settle.
+  case base {
+    None -> Ok(Placed(registration:, released: None))
+    Some(base) -> placed_in_tree(trees, registration, base, logger)
+  }
+}
+
+/// Opens the tree of a session whose creation named `base` and answers the
+/// registration that names it, with the close that settles it.
+fn placed_in_tree(
+  trees: local_trees.LocalTrees,
+  registration: catalogue.Registration,
+  base: String,
+  logger: Logger,
+) -> Result(Placed, String) {
+  use tree <- result.map(
+    local_trees.open(trees, registration.workspace, base, registration.id)
+    |> result.map_error(fn(reason) {
+      "the session's worktree could not be made: " <> reason
+    }),
+  )
+  Placed(
+    registration: catalogue.Registration(..registration, workspace: tree.path),
+    released: Some(fn() { release_worktree(trees, registration, base, logger) }),
+  )
+}
+
+/// Settles the session's tree and writes what that did to the log, so that the
+/// owner can find a tree that was kept: its session and the reason.
+fn release_worktree(
+  trees: local_trees.LocalTrees,
+  registration: catalogue.Registration,
+  base: String,
+  logger: Logger,
+) -> Nil {
+  let closed =
+    local_trees.close(trees, registration.workspace, base, registration.id)
+
+  // A removed tree is a clean close; a kept one says why it stayed.
+  case closed {
+    worktrees.Removed ->
+      log.info(logger, "daemon.session_worktree_removed", [
+        field.ident("session", registration.id),
+      ])
+    worktrees.Kept(reason:) ->
+      log.info(logger, "daemon.session_worktree_kept", [
+        field.ident("session", registration.id),
+        field.text("reason", reason),
+      ])
+  }
 }
 
 /// Validates every read-only daemon startup setting without starting resources.
@@ -4764,28 +4922,37 @@ fn project_control(
       case project_env(config, ready, book, logger) {
         Error(_) -> None
         Ok(env) ->
-          Some(
-            project_start.Control(
-              book:,
-              create: fn(workspace, name) {
-                project_start.create(env, workspace, name)
-              },
-              judge: fn(project) {
-                project_start.judge(
-                  env,
-                  fn(registration, selected) {
-                    serve.resolve_managed(
-                      config.session_defaults,
-                      registration,
-                      selected,
-                      ready.state_root,
-                    )
-                  },
-                  project,
-                )
-              },
+          Some(project_start.Control(
+            book:,
+            create: fn(workspace, name) {
+              project_start.create(env, workspace, name)
+            },
+            judge: fn(project) {
+              project_start.judge(
+                env,
+                fn(registration, selected) {
+                  serve.resolve_managed(
+                    config.session_defaults,
+                    registration,
+                    selected,
+                    ready.state_root,
+                  )
+                },
+                project,
+              )
+            },
+            jev: project_verdict.Jev(
+              default: config.projects.settings.router,
+              setting: project_jev_judge.Setting(
+                client: env.jev,
+                model: config.projects.settings.jev.model,
+                percent: config.projects.settings.jev_min_probability,
+                agents: list.map(config.projects.settings.agents, fn(agent) {
+                  agent.use_for
+                }),
+              ),
             ),
-          )
+          ))
       }
   }
 }
@@ -4804,6 +4971,20 @@ pub fn project_env(
   book: project_book.Book,
   logger: Logger,
 ) -> Result(project_start.Env, String) {
+  let jev_settings = config.projects.settings.jev
+  let key = jev_transport.key_from(jev_settings, bootstrap.getenv)
+  let jev = jev_transport.client(key, jev_settings.timeout_ms)
+
+  // A daemon told to route with Jev and given no key falls back for every
+  // candidate. That is not a boot failure, but the owner should read why.
+  case config.projects.settings.router, key {
+    project_settings.JevRouter, None ->
+      log.warn(logger, "project.jev_no_key", [
+        field.text(key: "variable", value: jev_settings.api_key_env),
+      ])
+    _, _ -> Nil
+  }
+
   use domain_configuration <- result.map(captured_domain_configuration(
     config.session_defaults,
     "",
@@ -4843,7 +5024,12 @@ pub fn project_env(
       check_wall_ms: project_host.idle_policy.check_wall_ms,
       setup_wall_ms: project_host.idle_policy.setup_wall_ms,
       sources: config.projects.settings.sources,
+      router: config.projects.settings.router,
+      jev_min_probability: config.projects.settings.jev_min_probability,
+      jev_model: config.projects.settings.jev.model,
+      agents: config.projects.settings.agents,
     ),
+    jev: jev,
     logger:,
   )
 }

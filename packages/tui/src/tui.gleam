@@ -121,7 +121,6 @@ import tui/admission
 import tui/agent_strip
 import tui/appearance
 import tui/ask_board
-import tui/ask_control
 import tui/attachment
 import tui/bootstrap
 import tui/buffered
@@ -997,6 +996,7 @@ pub fn new_model_with_clock(
       stamp:,
       build_notice: [],
       activity_revision: 0,
+      newest_ask_seq: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
       record_cache_epoch: 0,
@@ -1602,6 +1602,11 @@ fn vm_refusals() -> List(#(String, String)) {
       "--vm creates a new session in the guest; --session opens an existing one, which stays where it was created",
     ),
     #(
+      "--worktree",
+      "--vm runs the session in a guest of its own; --worktree makes a worktree on this machine, so drop one of them",
+    ),
+    #("--base", "--base refines --worktree, which --vm does not take; drop it"),
+    #(
       "--addr",
       "--vm starts a guest on this machine; --addr attaches to a daemon elsewhere",
     ),
@@ -1729,11 +1734,34 @@ fn parse_local_launch(
   })
 
   use chosen <- result.try(placement.new(executor, pool, registered))
+
+  // `--worktree` and its `--base` are one choice, taken out before the options
+  // that each carry a value of their own, and only a new session has a tree
+  // to make.
+  use #(worktree, rest) <- result.try(placement.take_worktree(rest))
+  use Nil <- result.try(worktree_with_new_session(worktree, selected))
+  use chosen <- result.try(placement.in_worktree(chosen, worktree))
   use options <- result.map(parse_local_options(
     rest,
     default_bootstrap_options(),
   ))
   Local(bootstrap.Options(..options, placement: chosen), selected)
+}
+
+/// Refuses a worktree for a launch that opens an existing session, which keeps
+/// the directory it was created in.
+fn worktree_with_new_session(
+  worktree: Option(String),
+  selected: String,
+) -> Result(Nil, String) {
+  // A choice with no `--session` is for the session this launch creates.
+  case worktree, selected {
+    Some(_), "" | None, _ -> Ok(Nil)
+    Some(_), _ ->
+      Error(
+        "--worktree makes a worktree for a new session; --session opens an existing one",
+      )
+  }
 }
 
 /// Establishes and coordinates take value operations for the TUI runtime.
@@ -2417,9 +2445,12 @@ fn project_outcome(
   }
 }
 
-/// Does one thing to one ticket and says what it did. The ticket is read first,
-/// because an answer needs the open question's number and a publish has to say
-/// what check it went past. A refusal is the daemon's own sentence.
+/// Does one thing to one ticket and says what it did. A publish reads the
+/// ticket first, to say what check it went past, and an answer reads it for the
+/// open question's number. The other verbs name the ticket and need nothing of
+/// it, so they send no read: `retry setup` names the project's template, which
+/// is not a ticket, and a read of it answers `not_found`. A refusal is the
+/// daemon's own sentence.
 fn project_ticket_outcome(
   host: daemon_selection.Host,
   project: String,
@@ -2430,12 +2461,15 @@ fn project_ticket_outcome(
     #("project", json.String(project)),
     #("ticket", json.String(ticket)),
   ]
-  use read <- result.try(project_request(host, "projects.ticket", named))
-  let detail = project_board.decode_detail(read)
+  let read = fn() {
+    project_request(host, "projects.ticket", named)
+    |> result.map(project_board.decode_detail)
+  }
 
   // Each verb is one daemon command and one line of text for the terminal.
   case verb {
     Publish -> {
+      use detail <- result.try(read())
       use published <- result.map(project_request(
         host,
         "projects.publish",
@@ -2445,7 +2479,7 @@ fn project_ticket_outcome(
     }
     Retry -> {
       use _ <- result.map(project_request(host, "projects.retry", named))
-      "asked for a new worker on " <> text_hygiene.single_line(ticket)
+      retry_text(ticket)
     }
     Recheck -> {
       use _ <- result.map(project_request(host, "projects.recheck", named))
@@ -2460,6 +2494,7 @@ fn project_ticket_outcome(
       "stopped " <> text_hygiene.single_line(ticket)
     }
     Answer(text) -> {
+      use detail <- result.try(read())
       use seq <- result.try(open_question(ticket, detail))
       use _ <- result.map(
         project_request(host, "projects.answer", [
@@ -2470,6 +2505,27 @@ fn project_ticket_outcome(
       )
       "answered " <> text_hygiene.single_line(ticket)
     }
+  }
+}
+
+/// The name `loom project retry` takes for the project's setup, which
+/// `projects.retry` answers by building the template again. It matches
+/// `project_host.setup_ticket`, which no ticket id can equal.
+const setup_name = "setup"
+
+/// What a retry printed: a new worker for a ticket, a new build for the
+/// project's setup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.retry_text("t-a") == "asked for a new worker on t-a"
+/// assert tui.retry_text("setup") == "asked for the project's setup to run again"
+/// ```
+pub fn retry_text(ticket: String) -> String {
+  case ticket == setup_name {
+    True -> "asked for the project's setup to run again"
+    False -> "asked for a new worker on " <> text_hygiene.single_line(ticket)
   }
 }
 
@@ -3752,6 +3808,8 @@ fn launch_usage() -> String {
   <> "[--model-profile <name>]\n"
   <> "       loom --executor <name> --workspace <registered name> "
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
+  <> "       loom --worktree [--base <ref>] [--workspace <path>] "
+  <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom --pool <name> --workspace <registered name> "
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom --vm [--workspace <path>] [--github gh|env|off] "
@@ -3798,6 +3856,13 @@ fn launch_usage() -> String {
   <> "       machine. It cannot be combined with --session\n"
   <> "  --pool is the same for a [pools.<name>]: the daemon picks the executor\n"
   <> "       when the session first opens. It cannot be combined with --executor\n"
+  <> "  --worktree creates new sessions in their own Git worktree of the\n"
+  <> "       workspace directory, on a branch of its own named loom/<session id>,\n"
+  <> "       so the session's changes stay out of the directory. --base <ref>\n"
+  <> "       names the commit the branch starts from (default HEAD). The directory\n"
+  <> "       must be the top of a repository's main checkout. The tree is removed\n"
+  <> "       when the session closes clean and kept when it holds changes. It\n"
+  <> "       cannot be combined with --session, --executor, --pool or --vm\n"
   <> "  --vm runs the session's tools in a microVM guest of this workspace\n"
   <> "       (--workspace <path>, default the current directory; the guest\n"
   <> "       serves the repository around it), set up and started if needed by\n"
@@ -4624,8 +4689,10 @@ fn local_launch(
           placement.OnExecutor(workspace: name, ..), _
           | placement.InPool(workspace: name, ..), _
           -> workspace.Context(path: name, branch: None)
-          placement.OnThisHost, "" -> base.view.workspace
-          placement.OnThisHost, path -> workspace.discover_from(path)
+          placement.OnThisHost, "" | placement.InWorktree(..), "" ->
+            base.view.workspace
+          placement.OnThisHost, path | placement.InWorktree(..), path ->
+            workspace.discover_from(path)
         }),
     )
 
@@ -4899,8 +4966,6 @@ fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
   let updated =
     tui_model.run_shared(updated, session_step.settle(model.shared, _))
 
-  // The last run ending is when an ask exists, so it cuts the ask poll's rest.
-  let updated = ask_control.watch(model, updated)
   let published = tick.publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
@@ -4942,6 +5007,7 @@ fn run_usage() -> String {
   <> "                [--config <loom.toml>] [--model-profile <name>]\n"
   <> "                [--server <path>] [--state-dir <path>]\n"
   <> "                [--timeout <seconds>] [--keep] [--json]\n"
+  <> "                [--worktree [--base <ref>]]\n"
   <> "                [--vm [--github gh|env|off] [--allow <host>]...]\n\n"
   <> "Creates a session, sends the prompt once, waits for the run to end and\n"
   <> "prints one JSON object on standard output: session_id, session_db (when\n"
@@ -4950,6 +5016,11 @@ fn run_usage() -> String {
   <> "unverified, from the sandbox helper's self-test) and model. The session\n"
   <> "is stopped at exit unless --keep. --timeout defaults to 3600 seconds;\n"
   <> "--json is accepted and changes nothing, the output is always JSON.\n"
+  <> "--worktree creates the session in its own Git worktree of the\n"
+  <> "workspace directory, on a branch loom/<session id> that starts from\n"
+  <> "--base (default HEAD), so the run's changes stay out of the directory.\n"
+  <> "The tree is removed when the session stops clean and kept when it holds\n"
+  <> "changes; the branch always stays. It cannot be combined with --vm.\n"
   <> "--vm first makes the microVM guest of the workspace ready, as\n"
   <> "`loom vm ensure` does, and creates the session with its tools in the\n"
   <> "guest; --workspace is then the directory the guest serves, itself and\n"

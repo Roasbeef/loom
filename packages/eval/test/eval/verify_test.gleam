@@ -1093,5 +1093,6 @@ pub fn settings(root: String) -> serve.Settings {
     advisor: None,
     project: None,
     go_caches: None,
+    released: None,
   )
 }

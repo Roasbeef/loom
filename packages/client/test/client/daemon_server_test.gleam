@@ -722,6 +722,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
@@ -740,6 +741,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
@@ -1171,6 +1173,7 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
@@ -1495,6 +1498,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
@@ -1513,6 +1517,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: generator,
@@ -1698,6 +1703,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.OutboxClaim(..)
           | peer_mail.OutboxSettle(..)
           | peer_mail.OutboxDue
+          | peer_mail.SessionTimeline(..)
+          | peer_mail.SessionSpan(..)
           | peer_mail.OutboxReceipt(..) -> Ok(json.Null)
         }
       }),
@@ -1717,6 +1724,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
@@ -1735,6 +1743,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
@@ -1917,6 +1926,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
@@ -1992,6 +2002,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
             "",
             "",
             agency_limits.empty,
+            None,
           ),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
@@ -2124,6 +2135,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
@@ -2303,6 +2315,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
               "",
               "",
               agency_limits.empty,
+              None,
             ),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
@@ -2635,6 +2648,7 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
           "",
           "",
           agency_limits.empty,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
@@ -2871,6 +2885,216 @@ pub fn a_profile_with_no_config_file_names_the_missing_file_test() {
   })
 }
 
+// --- a session in its own worktree (protocol-change/133) ----------------------
+
+// A folder that has the shape of a primary checkout, which is all `sessions.create`
+// asks of a folder before it reserves an identity: the worktree itself is made
+// when the session is built, and the fixture builds nothing.
+fn repository_folder(ready: root.Ready(String), name: String) -> String {
+  let folder = ready.state_root <> "/" <> name
+  assert simplifile.create_directory_all(folder <> "/.git") == Ok(Nil)
+  folder
+}
+
+fn worktree_creation(
+  key: String,
+  folder: String,
+  rest: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
+  json.Object([
+    #("request_key", json.String(key)),
+    #("workspace", json.String(folder)),
+    #("name", json.String("Branching")),
+    #("configuration", json.String("")),
+    ..rest
+  ])
+}
+
+pub fn a_creation_stores_its_worktree_base_and_a_retry_must_repeat_it_test() {
+  fixture(fn(_, ready, port, credential) {
+    let folder = repository_folder(ready, "worktree-repo")
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+
+    // An empty object asks for a worktree from `HEAD`; the registration keeps the
+    // folder, and the base is kept beside it.
+    let asked =
+      worktree_creation("branching", folder, [
+        #("worktree", json.Object([])),
+      ])
+    let created = send(socket, 1, "sessions.create", asked, within_ms: 1000)
+    assert field(created, "event") == json.String("sessions.create")
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its identity"
+    let assert Ok(saved) = manager.get(ready.registry, id)
+      as "the creation reply follows durable registration"
+    assert saved.registration.workspace == folder
+    assert manager.worktree_base(ready.registry, id) == Ok(Some("HEAD"))
+
+    // The same request is the same session. A different base, or none, under
+    // the same key is a different request.
+    let retried = send(socket, 2, "sessions.create", asked, within_ms: 1000)
+    assert field(field(retried, "body"), "session_id") == json.String(id)
+    let rebased =
+      send(
+        socket,
+        3,
+        "sessions.create",
+        worktree_creation("branching", folder, [
+          #("worktree", json.Object([#("base", json.String("origin/main"))])),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(rebased, "body"), "code") == json.String("conflict")
+    let dropped =
+      send(
+        socket,
+        4,
+        "sessions.create",
+        worktree_creation("branching", folder, []),
+        within_ms: 1000,
+      )
+    assert field(field(dropped, "body"), "code") == json.String("conflict")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_creation_names_the_base_its_branch_starts_from_test() {
+  fixture(fn(_, ready, port, credential) {
+    let folder = repository_folder(ready, "based-repo")
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let created =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        worktree_creation("based", folder, [
+          #("worktree", json.Object([#("base", json.String("origin/main"))])),
+        ]),
+        within_ms: 1000,
+      )
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its identity"
+    assert manager.worktree_base(ready.registry, id) == Ok(Some("origin/main"))
+
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_creation_without_the_choice_has_no_worktree_base_test() {
+  fixture(fn(_, ready, port, credential) {
+    let folder = repository_folder(ready, "plain-repo")
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+
+    // A session made without the choice works in its folder and has no base,
+    // even in a folder that could have had a worktree.
+    let plain =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        worktree_creation("plain", folder, []),
+        within_ms: 1000,
+      )
+    let assert json.String(plain_id) = field(field(plain, "body"), "session_id")
+      as "creation exposes its identity"
+    assert manager.worktree_base(ready.registry, plain_id) == Ok(None)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_worktree_of_a_folder_that_is_not_a_repository_is_refused_before_anything_is_reserved_test() {
+  fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+
+    // The state root has no `.git`, and neither does a folder inside a
+    // repository: a worktree needs the repository's top.
+    let refused =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        worktree_creation("plain-folder", ready.state_root, [
+          #("worktree", json.Object([])),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(refused, "event") == json.String("error")
+    assert field(field(refused, "body"), "code")
+      == json.String("not_a_repository")
+
+    // Nothing was reserved under the key, so the same key asks for the folder
+    // itself without a conflict.
+    let ordinary =
+      send(
+        socket,
+        2,
+        "sessions.create",
+        worktree_creation("plain-folder", ready.state_root, []),
+        within_ms: 1000,
+      )
+    assert field(ordinary, "event") == json.String("sessions.create")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_malformed_worktree_choice_is_a_bad_request_test() {
+  fixture(fn(_, ready, port, credential) {
+    let folder = repository_folder(ready, "bad-repo")
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+
+    // Each of these is judged before anything is reserved: a base Git would
+    // read as an option, a base with a space, a key the daemon does not know,
+    // a value that is not an object, and a worktree beside an executor, whose
+    // workspaces choose their own mode.
+    let bad = [
+      #("worktree", json.Object([#("base", json.String("--detach"))])),
+      #("worktree", json.Object([#("base", json.String("two words"))])),
+      #("worktree", json.Object([#("branch", json.String("x"))])),
+      #("worktree", json.Object([#("base", json.Int(1))])),
+      #("worktree", json.String("HEAD")),
+    ]
+    list.index_fold(bad, 1, fn(id, choice, _) {
+      let refused =
+        send(
+          socket,
+          id,
+          "sessions.create",
+          worktree_creation("bad-" <> int.to_string(id), folder, [choice]),
+          within_ms: 1000,
+        )
+      assert field(field(refused, "body"), "code") == json.String("bad_request")
+      id + 1
+    })
+    let placed =
+      send(
+        socket,
+        20,
+        "sessions.create",
+        json.Object([
+          #("request_key", json.String("bad-placed")),
+          #("workspace", json.String("app")),
+          #("name", json.String("Placed")),
+          #("configuration", json.String("")),
+          #("executor", json.String("build-box")),
+          #("worktree", json.Object([])),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(placed, "body"), "code") == json.String("bad_request")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 // --- model choice (protocol-change/080) -------------------------------------
 
 pub fn a_creation_stores_its_model_beside_its_profile_and_a_retry_must_repeat_both_test() {
@@ -3093,6 +3317,7 @@ pub fn a_homes_attention_read_is_the_held_summaries_test() {
               "",
               "",
               agency_limits.empty,
+              None,
             ),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),

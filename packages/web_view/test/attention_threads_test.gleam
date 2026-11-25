@@ -25,6 +25,7 @@ import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
 import web_view/thread_send
 import web_view/view/attention_thread
+import web_view/view/inbox as inbox_view
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: element.Element(message)) -> List(String)
@@ -256,6 +257,8 @@ fn start(
         review_pause_ms: 0,
         act:,
         brief: fn(_, _, _) { Nil },
+        timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
     create: None,
@@ -432,8 +435,7 @@ pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
   )
   assert string.contains(html, "<span>Other</span><input")
   assert string.contains(html, "inbox-other")
-  assert string.contains(html, "Message this session")
-  assert !string.contains(html, "Message web ui")
+  assert string.contains(html, ">Add a message to web ui<")
 
   // Between Other's own control and its text field, no option closes.
   let assert Ok(#(_, from_other)) = string.split_once(html, "value=\"other\"")
@@ -503,6 +505,10 @@ pub fn staging_an_answer_sends_nothing_until_send_test() {
   assert string.contains(html, long_prompt <> " — beta")
   assert string.contains(html, "Which files? — a.gleam, b.gleam")
   assert received(asked) == []
+
+  // Something is staged, so Clear is drawn; a thread with nothing staged has none.
+  assert string.contains(html, ">Clear<")
+  assert !string.contains(drawn(picked), ">Clear<")
 
   // Send answers at the revision that was read, with the wire object.
   let sent = run(staged, home.ItemSent)
@@ -667,6 +673,16 @@ pub fn the_stuck_pane_is_a_card_of_what_the_page_knows_test() {
   assert string.contains(html, "<td>Strand status</td>")
   assert string.contains(html, "Send it a nudge")
   assert string.contains(html, ">Retry the last step<")
+
+  // The nudge is the final design's option card: recommended, with the words it
+  // sends, and the thread's eyebrow names the delegate under its session. A
+  // thread with nothing staged has no Clear button.
+  assert string.contains(html, "inbox-nudge")
+  assert string.contains(html, "recommended")
+  assert string.contains(html, "Sends now, exactly: “")
+  assert string.contains(html, "sub:audit · under ")
+  assert string.contains(html, "Or message sub:audit")
+  assert !string.contains(html, ">Clear<")
 }
 
 // Dismiss names the strand and the failed run the page's feed read held, sends
@@ -1025,6 +1041,8 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
               None -> None
             },
             brief: fn(_, _, _) { Nil },
+            timeline: fn(_, _, _, _) { Nil },
+            span: fn(_, _, _, _, _) { Nil },
           ),
         ),
       ),
@@ -1118,7 +1136,7 @@ fn composing(
 
   home.Start(
     ..base,
-    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
     activity: fn(_, deliver) { activity(deliver) },
     attention: Some(
       home.Attention(
@@ -1130,6 +1148,8 @@ fn composing(
         review_pause_ms: 0,
         act: None,
         brief: fn(_, _, _) { Nil },
+        timeline: fn(_, _, _, _) { Nil },
+        span: fn(_, _, _, _, _) { Nil },
       ),
     ),
   )
@@ -1326,4 +1346,15 @@ pub fn a_crashed_read_is_released_by_the_next_list_test() {
   assert string.contains(html, "<h1>New session</h1>")
   assert !string.contains(html, "<h1>Inbox</h1>")
   assert string.contains(html, "class=\"folder need\"")
+}
+
+// The "Watch all" board is one view of the reading pane, so pressing an ask, a find
+// or a stuck strand takes it away: the thread opens instead of staying hidden
+// behind the board.
+pub fn pressing_an_item_thread_takes_the_board_away_test() {
+  let model = run(owner(), home.WatchAllToggled)
+  assert home.board_asked(model) == inbox_view.WatchAll
+
+  let model = run(model, home.ItemPicked(ask_key()))
+  assert home.board_asked(model) == inbox_view.WatchOne
 }

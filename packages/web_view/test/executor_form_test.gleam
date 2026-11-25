@@ -60,6 +60,7 @@ fn page(
       creations.Sharing,
       creations.Roles,
       agency_limits.AgencyLimits,
+      option.Option(String),
       String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
@@ -131,7 +132,7 @@ fn hearing(
     executors,
     pools,
     read,
-    Some(fn(place, name, sharing, roles, _, _, _) {
+    Some(fn(place, name, sharing, roles, _, _, _, _) {
       process.send(asked, #(place, name, sharing, roles))
     }),
   )

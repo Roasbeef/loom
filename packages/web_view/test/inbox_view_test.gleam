@@ -198,8 +198,9 @@ pub fn the_inbox_groups_the_threads_and_counts_what_it_read_test() {
   assert string.contains(html, "<span class=\"inbox-name\">vetting lint</span>")
   assert string.contains(html, "<span class=\"inbox-kind\">Approval</span>")
   assert string.contains(html, "Approve the push?")
-  assert string.contains(html, "<span class=\"inbox-name\">docs sweep</span>")
-  assert string.contains(html, "<span class=\"inbox-kind\">Update</span>")
+  // An Updates session is a card, whose title is its name.
+  assert string.contains(html, "<span class=\"upd-title\">docs sweep</span>")
+  assert string.contains(html, "upd-card")
   assert string.contains(html, "reading the spec")
   assert !string.contains(html, "ago")
 }
@@ -212,7 +213,7 @@ pub fn the_reading_pane_shows_the_first_thread_and_labels_its_words_test() {
   assert string.contains(html, "inbox-reading-default")
   assert string.contains(
     html,
-    "vetting lint · /src/loom · waiting on an approval",
+    "vetting lint · main · loom · waiting on an approval",
   )
   assert string.contains(html, "Decide on the session&#39;s page ›")
 }
@@ -415,6 +416,11 @@ pub fn the_buttons_name_their_delivery_test() {
   assert string.contains(working, "value=\"steer\"")
   assert string.contains(working, "aria-label=\"Message this session\"")
   assert string.contains(working, "name=\"draft\"")
+
+  // The box is headed with the session's name, and an approval's with `Or`.
+  assert string.contains(working, ">Message docs sweep<")
+  let waiting = drawn(run(model, home.InboxOpened("B")))
+  assert string.contains(waiting, ">Or message vetting lint<")
 }
 
 // A page that holds no capability draws no field: a member's home, an
@@ -611,7 +617,7 @@ pub fn the_forms_handlers_are_beneath_the_table_test() {
 fn creating() -> home.Start {
   home.Start(
     ..start(home.OperatorCeiling, reports()),
-    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
   )
 }
 
@@ -637,7 +643,7 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
   assert string.contains(
     drawn(back),
-    "<span class=\"inbox-name\">docs sweep</span>",
+    "<span class=\"upd-title\">docs sweep</span>",
   )
   let back = run(run(pressed, home.ShowingNew), home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
@@ -668,7 +674,7 @@ pub fn the_rail_folders_lead_back_to_the_inbox_from_any_centre_test() {
   assert string.contains(drawn(from_form), "<h1>Inbox</h1>")
   assert string.contains(
     drawn(from_form),
-    "<span class=\"inbox-name\">docs sweep</span>",
+    "<span class=\"upd-title\">docs sweep</span>",
   )
   let from_list =
     run(
@@ -713,15 +719,15 @@ pub fn the_default_thread_is_sticky_test() {
     ),
   ]
   let model = opened(start(home.OperatorCeiling, only_working))
-  assert string.contains(drawn(model), "docs sweep · /src/loom · working")
+  assert string.contains(drawn(model), "docs sweep · main · loom · working")
 
   // An approval now outranks it, and the pane still shows the working thread.
   let later = run(model, home.Observed(reports()))
   assert string.contains(drawn(later), "Needs you<span")
-  assert string.contains(drawn(later), "docs sweep · /src/loom · working")
+  assert string.contains(drawn(later), "docs sweep · main · loom · working")
   assert !string.contains(
     drawn(later),
-    "vetting lint · /src/loom · waiting on an approval",
+    "vetting lint · main · loom · waiting on an approval",
   )
 }
 
@@ -733,7 +739,7 @@ pub fn a_slow_session_keeps_its_last_report_test() {
   let without_c = list.filter(reports(), fn(row) { row.0 != "C" })
   let later = run(pressed, home.Observed(without_c))
 
-  assert string.contains(drawn(later), "docs sweep · /src/loom · working")
+  assert string.contains(drawn(later), "docs sweep · main · loom · working")
   assert string.contains(drawn(later), "reading the spec")
 }
 
@@ -749,7 +755,7 @@ pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
       home.Start(
         ..start(home.OperatorCeiling, reports()),
         sessions: fn(deliver) { deliver(home.Listed(saved)) },
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   let listed =
@@ -871,7 +877,7 @@ pub fn a_session_starting_later_does_not_change_the_centre_test() {
     opened(
       home.Start(
         ..start(home.OperatorCeiling, quiet),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   assert !string.contains(drawn(model), "<h1>Inbox</h1>")
@@ -910,7 +916,7 @@ pub fn an_emptied_inbox_says_nothing_waits_test() {
     opened(
       home.Start(
         ..start(home.OperatorCeiling, reports()),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   let emptied =
@@ -938,7 +944,7 @@ pub fn the_inbox_control_follows_the_threads_test() {
     opened(
       home.Start(
         ..start(home.OperatorCeiling, []),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+        create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
       ),
     )
   assert !string.contains(drawn(run(empty, home.ShowingList)), "‹ Inbox")
@@ -955,4 +961,59 @@ pub fn a_send_to_a_shown_thread_goes_out_test() {
 
   let _ = run(kept, home.ThreadSubmitted("C", "go on", operator.Prompt))
   assert received(asked) == [#("C", "go on", operator.Prompt)]
+}
+
+// The Updates group draws a card for each working session, and the "Watch all"
+// control is drawn beside the list while any is working.
+pub fn the_updates_group_draws_cards_and_a_watch_all_control_test() {
+  let html = drawn(opened(start(home.OperatorCeiling, reports())))
+
+  assert string.contains(html, "upd-card")
+  assert string.contains(html, "last finished message, untrusted text")
+  assert string.contains(html, ">Watch all<")
+  assert string.contains(html, "aria-pressed=\"false\"")
+}
+
+// Pressing "Watch all" puts the board in the reading pane, one card for each
+// working session, and pressing it again takes the board away; a card's
+// disclosure opens that card alone, in the page's own state.
+pub fn watch_all_draws_the_board_and_a_disclosure_opens_one_card_test() {
+  let model = opened(start(home.OperatorCeiling, reports()))
+  let watching = run(model, home.WatchAllToggled)
+  let html = drawn(watching)
+
+  assert string.contains(html, "upd-board")
+  assert string.contains(html, "aria-pressed=\"true\"")
+  assert !string.contains(
+    drawn(run(watching, home.WatchAllToggled)),
+    "upd-board",
+  )
+
+  // A card opened in place is open, and closing it closes it.
+  let toggled = run(model, home.CardToggled("C"))
+  assert string.contains(drawn(toggled), "aria-expanded=\"true\"")
+  assert !string.contains(
+    drawn(run(toggled, home.CardToggled("C"))),
+    "aria-expanded=\"true\"",
+  )
+
+  // A session the Updates group does not hold changes nothing.
+  assert !string.contains(
+    drawn(run(model, home.CardToggled("B"))),
+    "aria-expanded=\"true\"",
+  )
+}
+
+// With no session working the board has no card to draw, so the pane is what it
+// would be without it, and the "Watch all" control stays drawn and pressed so it
+// can be turned off.
+pub fn an_empty_board_leaves_the_pane_and_keeps_its_control_test() {
+  let quiet = list.filter(reports(), fn(row) { row.0 != "C" })
+  let model = opened(start(home.OperatorCeiling, quiet))
+  let html = drawn(run(model, home.WatchAllToggled))
+
+  assert !string.contains(html, "upd-board")
+  assert string.contains(html, "inbox-reading")
+  assert string.contains(html, ">Watch all<")
+  assert string.contains(html, "aria-pressed=\"true\"")
 }

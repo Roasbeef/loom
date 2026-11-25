@@ -33,6 +33,7 @@ fn row(id: String, name: String) -> protocol.Session {
     protocol.Saved,
     option.None,
     option.None,
+    None,
   )
 }
 

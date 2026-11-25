@@ -130,6 +130,7 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       epoch,
     )
@@ -300,6 +301,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       epoch,
     )
@@ -317,6 +319,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       epoch,
     )
@@ -685,6 +688,7 @@ pub fn creation_omits_default_agency_and_encodes_custom_agency_test() {
         "",
         "",
         agency_limits.empty,
+        None,
       ),
       epoch,
     )
@@ -705,6 +709,7 @@ pub fn creation_omits_default_agency_and_encodes_custom_agency_test() {
           session_strands: Some(512),
           depth_cap: Some(agency_limits.UnlimitedDepth),
         ),
+        None,
       ),
       epoch,
     )

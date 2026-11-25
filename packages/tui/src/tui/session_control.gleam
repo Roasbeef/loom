@@ -825,24 +825,36 @@ fn create_session_configured(
       // The workspace is the launch's directory unless the launch named an
       // executor or a pool, whose registered name goes to the daemon exactly as
       // typed.
-      let #(target, name, executor, pool) = case chosen_placement(model) {
+      let #(target, name, executor, pool, worktree) = case
+        chosen_placement(model)
+      {
         placement.OnExecutor(executor:, workspace: registered) -> #(
           registered,
           workspace.session_name(workspace.Context(registered, None)),
           executor,
           "",
+          None,
         )
         placement.InPool(pool:, workspace: registered) -> #(
           registered,
           workspace.session_name(workspace.Context(registered, None)),
           "",
           pool,
+          None,
         )
         placement.OnThisHost -> #(
           model.view.workspace.path,
           workspace.session_name(model.view.workspace),
           "",
           "",
+          None,
+        )
+        placement.InWorktree(base:) -> #(
+          model.view.workspace.path,
+          workspace.session_name(model.view.workspace),
+          "",
+          "",
+          Some(base),
         )
       }
 
@@ -857,6 +869,7 @@ fn create_session_configured(
           executor,
           pool,
           agency,
+          worktree,
         )
       let #(model, job_key) =
         tui_model.start_job(model, job.Attach(route, attach_timeout_ms))

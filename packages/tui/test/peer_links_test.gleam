@@ -25,6 +25,7 @@ pub fn session_link_keeps_target_across_catalogue_refresh_test() {
       protocol.Resident("live"),
       option.None,
       option.None,
+      None,
     )
   let selector =
     session_selector.State(
@@ -145,6 +146,7 @@ pub fn create_link_reviews_exact_pair_and_defaults_to_busy_only_test() {
       protocol.Resident("incarnation"),
       option.None,
       option.None,
+      None,
     )
   let state = peer_links.new("local-id", "main")
   let state =
@@ -194,6 +196,7 @@ pub fn same_session_link_keeps_source_and_target_strands_distinct_test() {
       protocol.Resident("incarnation"),
       option.None,
       option.None,
+      None,
     )
   let state =
     peer_links.loaded(
@@ -228,6 +231,7 @@ pub fn wake_permission_requires_an_explicit_confirmation_choice_test() {
       protocol.Resident("incarnation"),
       option.None,
       option.None,
+      None,
     )
   let state =
     peer_links.loaded(
@@ -271,6 +275,7 @@ pub fn saved_target_is_not_admitted_or_opened_test() {
       protocol.Saved,
       option.None,
       option.None,
+      None,
     )
   let state =
     peer_links.loaded(
@@ -354,6 +359,7 @@ pub fn linked_row_shows_names_and_exact_session_ids_test() {
       protocol.Resident("a"),
       option.None,
       option.None,
+      None,
     )
   let target =
     protocol.Session(
@@ -364,6 +370,7 @@ pub fn linked_row_shows_names_and_exact_session_ids_test() {
       protocol.Resident("b"),
       option.None,
       option.None,
+      None,
     )
   let grant =
     peer_links.Grant(
@@ -443,6 +450,7 @@ pub fn chooser_pages_past_the_first_hundred_authorized_sessions_test() {
         protocol.Resident("incarnation"),
         option.None,
         option.None,
+        None,
       )
     })
   let state =
@@ -468,6 +476,7 @@ pub fn chooser_pages_past_the_first_hundred_authorized_sessions_test() {
             protocol.Resident("incarnation"),
             option.None,
             option.None,
+            None,
           ),
         ],
         None,

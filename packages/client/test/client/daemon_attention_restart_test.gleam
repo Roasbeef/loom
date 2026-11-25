@@ -125,6 +125,7 @@ fn create(
         executor: "",
         pool: "",
         agency: agency_limits.empty,
+        worktree: None,
       ),
       directory: filepath.directory_name(settings.session_path) <> "/sessions",
       generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 41),

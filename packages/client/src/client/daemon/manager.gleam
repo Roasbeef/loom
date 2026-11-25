@@ -229,6 +229,11 @@ pub type Creation {
     pool: String,
     /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
+    /// The commit-ish a worktree of `workspace` branches from, or `None` for a
+    /// session that works in the folder itself. Only a local folder can be
+    /// given one; the choice is part of the creation request, so a retry
+    /// repeats it (protocol-change/133).
+    worktree: Option(String),
   )
 }
 
@@ -831,6 +836,16 @@ type Message(instance) {
 
   /// The optional per-session agency limits, read without waking the session.
   AgencyLimitsOf(String, Subject(Result(AgencyLimits, Error)))
+
+  /// The commit-ish a session's own worktree branches from, read without
+  /// waking the session.
+  WorktreeBaseOf(String, Subject(Result(Option(String), Error)))
+
+  /// The worktree bases of a page of sessions, read without waking them.
+  WorktreeBasesFor(
+    List(String),
+    Subject(Result(List(#(String, String)), Error)),
+  )
 
   /// Installs the bell a deletion rings after it writes the releases it owes.
   SetReleaseBell(fn() -> Nil)
@@ -2511,6 +2526,44 @@ pub fn agency_limits(
   id: String,
 ) -> Result(AgencyLimits, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: AgencyLimitsOf(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Reads the commit-ish a session's own worktree branches from, or `None` for a
+/// session that works in its folder, without waking it (protocol-change/133).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.worktree_base(registry, session_id) == Ok(option.None)
+/// ```
+@internal
+pub fn worktree_base(
+  manager: Manager(instance),
+  id: String,
+) -> Result(Option(String), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: WorktreeBaseOf(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Reads the worktree bases of a page of sessions without waking them: each
+/// identity that works in its own worktree paired with its base, in the order
+/// asked, and the rest omitted. The caller bounds `ids` to one listing page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.worktree_bases(registry, [session_id]) == Ok([])
+/// ```
+@internal
+pub fn worktree_bases(
+  manager: Manager(instance),
+  ids: List(String),
+) -> Result(List(#(String, String)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: WorktreeBasesFor(
+    ids,
+    _,
+  ))
   |> result.unwrap(Error(Unavailable))
 }
 
@@ -4394,6 +4447,22 @@ fn handle(
       process.send(
         reply,
         catalogue.agency_limits(book.catalogue, id)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    WorktreeBasesFor(ids, reply) -> {
+      process.send(
+        reply,
+        catalogue.worktree_bases(book.catalogue, ids)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    WorktreeBaseOf(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.worktree_base(book.catalogue, id)
           |> result.map_error(Catalogue),
       )
       sm.keep(book)
@@ -6424,8 +6493,18 @@ fn reserve_creation(
             record.id,
           ))
 
-          // Retry must repeat both the domain scope and the agency limits.
-          case selected.scope == scope && expected_agency == request.agency {
+          use expected_worktree <- result.try(catalogue.worktree_base(
+            store,
+            record.id,
+          ))
+
+          // Retry must repeat the domain scope, the agency limits and the
+          // worktree choice.
+          case
+            selected.scope == scope
+            && expected_agency == request.agency
+            && expected_worktree == request.worktree
+          {
             True -> Ok(record)
             False -> Error(catalogue.Conflict)
           }
@@ -6446,6 +6525,7 @@ fn reserve_creation(
         record,
         selected,
         request.agency,
+        request.worktree,
       )
     }
     Error(error) -> Error(error)

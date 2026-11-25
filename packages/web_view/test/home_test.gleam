@@ -1230,6 +1230,7 @@ fn creator(
     creations.Sharing,
     creations.Roles,
     agency_limits.AgencyLimits,
+    option.Option(String),
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -1245,10 +1246,11 @@ fn recording(
   creations.Sharing,
   creations.Roles,
   agency_limits.AgencyLimits,
+  option.Option(String),
   String,
   fn(creations.Answer) -> Nil,
 ) -> Nil {
-  fn(place, name, sharing, _, _, _, _) {
+  fn(place, name, sharing, _, _, _, _, _) {
     process.send(asked, #(place, name, sharing))
   }
 }
@@ -1290,8 +1292,8 @@ pub fn the_owner_has_a_button_under_each_workspace_test() {
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
 
-  // The rail adds "Everything, by need" and its "+ New session".
-  assert list.length(keys) == 14
+  // The rail adds "Everything, by need", "Get started" and its "+ New session".
+  assert list.length(keys) == 15
   assert list.all(keys, beneath_the_two_regions)
 }
 
@@ -1410,7 +1412,7 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
   let ticket = "/ui/sessions/N?ticket=t"
   let #(model, _) =
     opened(
-      creator(fn(_, _, _, _, _, _prompt, deliver) {
+      creator(fn(_, _, _, _, _, _, _prompt, deliver) {
         deliver(creations.Ticketed(ticket))
       }),
     )
@@ -1426,7 +1428,9 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
 
   let answer = fn(answered) {
     let #(model, _) =
-      opened(creator(fn(_, _, _, _, _, _prompt, deliver) { deliver(answered) }))
+      opened(
+        creator(fn(_, _, _, _, _, _, _prompt, deliver) { deliver(answered) }),
+      )
     let model = run(model, home.Choosing("/src/loom"))
     run(
       model,
@@ -1456,7 +1460,7 @@ pub fn an_unstarted_creation_says_why_as_text_test() {
   let why =
     Some("profile <script>fast</script> is not defined in /home/o/loom.toml")
   let answer = fn(remains) {
-    let ask = fn(_, _, _, _, _, _prompt, deliver) {
+    let ask = fn(_, _, _, _, _, _, _prompt, deliver) {
       deliver(creations.Unstarted(why, remains))
     }
     let #(model, _) = opened(creator(ask))
@@ -1545,7 +1549,7 @@ pub fn the_form_draws_the_workspace_only_as_text_test() {
   let #(model, _) =
     opened(
       home.Start(
-        ..creator(fn(_, _, _, _, _, _, _) { Nil }),
+        ..creator(fn(_, _, _, _, _, _, _, _) { Nil }),
         sessions: fn(deliver) {
           deliver(home.Listed([entry("Z", "x", hostile, 1, Live)]))
         },
@@ -2347,6 +2351,7 @@ fn folder_keeper(
           deliver(after)
         },
         browse: fn(_, _) { Nil },
+        index: fn(_, _) { Nil },
       ),
     ),
   )
@@ -2543,7 +2548,7 @@ pub fn the_typed_folder_form_asks_once_test() {
 pub fn a_refused_folder_says_why_and_never_the_path_test() {
   let typed = "~/<script>alert(1)</script>/secret-folder"
   let refuse_with = fn(answered) {
-    let ask = fn(_, _, _, _, _, _prompt, deliver) { deliver(answered) }
+    let ask = fn(_, _, _, _, _, _, _prompt, deliver) { deliver(answered) }
     let #(model, _) = opened(creator(ask))
     let model = run(model, home.OpeningElsewhere)
     run(
@@ -2593,7 +2598,7 @@ pub fn a_refused_folder_says_why_and_never_the_path_test() {
 // has no group to put it beside.
 pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
   let rows = [recent(7, "/home/o/gone")]
-  let ask = fn(_, _, _, _, _, _prompt, deliver) {
+  let ask = fn(_, _, _, _, _, _, _prompt, deliver) {
     deliver(creations.Declined(creations.NotAFolder))
   }
   let start =
@@ -2604,6 +2609,7 @@ pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
           recent: fn(deliver) { deliver(rows) },
           forget: fn(_, _) { Nil },
           browse: fn(_, _) { Nil },
+          index: fn(_, _) { Nil },
         ),
       ),
     )
@@ -2730,7 +2736,7 @@ fn chosen(
   asked: Subject(#(creations.Place, creations.Roles)),
 ) -> home.Start {
   home.Start(
-    ..creator(fn(place, _, _, roles, _, _, _) {
+    ..creator(fn(place, _, _, roles, _, _, _, _) {
       process.send(asked, #(place, roles))
     }),
     profiles:,
@@ -2987,7 +2993,7 @@ fn elsewhere_reader(
 ) -> home.Start {
   home.Start(
     ..start(),
-    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _, _, _, _) { Nil }),
     elsewhere: Some(
       home.Elsewhere(
         groups: fn(deliver) { deliver(first) },

@@ -9,11 +9,14 @@
 //// `endpoint_of`, and nothing else in the host starts a model turn. So "costs
 //// no model call" is asserted as "no endpoint was sent anything".
 
+import client/codex/network
 import client/daemon/project_host
 import client/daemon/project_verdict
 import client/goalstate
 import client/internal/ffi_os
+import client/jev as transport
 import client/peer_mail
+import client/project_jev_judge
 import client/project_judge
 import client/project_judge_session as scratch
 import client/project_poller
@@ -32,6 +35,7 @@ import host/bootstrap
 import project/judge
 import project/model
 import project/tape
+import provider/http
 import runtime/api
 import simplifile
 import storage/project_ledger
@@ -715,6 +719,7 @@ fn scripted(
         choice: decide(frame, index),
         routing: project_judge.Routed,
         spend: project_judge.no_spend,
+        trial: None,
       ))
     },
     limits: project_judge.Limits(concurrency: 4, wall_ms: 60_000),
@@ -948,21 +953,39 @@ pub fn a_failing_live_verdict_returns_the_rule_to_observe_test() {
 
 pub fn the_live_lane_asks_for_its_judge_and_the_replay_lane_does_not_test() {
   let unused = fn() { Error("no judge") }
-  assert project_verdict.lane_of(None, unused) == Ok(project_verdict.ReplayLane)
-  assert project_verdict.lane_of(Some("replay"), unused)
+  assert project_verdict.lane_of(None, None, project_verdict.jev_off(), unused)
+    == Ok(project_verdict.ReplayLane)
+  assert project_verdict.lane_of(
+      Some("replay"),
+      None,
+      project_verdict.jev_off(),
+      unused,
+    )
     == Ok(project_verdict.ReplayLane)
 
   // A daemon whose router has no model says so in words, and the live lane is
   // otherwise whatever judge it is given.
-  let assert Error(words) = project_verdict.lane_of(Some("live"), unused)
+  let assert Error(words) =
+    project_verdict.lane_of(
+      Some("live"),
+      None,
+      project_verdict.jev_off(),
+      unused,
+    )
   assert words == "no judge"
   let assert Ok(project_verdict.LiveLane(_)) =
-    project_verdict.lane_of(Some("live"), fn() {
+    project_verdict.lane_of(Some("live"), None, project_verdict.jev_off(), fn() {
       let assert project_verdict.LiveLane(chosen) =
         scripted(fn(_, _) { judge.Pass })
       Ok(chosen)
     })
-  let assert Error(_) = project_verdict.lane_of(Some("sideways"), unused)
+  let assert Error(_) =
+    project_verdict.lane_of(
+      Some("sideways"),
+      None,
+      project_verdict.jev_off(),
+      unused,
+    )
 }
 
 // --- the live lane over a scratch router session ---------------------------------
@@ -971,6 +994,148 @@ pub fn the_live_lane_asks_for_its_judge_and_the_replay_lane_does_not_test() {
 // two should have been taken on.
 fn should_take(id: String) -> Bool {
   id == "gh-c-3001" || id == "gh-c-3002"
+}
+
+// --- a verdict over Jev --------------------------------------------------------
+
+// A response for an inferred trigger with no ticket listed: the three questions
+// it is asked are `asks_for_work`, `clear_alone` and `decline_reason`.
+fn jev_body(asks: String, clear: String) -> String {
+  "{\"model\":\"jev-1.14.0\",\"answers\":{\"asks_for_work\":{\"type\":\"noul\",\"noul\":"
+  <> asks
+  <> "},\"clear_alone\":{\"type\":\"noul\",\"noul\":"
+  <> clear
+  <> "},\"decline_reason\":{\"type\":\"choice\",\"choice\":\"nothing_to_do\",\"confidence\":0.8,\"probabilities\":{\"nothing_to_do\":0.9,\"off_topic\":0.1}}},\"usage\":{\"input_tokens\":100,\"output_tokens\":5}}"
+}
+
+// Jev takes the first two bumps on, declines most of the rest, leaves bump 5 in
+// the middle band, and fails on bump 6. The router's own decider, scripted to
+// agree with the labels, takes what Jev leaves.
+fn jev_lane(recording: project_jev_judge.Recording) -> project_verdict.Lane {
+  let fetch = fn(request: http.HttpRequest, _limit, _timeout) {
+    let asked = fn(n: Int) {
+      string.contains(request.body, "bump package " <> int.to_string(n) <> "\"")
+    }
+    case asked(6) {
+      True -> Error("request_transport_failed")
+      False ->
+        Ok(
+          network.Response(200, case asked(1) || asked(2), asked(5) {
+            True, _ -> jev_body("0.9", "0.95")
+            _, True -> jev_body("0.5", "0.95")
+            _, _ -> jev_body("0.1", "0.95")
+          }),
+        )
+    }
+  }
+  let router =
+    project_judge.Judge(
+      decide: fn(frame, _index, _custody) {
+        Ok(project_judge.Decision(
+          choice: case should_take(frame.trigger.id.value) {
+            True -> judge.Take
+            False -> judge.Pass
+          },
+          routing: project_judge.Routed,
+          spend: project_judge.no_spend,
+          trial: None,
+        ))
+      },
+      limits: project_judge.Limits(concurrency: 4, wall_ms: 60_000),
+    )
+  project_verdict.JevLane(project_jev_judge.Setup(
+    setting: project_jev_judge.Setting(
+      client: transport.client_with(Some("k"), 3000, fetch),
+      model: "jev-latest",
+      percent: 80,
+      agents: [],
+    ),
+    router:,
+    recording:,
+  ))
+}
+
+pub fn a_verdict_over_jev_reports_coverage_the_sweep_and_the_router_record_test() {
+  let #(_rig, handle, _triggers) = labelled_rig("jev-verdict")
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  let row = live_run(handle, "deps", jev_lane(project_jev_judge.MeasuresOnly))
+
+  // The daemon routes with the model, so a Jev run is reported and records
+  // nothing. The account says how the trials ended: 28 triggers settled by
+  // Jev, one abstained on and one failed, three trials each.
+  assert string.contains(row, "\"state\":\"measured\"")
+  assert string.contains(row, "Not recorded: this daemon routes with the model")
+  assert string.contains(row, "Jev settled 93.3% of 90 trials")
+  assert string.contains(row, "abstained on 3.3%")
+  assert string.contains(row, "gave no usable answer for 3.3%")
+  assert string.contains(row, "under the service-health bar")
+  assert string.contains(row, "By attach bar")
+  assert string.contains(row, "Against the router's own record")
+}
+
+pub fn a_verdict_over_jev_is_recorded_under_the_jev_pin_when_the_daemon_routes_with_jev_test() {
+  let rig =
+    rig(
+      "jev-recorded",
+      project_host.Policy(
+        ..project_host.idle_policy,
+        sources: sources(100),
+        router: project_settings.JevRouter,
+      ),
+    )
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+  label_all(handle, triggers)
+  let row = live_run(handle, "deps", jev_lane(project_jev_judge.Records))
+  assert string.contains(row, "\"state\":\"passed\"")
+
+  // The finding is in the ledger, and the router pin it was recorded under
+  // names the model the service reported.
+  stop(handle)
+  let kinds = ledger_kinds(rig)
+  assert list.contains(kinds, "verdict_recorded")
+  assert list.contains(kinds, "router_pin_set")
+}
+
+pub fn a_model_verdict_is_refused_on_a_daemon_that_routes_with_jev_test() {
+  let jev =
+    project_verdict.Jev(
+      ..project_verdict.jev_off(),
+      default: project_settings.JevRouter,
+    )
+  let assert Error(words) =
+    project_verdict.lane_of(Some("live"), Some("model"), jev, fn() {
+      Error("no judge")
+    })
+  assert string.contains(words, "routes with Jev")
+
+  // The replay lane measures the gate, which neither router decides.
+  assert project_verdict.lane_of(Some("replay"), None, jev, fn() {
+      Error("no judge")
+    })
+    == Ok(project_verdict.ReplayLane)
+}
+
+pub fn a_verdict_over_jev_is_refused_on_the_replay_lane_test() {
+  let assert Error(words) =
+    project_verdict.lane_of(
+      Some("replay"),
+      Some("jev"),
+      project_verdict.jev_off(),
+      fn() { Error("no judge") },
+    )
+  assert string.contains(words, "live only")
+  let assert Error(_) =
+    project_verdict.lane_of(
+      Some("live"),
+      Some("sideways"),
+      project_verdict.jev_off(),
+      fn() { Error("no judge") },
+    )
 }
 
 // A live lane whose decisions come from a scratch session over a scripted model:

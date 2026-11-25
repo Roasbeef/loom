@@ -17,7 +17,6 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/model as session_model
-import session_view/protocol
 import session_view/shared_set
 import tui/ask_board
 import tui/ask_control
@@ -28,6 +27,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/view_set
 import tui_test/stepping
 import weft
 
@@ -378,31 +378,32 @@ pub fn a_read_for_a_session_the_terminal_left_changes_nothing_test() {
   let _ = shared_set.notice
 }
 
-// A run that ended is when an ask exists, so the poll's rest is cut short.
-pub fn the_last_run_ending_cuts_the_polls_rest_short_test() {
-  let model = with_form(connected(), the_form())
-  let running =
+// A committed `ask` result is when an ask exists, so the poll's rest is cut
+// short. The session counts them, so the read starts however the entry reached
+// the terminal, and no strand ever needs to be seen running.
+pub fn a_committed_ask_result_cuts_the_polls_rest_short_test() {
+  let resting = with_form(connected(), the_form())
+  let ended =
     tui_model.Model(
-      ..model,
-      shared: shared_set.strands(model.shared, [
-        protocol.Strand("main", None, Some("generating")),
-      ]),
-    )
-  let idle =
-    tui_model.Model(
-      ..model,
-      shared: shared_set.strands(model.shared, [
-        protocol.Strand("main", None, None),
-      ]),
+      ..resting,
+      shared: session_model.Shared(..resting.shared, newest_ask_seq: 7),
     )
 
-  // The edge from running to idle makes a read due.
-  assert ask_control.watch(running, idle).view.asks.phase == ask_board.ReadDue
+  // A rest nobody cut short starts no read.
+  let #(_, quiet) = stepping.step(backend.Tick, resting)
+  assert jobs(quiet) == []
 
-  // Neither staying idle nor starting a run does.
-  assert ask_control.watch(idle, idle).view.asks.phase == model.view.asks.phase
-  assert ask_control.watch(idle, running).view.asks.phase
-    == model.view.asks.phase
+  // A counted result starts one on the next tick.
+  let #(ticked, effects) = stepping.step(backend.Tick, ended)
+  assert list.length(jobs(effects)) == 1
+  assert ask_board.in_flight(ticked.view.asks)
+
+  // And only once for that result.
+  let settled = ask_board.read_failed(ticked.view.asks, 0)
+  let again =
+    tui_model.Model(..ticked, view: view_set.asks(ticked.view, settled))
+  let #(_, none) = stepping.step(backend.Tick, again)
+  assert jobs(none) == []
 }
 
 // A poll never waits for the borrowed control request, and never holds it, so

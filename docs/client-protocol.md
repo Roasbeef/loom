@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:607-187`).
+Source: `handle` (`client/daemon/server.gleam:621-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:3128`).
+`hello_view` (`client/daemon/server.gleam:3144`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:5457`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:5541`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -682,6 +682,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 | `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
+| `worktree` | object | optional | Create the session in its own Git worktree of `workspace`, on a branch `loom/<session id>`. The object holds one optional member, `base`, the commit-ish the branch starts from (default `HEAD`; not empty, at most 255 bytes, not starting with `-`, no space or control character). `{}` asks for a worktree from `HEAD`. Only a path on the daemon's host has one: with `executor` or `pool` the request is malformed. The folder must be the top of a primary checkout, a directory with a `.git` directory, or the daemon refuses `not_a_repository`. A retry under the same `request_key` must repeat it. The reply, `sessions.get` and each `sessions.list` record then carry `"worktree":{"base","branch"}`, and `workspace` stays the folder. See [protocol-change/133](../protocol-change/133-session-worktree.md). |
 | `agency` | object | optional | Per-session subagent limits (`fan_out` integer in `1..10000`, `session_strands` integer in `1..10000` with `fan_out <= session_strands`, `depth_cap` integer in `1..256` or `"unlimited"`). Omitted keys inherit the daemon/Agency defaults (`100`, `256`, `1`). Unknown keys or out-of-range values are refused as `bad_request`. See [protocol-change/113](../protocol-change/113-session-agency-limits.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
@@ -705,11 +706,13 @@ the profile is judged first when both are wrong;
 `unusable_configuration` when a profile or a model is named and that configuration
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
+`not_a_repository` when `worktree` is asked of a folder that is not the top
+of a primary checkout (before anything is reserved);
 `executor_unknown` when `executor` names no `[executors.<name>]` of the
 daemon's configuration, and `pool_unknown` when `pool` names no
 `[pools.<name>]`, each before anything is reserved; `conflict` when
 the key was reused with different metadata, a different `profile`,
-`model`, `executor`, `pool` or `agency` included; `unavailable`.
+`model`, `executor`, `pool`, `agency` or `worktree` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 On a session directory member, a session with an `executor` or a `pool` is
@@ -1080,9 +1083,9 @@ it (section 3.27).
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `sessions.saved_attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.review`,
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `sessions.saved_attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.timeline`, `sessions.span`, `sessions.review`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:3500-1130`).
+`control_use` (`client/daemon/server.gleam:3516-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1258,7 +1261,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1829`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1970`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1866,7 +1869,7 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
 | `projects.labels` | yes | `project`, `rule` (strings, required) | `projects.labels` |
 | `projects.label` | no | `project`, `trigger` (strings, required), `label` (`accept` or `reject`) | `projects.label` |
-| `projects.verdict` | no | `project`, `rule` (strings, required), `lane` (`replay` or `live`, optional, `replay` by default) | `projects.verdict` |
+| `projects.verdict` | no | `project`, `rule` (strings, required), `lane` (`replay` or `live`, optional, `replay` by default), `router` (`model` or `jev`, optional, the daemon's `[project] router` by default) | `projects.verdict` |
 
 ```json
 {"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
@@ -1963,7 +1966,7 @@ prompt and the router model changed, and how many of the thirty labels a verdict
 On page zero `projects.board` also carries `would_have_done`, the
 newest 50 inferred messages that an `observe` rule recorded as work it would have done and did not,
 each `{trigger, source, actor, rule, text, link, at_ms}` (`link` is the issue, pull request or checks
-page, or `null`, and `text` is external), and `sources`, one record per configured source,
+page, or `null`, and `text` is external), `decisions`, the newest 20 routing decisions, each `{trigger, decision, at_ms, decider, ..}` where `decision` is `accepted`, `attached`, `resumed`, `ignored` or `would_accept`, `decider` is `model` or `jev`, a Jev decision adds `model`, `probability` (basis points, or `null`), `reason` (the likeliest decline reason of an `ignored`, else `null`) and `agent`, and a model decision adds `fallback`, the reason Jev left the trigger or `null`, and `sources`, one record per configured source,
 `{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode, verdict}]}`. `verdict`
 is `{state, words, labelled, needed, lane}`: `state` is `none`, `failing`, `stale` or `current`, `words`
 is a sentence saying what a passing verdict claims or what is missing, `labelled` is the triggers of
@@ -1972,15 +1975,10 @@ that rule a person has labelled, `needed` is the thirty a verdict asks for, and 
 when the last pass ran clean and otherwise says what it could not read or when a rate limit ends. `shed`
 counts triggers that overload shed, which a person can queue again with `projects.requeue`.
 
-`projects.board` also carries `router`, `{phase, queued, offered}` (`phase` is `idle` or `busy`, `queued`
-the candidates waiting to be offered and `offered` those the router holds), on every page, and on page
-zero `decisions`, the 20 newest decided triggers, each `{trigger, source, actor, decision, ticket, reason,
-at_ms}`. `decision` is one of `accepted`, `attached`, `resumed`, `stopped`, `delivered`, `ignored`,
-`shed`, `would_accept`, `recorded_only`, `own_message`, `held` or `unrouted`; `ticket` names the ticket
-an `accepted`, `attached`, `resumed`, `stopped` or `delivered` decision touched and is `null` otherwise;
-`reason` is `gate`, `attention` or `ceiling` for `held`, `no_decision` for `unrouted` and `null`
-otherwise. A row carries no text of the trigger. A client that predates the fields ignores them, and one
-that finds them absent treats the router's state and decisions as unknown.
+`projects.board` also carries `router`, `{phase, queued, offered}`, on every page (`phase` is `idle` or
+`busy`, `queued` the candidates waiting to be offered and `offered` those the router holds). A client that
+predates the field ignores it, and one that finds it absent treats the router's state as unknown. The
+`decisions` above are what the web view's project page lists.
 
 `projects.close` records that the owner accepted a ticket's work. It is not a stop. A stop
 withdraws the ticket's mandate, so the ticket can never resume; a close ends the ticket as
@@ -1999,7 +1997,7 @@ twenty recorded triggers of that rule that no one has labelled yet, newest first
 `text` is external. `projects.label` (`{project, trigger, label}` with `label` `accept` or `reject`)
 replies `{trigger, label}`. The label is an event of the project ledger and survives a restart, a later
 label of a trigger replaces the earlier, and a trigger no rule matched or the project does not hold is
-refused `bad_request`. `projects.verdict` (`{project, rule, lane}` with `lane` `replay` by default)
+refused `bad_request`. `projects.verdict` (`{project, rule, lane, router}` with `lane` `replay` by default and `router` the daemon's by default; `router` `jev` measures Jev first with the router for what Jev leaves, is live only, and is refused `bad_request` on the replay lane)
 measures the rule's labelled triggers with the evaluation instrument and records the finding. It is
 refused `bad_request`, with a sentence, below thirty labels or when no trigger is labelled `accept`, or none `reject`.
 
@@ -2237,6 +2235,22 @@ which is decided on the session's own page.
 `approval.read` are reads and remain available during a drain. `attention.answer`,
 `attention.close_find` and `attention.dismiss_stuck` write one record and are
 refused during a drain.
+
+`sessions.span` takes `session`, `last` (a record id), `from_seq`, `to_seq` and the
+current `epoch`, and answers `{"span": {"lines", "omitted"}}`: the lines of one
+timeline span, at most 100, each a `{seq, at, kind, words, trust, outcome}`
+([Protocol 134](../protocol-change/134-session-timeline.md)). It has the timeline
+read's authority and spends the brief allowance.
+
+`sessions.timeline` takes `session`, an optional `before` (a card's `from_seq`), an
+optional `limit` (1 to 20, default 10) and the current `epoch`, and answers
+`{"timeline": {"cards", "older", "now"}}`: the newest page of the session's timeline
+cards for Home ([Protocol 134](../protocol-change/134-session-timeline.md)). A card
+holds a `kind`, its `turn_seq`, `from_seq`, `to_seq` and `last`, its times, its
+counts, up to six files, a reduced command with its exit status, and an excerpt of a
+prompt or an answer; every string in it is session text. `older` is the `before` for
+the next page, and `now` is the open span. It spends the brief allowance and is
+refused for a session that is not running.
 
 `session.brief` takes `session`, an optional `since` (Unix milliseconds, default
 0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
@@ -4671,6 +4685,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `unavailable` | The daemon is draining, or a durable read failed. | Retry later. |
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
+| `not_a_repository` | `sessions.create` asked for a `worktree` of a folder that is not the top of a primary Git checkout (no `.git` directory: a subdirectory, a linked worktree, or not a repository). | Choose the repository's top directory, or create the session without `worktree`. |
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
@@ -4982,7 +4997,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:740`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:779`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

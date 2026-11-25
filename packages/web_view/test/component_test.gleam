@@ -301,6 +301,7 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
         workspace: "/home/me/src/loom/",
         executor: "",
         pool: "",
+        branch: "",
       )),
     )
   let html =
@@ -333,6 +334,7 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
         workspace: "",
         executor: "",
         pool: "",
+        branch: "",
       )),
     )
   let unknown = component.Start(..page_fixture.start(), session_id: id)

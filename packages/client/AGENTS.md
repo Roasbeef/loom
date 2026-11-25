@@ -1621,6 +1621,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   caps at `shown_limit` and stops at `depth_limit`; every refusal is a
   `folder_browse.Refusal`. `ui_socket.browse_for` runs it after `authorized_owner`
   and is the `browse` of the `home.Folders` the owner's page is handed.
+  The folder index (the addendum on searching): `folder_listing.index_in(home, seeds,
+  limits, now)` builds one `folder_browse.Index` of folder names: breadth first from
+  the seeds' parents (the remembered folders, each component checked as a real
+  visible directory) and then the home, following no symbolic link (`lstat`), skipping
+  hidden names and `Library`, listing below a Git checkout only folders that hold a
+  `.git`, not entering `node_modules`, `_build`, `build` or `target`, and stopping at
+  `folder_browse.index_depth`, `index_visit_limit`, `index_entry_limit` or `index_ms`.
+  `ui_socket.index_for` runs it after `authorized_owner`, under the same deadline as
+  `browse_within` (`within_deadline`), and it is the `index` of `home.Folders`.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential
@@ -8997,6 +9006,29 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   Tests: `worktrees_test` (the lifecycle against a real repository, the
   reconciliation matrix, the operator sweep), `executor_worktree_test` (the plane,
   the jail and the close through the host), `daemon_executor_cli_test`.
+- **A session's own worktree on a local folder** (protocol-change/133). A session
+  created with `worktree` (`manager.Creation.worktree`, the control member
+  `{"base"}`, `loom --worktree`) works in a linked worktree of its folder.
+  `client/local_trees` is a registry process started with the daemon
+  (`main.start_local_trees`) that starts one `worktrees.start` service for each
+  folder, named `local-<sixteen hex of the SHA-256 of the folder>` and built the
+  way `project_env.worktrees_for` builds one, so the folder's sessions share one
+  gate. `main.placed_in_worktree` runs in the session builder before
+  `serve.resolve_managed`: it reads `manager.worktree_base`, opens the tree and
+  hands `resolve_managed` a registration whose `workspace` is the tree, so the
+  settings, the jail's roots and the Git widening are the tree's. The
+  registration the rest of the build sees keeps the folder (domain key, memory,
+  grouping). `assemble_in` files `Settings.released` as the session's `Workspace`
+  custody part (the part a local session otherwise lacks), which custody runs
+  after `Helpers`, so a tree is judged only once its helpers are confirmed gone
+  and an uncertain retirement never reaches it. It is filed before the workspace
+  half starts, so a half that fails to start still settles its tree. `server.create_session` refuses a worktree of a
+  folder with no `.git` directory (`not_a_repository`) before reserving. The base
+  is a side table of the catalogue (v24) read by `manager.worktree_base` and, for
+  a listing page, `manager.worktree_bases`; `server.with_worktree` adds the
+  `{base, branch}` member to the create reply, `sessions.get` and
+  `sessions.list`. A kept tree is not covered by `executor release --worktrees`.
+  Tests: `local_trees_test`, `daemon_server_test` (the wire and its refusals).
   The CLI fixtures check both enforcement postures: a missing delegated cgroup
   must refuse without changing either tree, even for a forced removal; the
   delegated Linux jail lane runs the same module and requires success.
@@ -11730,7 +11762,25 @@ ordinary top-level worker session per ticket assignment
   `home.projects_path` for that page only (`ui_socket.home_event`).
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
   `check`, `setup`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
-  tables `source` and `rule`, read by `client/project_sources`).
+  tables `source` and `rule`, read by `client/project_sources`, and `router`,
+  `jev_min_probability` and the `agent` catalogue, with `[jev]` read by `client/jev_settings`).
+- The Jev pass (protocol-change/106, "the Jev pass in the daemon") is `client/jev`, the one
+  transport to the service (`key_from`, `client`, `evaluate`, `pass`), and a section of
+  `project_host`. `jev.evaluate` adds the bearer key at the boundary and maps every failure to a
+  `project/jev.Why`; `jev.pass` runs a batch one request at a time under a 45 s bound and stops
+  asking at the first `Unavailable`. With `Policy.router` `JevRouter`, `project_host.offer`
+  builds each first-offer candidate's request, runs the pass in a task with `offered_at_ms` set to
+  0, commits `AgentChosen` then the routing (or `RoutedIgnore`) per candidate, writes
+  `JevFallback` records for what it leaves, and makes the offer row due so its next run hands
+  the router what is still offered. `StartRequest.agent` carries the catalogue entry chosen for
+  the ticket's origin trigger to `project_start.start_worker`.
+- A verdict over Jev (`projects.verdict` with `router` `jev`) is `client/project_jev_judge`: a
+  `project_judge.Judge` whose trial asks Jev under one rotation of the ticket order and hands the
+  trial to the router's decider when Jev abstains or fails. `project_judge.Decision.trial` carries
+  what the trial kept, `Measured.trials` gathers them, and `project_verdict.jev_report` reads them
+  through `project/jev_verdict`. `project_host.jev_resolved` announces the Jev pin with the
+  reported model before the verdict is concluded. `Board.decisions` is the board's newest routing
+  decisions, with who decided.
 - The template (protocol-change/106, "The template") is two modules and a section of
   `project_host`. `client/project_template` builds it: `base_commit` from the owner's `HEAD`,
   `cut_template_tree` under `.template.making`, `run_setup` through `worktrees.setup_runner`
@@ -11897,3 +11947,17 @@ only product is a verdict and a recorded run.
   `sheet`, `run <dir> <loom.toml> <role>` and `verdict`, each as
   `gleam run -m insight_slice0 -- <command> <dir>`; `run` replays a session whose
   record already holds the same prompt, so a second run costs nothing.
+
+## Session timeline read (protocol-change/134)
+
+`sessions.timeline` is the brief's sibling: `daemon/timeline_door` takes the same
+authority walk and the brief allowance, asks the resident's Agency actor
+(`peer_mail.SessionTimeline`), which answers `timeline_read.read`: the newest 2,000
+records of main cut by `session_view/timeline`, one page of at most 20 cards, a
+cursor, and the open span. The page is `web_view/timeline_feed`.
+
+`sessions.span` (`daemon/timeline_door.read_span`, `peer_mail.SessionSpan`,
+`span_read`) scans down from a card's last record for at most the span's length
+(under 5,000 records) and answers `span_lines`' lines; it has the timeline read's
+authority and the brief's allowance. `timeline_read` offers no card before the
+sliding window's first hard boundary.

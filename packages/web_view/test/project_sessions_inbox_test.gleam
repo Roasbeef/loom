@@ -104,6 +104,8 @@ fn attention(
       review_pause_ms: 0,
       act: None,
       brief: fn(_, _, _) { Nil },
+      timeline: fn(_, _, _, _) { Nil },
+      span: fn(_, _, _, _, _) { Nil },
     ),
   )
 }

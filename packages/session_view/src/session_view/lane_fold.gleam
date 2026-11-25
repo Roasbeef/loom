@@ -44,6 +44,7 @@
 ////    each recorded change goes through `apply_replay_change` in place of a
 ////    live update.
 
+import core/entry
 import core/message
 import core/origin
 import gleam/bool
@@ -947,6 +948,7 @@ fn render_cut(
     todo_asked:,
     summaries:,
     records: branch.records,
+    newest_ask_seq: newest_ask_seq(cut.window.items),
     scrollback: history,
     parked_scrollback:,
     activity_started_ms: case same_operation {
@@ -1433,6 +1435,28 @@ pub fn refresh_worktree(
         "Captured edits · live worktree observation unavailable",
       )
   }
+}
+
+/// The sequence number of the newest `ask` tool result among the loaded items
+/// of a capture's window, or zero when it holds none.
+///
+/// The window is the session's records on every strand and does not depend on
+/// where the operator has scrolled, so a result on another strand, or one the
+/// transcript has not scrolled to, still moves the value.
+fn newest_ask_seq(items: List(snapshot.Item)) -> Int {
+  list.fold(items, 0, fn(newest, item) {
+    case item {
+      snapshot.Loaded(
+        entry.MessageEntry(
+          seq:,
+          message: message.ToolResultMessage(tool_name: "ask", ..),
+          ..,
+        ),
+        _,
+      ) -> int.max(newest, seq)
+      snapshot.Loaded(..) | snapshot.Unloaded(..) -> newest
+    }
+  })
 }
 
 /// Observes task completion summary across captured cells and entries.

@@ -225,6 +225,7 @@ pub fn a_relayed_page_says_where_its_commands_run_test() {
       workspace: "/srv/work/proj",
       executor: "",
       pool: "",
+      branch: "",
     ))
   assert string.contains(folder, ">On<")
   assert !string.contains(folder, "Commands on")
@@ -236,6 +237,7 @@ pub fn a_relayed_page_says_where_its_commands_run_test() {
       workspace: "repo",
       executor: "exec",
       pool: "",
+      branch: "",
     ))
   assert string.contains(registered, "exec · repo")
 
@@ -245,6 +247,7 @@ pub fn a_relayed_page_says_where_its_commands_run_test() {
       workspace: "repo",
       executor: "",
       pool: "linux",
+      branch: "",
     ))
   assert string.contains(pooled, "linux pool · repo")
 }
@@ -253,7 +256,13 @@ pub fn a_relayed_page_says_where_its_commands_run_test() {
 // strip says where the agent runs and no more.
 pub fn a_relayed_page_without_a_place_names_no_commands_test() {
   let html =
-    placed(component.Label(name: "", workspace: "", executor: "", pool: ""))
+    placed(component.Label(
+      name: "",
+      workspace: "",
+      executor: "",
+      pool: "",
+      branch: "",
+    ))
   assert string.contains(html, "Agent on")
   assert !string.contains(html, "Commands on")
 }

@@ -165,6 +165,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(at: 1), seed: 1),
@@ -241,6 +242,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(1), 1),
@@ -389,6 +391,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             "",
             "",
             agency_limits.empty,
+            option.None,
           ),
           directory: "/domain-selection/sessions",
           generator: ids.generator(clock.fixed(1), example.0),
@@ -702,6 +705,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       "",
       "",
       agency_limits.empty,
+      option.None,
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 411)
   let assert Ok(manager.View(record, manager.Opening(operation))) =
@@ -813,6 +817,7 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
       "",
       "",
       agency_limits.empty,
+      option.None,
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 413)
   assert manager.create(
@@ -2701,6 +2706,7 @@ fn delegate_request(
       executor: "box",
       pool: "",
       agency: agency_limits.empty,
+      worktree: option.None,
     ),
     directory: "/delegate-sessions",
     generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed: parent),
@@ -2965,6 +2971,7 @@ pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       ),
       directory: "/private/sessions",
       generator: ids.generator(clock.fixed(0), 1500),
@@ -2994,6 +3001,7 @@ pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
         "box",
         "",
         agency_limits.empty,
+        option.None,
       ),
       directory: "/private/sessions",
       generator: ids.generator(clock.fixed(0), 1504),
@@ -3057,6 +3065,7 @@ pub fn failed_and_inactive_reservations_do_not_block_local_census_test() {
         "",
         "",
         agency_limits.empty,
+        option.None,
       ),
       directory: "/private/sessions",
       generator: ids.generator(clock.fixed(0), 1503),
