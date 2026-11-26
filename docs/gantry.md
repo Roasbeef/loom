@@ -49,9 +49,12 @@ lane, and its comments say why each answer has the shape it has:
   made by the script's `bake` mode when the image is built, as a tar per
   package `build/`, the root `build/` and the Go build cache, with a hash of
   the lockfiles it came from. A lane copies in the parts it uses when the
-  tree's lockfiles hash the same, and Gleam, which compares content rather than
-  timestamps, recompiles only what changed since that revision. With other
-  lockfiles the lane builds from nothing.
+  tree's lockfiles hash the same, then stamps the tree's own files with the
+  current time. Gleam compares a module's content with its cache only when the
+  source is newer than the cache entry, and Gantry stages every file with one
+  fixed, older time, so without the stamp an edited module would be tested as
+  the image's revision compiled it. With it Gleam recompiles only what changed
+  since that revision. With other lockfiles the lane builds from nothing.
 - The lanes that need the server shipment and the code-mode seed build them
   (`make binaries server-shipment`), since a Gantry output is a list of regular
   files and both are directory trees. A fresh seed has to resolve against Hex
@@ -61,8 +64,8 @@ lane, and its comments say why each answer has the shape it has:
   `scripts/shipment.py`'s environment digest is the same in the image's bake
   and in an action, and the shipments reuse what the image cached.
 - Test modules run concurrently, through the same `scripts/test.sh` mechanism
-  `make signoff` uses: twelve at a time, one per slot CPU, and sixty-four at a
-  time for the client package, whose tests mostly wait. `scripts/serial-tests`
+  `make signoff` uses: eight at a time, as signoff runs them, and sixty-four
+  at a time for the client package, whose tests mostly wait. `scripts/serial-tests`
   still holds back the modules that must run alone.
 - Gantry keeps only the first 64 KiB of an action's output. The script writes
   the whole lane log to `.gantry/lane.log` and prints a condensed view: section
@@ -88,24 +91,24 @@ lease to the verdict.
 
 | Lane | Before | After | Failures (after) |
 | --- | --- | --- | --- |
-| `client-1` | 1,044 | 355 | 1 of 2,055 |
-| `client-2` | 1,083 | 358 | 1 of 2,622 |
-| `client-3` | 1,005 | 421 | 1 of 2,775 |
-| `fast-2` | 656 | 283 | |
-| `conformance` | 325 | 170 | |
-| `eval` | 276 | 146 | does not compile |
-| `mid` | 273 | 50 | |
-| `fast-1` | 205 | 137 | |
-| `static` | 80 | 76 | |
-| `fast-3` | 51 | 33 | |
-| **Makespan, all ten** | **2,828** | **1,080** | |
+| `client-1` | 1,044 | 365 | 1 of 2,055 |
+| `client-2` | 1,083 | 353 | 1 of 2,622 |
+| `client-3` | 1,005 | 423 | 1 of 2,775 |
+| `fast-2` | 656 | 309 | |
+| `conformance` | 325 | 175 | |
+| `eval` | 276 | 150 | does not compile |
+| `mid` | 273 | 53 | |
+| `fast-1` | 205 | 138 | |
+| `static` | 80 | 79 | |
+| `fast-3` | 51 | 34 | |
+| **Makespan, all ten** | **2,828** | **1,107** | |
 
 Before is a run at `27be14453` on the image without the warm build; a second
 run of the same tree took 2,573 s, the difference being only which lanes the
 two slots took in which order, since every lane's time matched within 2%.
-After is `549f4e18d` on the image with the warm build. Every lane's test
-outcome is the same in both: the same exit status, the same test total, no new
-SKIP, and no failure outside the calibration runs' set.
+After is `a5b939a86` on the image with the warm build, with the fix described
+below. Every lane's test outcome is the same in both: the same exit status, the
+same test total, no new SKIP, and no failure outside the calibration runs' set.
 
 ### Where the time went, and what cut it
 
@@ -129,11 +132,19 @@ and kept only when it beat the best so far by more than the run-to-run noise:
 | Client modules sixteen at a time | 1,108 s |
 | Client modules thirty-two at a time | 895 s |
 | Client modules sixty-four at a time | 806 s |
-| Other packages twelve at a time | 803 s |
 
 A hundred and twenty-eight client modules at a time failed shipped-daemon and
 project tests that pass at sixty-four, so sixty-four is the setting, and those
-tests are the first to show strain under load.
+tests are the first to show strain under load. Twelve modules at a time for the
+other packages saved fast-2 twenty seconds but left the makespan level, and
+storage, runtime and broker are recorded colliding above eight, so they stay at
+eight.
+
+A review of the result found that the warm build, as first written, let Gleam
+skip edited modules: a deliberately failing assertion passed on the fleet. The
+lane now stamps the tree after copying the build in, the same assertion fails,
+and the times above the line were taken on commits whose compiled code matched
+the image's. The fix costs about three percent: the same four lanes took 813 s with it, against 803 s without.
 
 ### What binds it now
 
