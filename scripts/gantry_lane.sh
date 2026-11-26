@@ -57,6 +57,11 @@ fi
 if [ -d /opt/loom-seed/packages ]; then
   cp -R /opt/loom-seed/packages/. packages/
 fi
+# The code-mode seed's resolved packages, which scripts/codemode_seed.sh
+# needs to make a seed with no network.
+if [ -d /opt/loom-codemode-seed/packages ]; then
+  export LOOM_CODEMODE_SEED_PACKAGES=/opt/loom-codemode-seed/packages
+fi
 
 # The suites take their deadlines from test.sh, not from Gantry's timeout,
 # so a lane that hangs is reported by the suite before the action is killed.
