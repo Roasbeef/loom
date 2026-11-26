@@ -106,6 +106,13 @@ export LOOM_TEST_OFFLINE=1
 # twelve cores, waiting on fixtures far more than computing.
 export LOOM_TEST_PARALLEL="${LOOM_TEST_PARALLEL:-8}"
 
+# The client package is the critical path, and its suite still gains from
+# more concurrency than eight, where other packages' do not:
+# docs/design-notes/parallel-tests.md measured it at 166 s with eight and
+# 126 s with sixteen, while storage fails at sixteen. scripts/check.sh reads
+# this for the client package alone.
+export LOOM_CLIENT_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-16}"
+
 # The warm build. Compiling is most of a lane's time: every package has its
 # own build/, so each one compiles its dependencies again, and a client lane
 # compiles `client` twice, once for the server shipment and once for its
