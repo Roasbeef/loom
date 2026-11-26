@@ -2,6 +2,7 @@
 # gantry_lane.sh — run one of Loom's Linux CI lanes as a Gantry action.
 #
 # Usage: scripts/gantry_lane.sh LANE
+#        scripts/gantry_lane.sh match PACKAGE PATTERN...
 #
 # gantry.json at the repository root names one action per lane, and every
 # action runs this script with its lane's name. The lanes are the Linux jobs
@@ -34,6 +35,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 lane="${1:?usage: scripts/gantry_lane.sh LANE}"
+shift
 root=$(pwd)
 
 # The writable places, all under the workspace the action owns.
@@ -178,6 +180,21 @@ client-1 | client-2 | client-3)
   LOOM_CLIENT_TEST_SHARD="${lane#client-}/3" bash scripts/check.sh client
   ;;
 
+# Not a CI lane: a few named tests of one package, for an ad hoc action that
+# checks a fix or a fleet change without running a whole shard. Each pattern
+# is a scripts/test.sh --match pattern, and every one runs even after one
+# fails, so the action's log answers for all of them.
+match)
+  package="${1:?usage: scripts/gantry_lane.sh match PACKAGE PATTERN...}"
+  shift
+  prepare_server
+  failed=0
+  for pattern in "$@"; do
+    bash scripts/test.sh "$package" --match "$pattern" || failed=1
+  done
+  [ "$failed" -eq 0 ]
+  ;;
+
 *)
   echo "gantry_lane.sh: unknown lane: $lane" >&2
   exit 2
@@ -196,7 +213,7 @@ esac
 log="$root/.gantry/lane.log"
 started=$SECONDS
 set +e
-run_lane 2>&1 | tee "$log" | awk '
+run_lane "$@" 2>&1 | tee "$log" | awk '
   # A failing test, or a compiler or Go failure, opens a block of the lines
   # that explain it. The block is bounded so one runaway report cannot use
   # the budget meant for the failures after it.
