@@ -87,6 +87,10 @@ prepare_server() {
 # One lane's commands, chosen by name. Its output goes to the lane log, not
 # straight to the action's log; see the end of the script.
 run_lane() {
+# The pipeline below runs this function with errexit off, which the shell
+# would otherwise carry into it, so a failed preparation would let the
+# lane go on to test against what was not built. Turn it back on here.
+set -e
 case "$lane" in
 
 # The static job: the script self-tests, then the four tree-wide gates.
