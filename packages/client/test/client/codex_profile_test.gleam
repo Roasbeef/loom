@@ -20,7 +20,8 @@ import provider/http
 import weft
 
 // The package's build directory is writable wherever the suite runs, including
-// a build action whose root filesystem is read-only and has no `/var/tmp`.
+// a read-only root where only the workspace is writable. Nothing here needs
+// the short path that keeps other fixtures' sockets under `/var/tmp`.
 fn directory() -> String {
   let assert Ok(directory) =
     bootstrap.absolute_path(

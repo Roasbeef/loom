@@ -118,7 +118,8 @@ pub fn codex_browser_listener_pkce_callback_and_registration_test() {
 // without a registration and the next login starts a fresh one.
 pub fn codex_failed_exchange_does_not_persist_callback_client_id_test() {
   // The package's build directory is writable wherever the suite runs, including
-  // a build action whose root filesystem is read-only and has no `/var/tmp`.
+  // a read-only root where only the workspace is writable. Nothing here needs
+  // the short path that keeps other fixtures' sockets under `/var/tmp`.
   let assert Ok(directory) =
     bootstrap.absolute_path("build/loom-codex-browser-" <> random_suffix())
     as "The package's build directory has an absolute path."

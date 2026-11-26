@@ -1682,8 +1682,9 @@ fn clear_slot(next: String) -> Result(Nil, String) {
 }
 
 // An absolute path under the package's build directory, which is writable
-// wherever the suite runs, including a build action whose root filesystem is
-// read-only and has no `/var/tmp`.
+// wherever the suite runs, including a read-only root where only the workspace
+// is writable. Nothing here needs the short path that keeps other fixtures'
+// sockets under `/var/tmp`.
 fn build_scratch(name: String) -> String {
   let assert Ok(path) = bootstrap.absolute_path("build/" <> name)
     as "The package's build directory has an absolute path."

@@ -149,7 +149,8 @@ pub fn codex_consumer_loss_cancels_and_drains_native_resources_test() {
 
 pub fn codex_logged_out_refusal_has_no_inference_attempt_and_drains_test() {
   // The package's build directory is writable wherever the suite runs, including
-  // a build action whose root filesystem is read-only and has no `/var/tmp`.
+  // a read-only root where only the workspace is writable. Nothing here needs
+  // the short path that keeps other fixtures' sockets under `/var/tmp`.
   let assert Ok(directory) =
     bootstrap.absolute_path(
       "build/loom-codex-native-"
