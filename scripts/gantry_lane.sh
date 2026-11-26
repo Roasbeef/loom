@@ -57,6 +57,18 @@ fi
 if [ -d /opt/loom-seed/packages ]; then
   cp -R /opt/loom-seed/packages/. packages/
 fi
+# The language-server fixture's Rust toolchain, installed into the image by
+# .github/scripts/install_rust_analyzer.sh. The fixture grants ~/.rustup and
+# ~/.cargo/registry to the jail and runs ~/.cargo/bin/rust-analyzer, so the
+# toolchain has to appear at rustup's default layout under this HOME, and CI
+# exports the same three variables after installing it.
+if [ -d /opt/loom-rusthome ]; then
+  ln -sfn /opt/loom-rusthome/.rustup "$HOME/.rustup"
+  ln -sfn /opt/loom-rusthome/.cargo "$HOME/.cargo"
+  export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo"
+  export PATH="$CARGO_HOME/bin:$PATH"
+fi
+
 # The code-mode seed's resolved packages, which scripts/codemode_seed.sh
 # needs to make a seed with no network.
 if [ -d /opt/loom-codemode-seed/packages ]; then
