@@ -38,19 +38,32 @@ gantry run <id> fleet/loom <commit> client-2
 
 A Gantry action has a read-only root, no network, and nothing restored from an
 upstream job. `scripts/gantry_lane.sh` answers each of these once for every
-lane, and its header comment says why each answer has the shape it has:
+lane, and its comments say why each answer has the shape it has:
 
 - HOME, TMPDIR and every cache live under `.gantry/` in the workspace.
 - The action image carries an offline Hex and Go module cache, each package's
   resolved `build/packages`, and a code-mode seed's resolved packages. The
   script copies them in before anything compiles. A dependency the image lacks
   cannot be fetched, which means the image needs rebuilding.
+- The image also carries a warm build: the build output of one Loom revision,
+  made by the script's `bake` mode when the image is built, as a tar per
+  package `build/`, the root `build/` and the Go build cache, with a hash of
+  the lockfiles it came from. A lane copies in the parts it uses when the
+  tree's lockfiles hash the same, and Gleam, which compares content rather than
+  timestamps, recompiles only what changed since that revision. With other
+  lockfiles the lane builds from nothing.
 - The lanes that need the server shipment and the code-mode seed build them
   (`make binaries server-shipment`), since a Gantry output is a list of regular
   files and both are directory trees. A fresh seed has to resolve against Hex
   once, so `scripts/codemode_seed.sh` takes the image's resolved packages
   through `LOOM_CODEMODE_SEED_PACKAGES` and still runs all of its checks on the
-  result.
+  result. That `make` runs with only the variables the build reads, so
+  `scripts/shipment.py`'s environment digest is the same in the image's bake
+  and in an action, and the shipments reuse what the image cached.
+- Test modules run concurrently, through the same `scripts/test.sh` mechanism
+  `make signoff` uses: twelve at a time, one per slot CPU, and sixty-four at a
+  time for the client package, whose tests mostly wait. `scripts/serial-tests`
+  still holds back the modules that must run alone.
 - Gantry keeps only the first 64 KiB of an action's output. The script writes
   the whole lane log to `.gantry/lane.log` and prints a condensed view: section
   headers, each failure with the sixteen lines after it, every SKIP, the
@@ -62,91 +75,100 @@ lane, and its header comment says why each answer has the shape it has:
   registry, so it skips on Gantry and still runs in GitHub CI.
 
 The fleet runs these actions under Gantry's `userns` sandbox profile, so that
-Loom's own `bwrap` jail can start inside the container.
+Loom's own `bwrap` jail can start inside the container, and the worker hands
+each action a delegated cgroup v2, so the jail applies every layer.
 
 ## Measured on the fleet
 
-Measured on 2026-11-25 at commit `6da5d2751`, and for `fast-2` and
-`conformance` at `55d4e3228`, which gives those two lanes the seed and server
-they had been skipping tests without. Every lane ran as its own
-target on the fleet's `loom` pool: two slots on one 32-core worker host, each
-with 12 CPUs, 8 GiB of memory, a 6000 MiB workspace, a 2048 MiB `/tmp` and
-`/var/tmp`, and the `userns` profile. The action image is
-`gantry-loom-actions@sha256:a96aba61…`, built from Loom `d6e3551a1` on Loom's
-release-builder image with stock Gleam 1.19.0, Node 18, the offline caches, a
-code-mode seed's resolved packages, and the rust-analyzer toolchain that
-`.github/scripts/install_rust_analyzer.sh` installs.
+Measured on 2026-11-26 on the fleet's `loom` pool: two slots on one 32-core
+worker host, each with 12 CPUs, 8 GiB of memory, a 6000 MiB workspace, a
+2048 MiB `/tmp` and `/var/tmp`, the `userns` profile and a delegated cgroup.
+Every lane ran as its own target. Times are action seconds, from the worker's
+lease to the verdict.
 
-| Lane | Result | Lane time | Action time | Failures |
-| --- | --- | --- | --- | --- |
-| `static` | pass | 77 s | about 90 s | |
-| `mid` | pass | 266 s | 281 s | |
-| `fast-1` | pass | 196 s | 209 s | |
-| `fast-2` | pass | 647 s | about 660 s | |
-| `fast-3` | pass | 45 s | about 60 s | |
-| `conformance` | pass | 315 s | about 330 s | |
-| `eval` | fail | 271 s | 287 s | does not compile |
-| `client-1` | fail | 712 s | 720 s | 1 of 2,055 |
-| `client-2` | fail | 812 s | 819 s | 3 of 2,622 |
-| `client-3` | fail | 592 s | 607 s | 18 of 2,775 |
+| Lane | Before | After | Failures (after) |
+| --- | --- | --- | --- |
+| `client-1` | 1,044 | 355 | 1 of 2,055 |
+| `client-2` | 1,083 | 358 | 1 of 2,622 |
+| `client-3` | 1,005 | 421 | 1 of 2,775 |
+| `fast-2` | 656 | 283 | |
+| `conformance` | 325 | 170 | |
+| `eval` | 276 | 146 | does not compile |
+| `mid` | 273 | 50 | |
+| `fast-1` | 205 | 137 | |
+| `static` | 80 | 76 | |
+| `fast-3` | 51 | 33 | |
+| **Makespan, all ten** | **2,828** | **1,080** | |
 
-Lane time is what `scripts/gantry_lane.sh` reports, including its preparation:
-about 30 s for `make binaries`, and about 177 s for `fast-2`, `conformance`,
-`eval` and the client lanes, which also build the server shipment and the
-code-mode seed because their tests need them. Action time is from the worker's
-lease to the verdict, so the difference, ten to fifteen seconds, is Gantry
-staging the 87.5 MiB tree and collecting the log.
+Before is a run at `27be14453` on the image without the warm build; a second
+run of the same tree took 2,573 s, the difference being only which lanes the
+two slots took in which order, since every lane's time matched within 2%.
+After is `549f4e18d` on the image with the warm build. Every lane's test
+outcome is the same in both: the same exit status, the same test total, no new
+SKIP, and no failure outside the calibration runs' set.
 
-The ten lanes took about 32 minutes from admission to the last verdict. That
-is within 1.02 times the total action time divided by the two slots, so the
-slots were never idle while work was queued. The longest single action,
-`client-2`, is 14 minutes, so more slots would shorten the run until it
-approaches that. That run predates the `fast-2` and `conformance` change, which adds about
-five minutes of action time between them, so the same two slots would now take
-about 35 minutes.
+### Where the time went, and what cut it
 
-The previous round, on the image without the Rust toolchain, failed the same
-counts for the same causes; only the test that overran its deadline differed.
-The language-server rust-analyzer fixture skipped there and now runs and
-passes.
+Before, more than half of all lane time was compiling. Every package has its
+own `build/`, so each compiled its dependencies again, a client lane compiled
+`client` twice (once for the server shipment, once for its tests), and every
+action did all of it from nothing. The tests themselves ran one module at a
+time and used one to three of a slot's twelve cores. Gantry's own overhead was
+about fourteen seconds an action, half of it fetching the tree, which a later
+worker release caches.
+
+The cut came from four changes, each measured alone on the four slowest lanes
+and kept only when it beat the best so far by more than the run-to-run noise:
+
+| Change | Four-lane makespan |
+| --- | --- |
+| (before) | 2,075 s |
+| Test modules eight at a time | 1,554 s |
+| The warm build | 1,310 s |
+| The preparation's fixed environment (shipment reuse) | 1,232 s |
+| Client modules sixteen at a time | 1,108 s |
+| Client modules thirty-two at a time | 895 s |
+| Client modules sixty-four at a time | 806 s |
+| Other packages twelve at a time | 803 s |
+
+A hundred and twenty-eight client modules at a time failed shipped-daemon and
+project tests that pass at sixty-four, so sixty-four is the setting, and those
+tests are the first to show strain under load.
+
+### What binds it now
+
+A client lane is about 130 s of preparation and 210 to 280 s of tests. Of the
+preparation, about 92 s is exporting the server shipment, which
+`scripts/shipment.py` does not reuse by design: the client's closure holds
+`esqlite_loom`, `khepri`, `ra` and other builds outside its reviewed
+`ERLANG_ONLY` list. `client-3` runs longest because the runner deals modules to
+shards round-robin rather than by weight. With two slots the makespan is about
+the total action time divided by two; more slots would bring it toward the
+longest lane, about seven minutes, but the worker host has no memory to spare
+for a third or fourth slot at a client lane's peak of about 5 GiB.
 
 ## Remaining failures, by cause
 
-Every failure in the measured run falls under one of four causes.
+With the delegated cgroup, the twenty tests that needed full enforcement pass,
+and tests that used to skip on "platform enforcement unavailable" run. What
+fails now:
 
-**No delegated cgroup v2 (20 tests).** Loom's jail starts under the `userns`
-profile, but its cgroup layer has no delegated cgroup to use, so it reports
-partial enforcement. The tests that require every layer refuse to run their
-work and fail:
+**A newly exposed failure (1 test, `client-1`).** The shipped remote
+evolution acceptance test fails in `support@remote_pair:fixture` ("the
+shipped remote body completes before native teardown"), crashing inside the
+scripted provider's callback. Without the cgroup it skipped. It has not been
+traced yet.
 
-- the 16 tests of `client@project_template_test` in `client-3`, which report
-  that "the sandbox ran Git without full enforcement";
-- the four tests that `make e2e-evolution` runs:
-  `evolution_acceptance_test` (`client-3`),
-  `evolution_program_acceptance_test` (`client-1`),
-  `evolution_prompt_acceptance_test` and `live_upgrade_acceptance_test`
-  (`client-2`). Each fails inside the scripted provider's callback, because
-  the evolution plane refuses to author on degraded execution:
-  `evolution_refused: authority: DegradedExecution(…skip:cgroup-v2: cgroup
-  /sys/fs/cgroup not delegated…)`.
-
-The `project_check_test` tests skip for the same reason. This is the delegated
-cgroup that Gantry's sandbox-profile work set aside; it needs a worker change,
-not a Loom change.
-
-**The real-terminal TUI test (1 test).**
+**The real-terminal TUI test (1 test, `client-2`).**
 `client@tui_e2e_test: the_real_tui_drives_the_real_server_test` reports "the
-TUI never attached: the hub still counts 0 connections" in every run. In the
-earlier plain `docker run` probes it failed as uid 65534 and passed as root,
-which is the user every action runs as. It has not been traced inside the test.
+TUI never attached: the hub still counts 0 connections" in every run. In
+plain `docker run` probes it failed as uid 65534, the user every action runs
+as, and passed as root. It has not been traced inside the test.
 
-**A deadline under load (1 test, a different one each run).** One client-3
-test overruns its own deadline each run: `ui_route_test`'s
-`fixture_lasting_with_root` in two runs, and
-`tui_shipped_multiplayer_test`'s fan-out test in the run before. It does not
-line up with two client lanes running at once; in both cases `client-3` shared
-the host with `eval`, `conformance` and `fast-1`. The two slots together hold
-24 of the host's 32 CPUs.
+**A deadline under load (1 test, `client-3`).** One test overruns its own
+deadline in most runs, usually `ui_route_test`'s `fixture_lasting_with_root`.
+`delegate_host_test`'s idle-sweep test is a known flake that fails about one
+run in five, with a shell syntax error over a list of PIDs.
 
 **`eval` does not compile at main.** Since `95b4186e7` ("client: create a
 local session in its own Git worktree"), the client's settings record has a
