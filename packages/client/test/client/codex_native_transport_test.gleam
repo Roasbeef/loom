@@ -148,9 +148,14 @@ pub fn codex_consumer_loss_cancels_and_drains_native_resources_test() {
 }
 
 pub fn codex_logged_out_refusal_has_no_inference_attempt_and_drains_test() {
-  let directory =
-    "/var/tmp/loom-codex-native-"
-    <> bit_array.base16_encode(crypto.strong_random_bytes(8))
+  // The package's build directory is writable wherever the suite runs, including
+  // a build action whose root filesystem is read-only and has no `/var/tmp`.
+  let assert Ok(directory) =
+    bootstrap.absolute_path(
+      "build/loom-codex-native-"
+      <> bit_array.base16_encode(crypto.strong_random_bytes(8)),
+    )
+    as "The package's build directory has an absolute path."
   let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
     as "The test owns an empty credential directory."
   let authorization = process.new_subject()

@@ -117,7 +117,11 @@ pub fn codex_browser_listener_pkce_callback_and_registration_test() {
 // verified exchange, so a callback whose exchange fails leaves the profile
 // without a registration and the next login starts a fresh one.
 pub fn codex_failed_exchange_does_not_persist_callback_client_id_test() {
-  let directory = "/var/tmp/loom-codex-browser-" <> random_suffix()
+  // The package's build directory is writable wherever the suite runs, including
+  // a build action whose root filesystem is read-only and has no `/var/tmp`.
+  let assert Ok(directory) =
+    bootstrap.absolute_path("build/loom-codex-browser-" <> random_suffix())
+    as "The package's build directory has an absolute path."
   let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
     as "The test owns its private directory."
   let events = process.new_subject()

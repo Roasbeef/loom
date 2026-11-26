@@ -957,7 +957,7 @@ pub fn a_daemon_that_must_restart_is_told_which_row_it_has_not_read_test() {
 fn scratch_root() -> #(String, String, String) {
   let name =
     token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
-  let scratch = "/var/tmp/loom-vm-inside-" <> name
+  let scratch = build_scratch("loom-vm-inside-" <> name)
   let root = scratch <> "/root"
   let outside = scratch <> "/outside"
   let assert Ok(Nil) = simplifile.create_directory_all(root)
@@ -1661,7 +1661,7 @@ pub fn a_guest_that_moves_its_workspaces_does_not_finish_an_upgrade_test() {
 }
 
 pub fn the_workspaces_slot_is_cleared_before_the_rename_test() {
-  let base = "/var/tmp/loom-vm-cli-test-" <> hex_name()
+  let base = build_scratch("loom-vm-cli-test-" <> hex_name())
   let next = base <> "/root.next"
 
   // An export that ships `srv/workspaces`, with something in it.
@@ -1679,6 +1679,15 @@ pub fn the_workspaces_slot_is_cleared_before_the_rename_test() {
 
 fn clear_slot(next: String) -> Result(Nil, String) {
   vm_cli.clear_workspaces_slot(next)
+}
+
+// An absolute path under the package's build directory, which is writable
+// wherever the suite runs, including a build action whose root filesystem is
+// read-only and has no `/var/tmp`.
+fn build_scratch(name: String) -> String {
+  let assert Ok(path) = bootstrap.absolute_path("build/" <> name)
+    as "The package's build directory has an absolute path."
+  path
 }
 
 fn hex_name() -> String {

@@ -19,9 +19,16 @@ import host/bootstrap
 import provider/http
 import weft
 
+// The package's build directory is writable wherever the suite runs, including
+// a build action whose root filesystem is read-only and has no `/var/tmp`.
 fn directory() -> String {
-  "/var/tmp/loom-codex-profile-"
-  <> bit_array.base16_encode(crypto.strong_random_bytes(8))
+  let assert Ok(directory) =
+    bootstrap.absolute_path(
+      "build/loom-codex-profile-"
+      <> bit_array.base16_encode(crypto.strong_random_bytes(8)),
+    )
+    as "The package's build directory has an absolute path."
+  directory
 }
 
 fn binding() -> credentials.Binding {
