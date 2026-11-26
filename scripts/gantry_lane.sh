@@ -3,6 +3,7 @@
 #
 # Usage: scripts/gantry_lane.sh LANE
 #        scripts/gantry_lane.sh match PACKAGE PATTERN...
+#        scripts/gantry_lane.sh bake OUT
 #
 # gantry.json at the repository root names one action per lane, and every
 # action runs this script with its lane's name. The lanes are the Linux jobs
@@ -105,6 +106,52 @@ export LOOM_TEST_OFFLINE=1
 # twelve cores, waiting on fixtures far more than computing.
 export LOOM_TEST_PARALLEL="${LOOM_TEST_PARALLEL:-8}"
 
+# The warm build. Compiling is most of a lane's time: every package has its
+# own build/, so each one compiles its dependencies again, and a client lane
+# compiles `client` twice, once for the server shipment and once for its
+# tests. The action image carries that build output for one Loom revision,
+# made by the `bake` lane below, as a tar per package build/ plus the root
+# build/ (shipments, the shipment cache, the seed) and the Go build cache.
+#
+# A lane copies in the parts it uses before compiling, and Gleam's
+# incremental build then recompiles only what changed since the image's
+# revision: it compares content, not timestamps, so the newer timestamps of
+# a later commit's tree cost nothing. The parts are used only when the
+# dependency lockfiles match the ones they were built from; otherwise the
+# lane builds from nothing, exactly as without them.
+warm=/opt/loom-warm
+
+# The lockfile set the warm build is valid for: every gleam.toml,
+# manifest.toml and go.sum outside build output, and the seed's lock.
+build_key() {
+  {
+    find packages -name build -prune -o \
+      \( -name gleam.toml -o -name manifest.toml -o -name go.sum \) -print |
+      LC_ALL=C sort | xargs sha256sum
+    sha256sum scripts/codemode-seed-manifest.toml
+  } | sha256sum | cut -c1-64
+}
+
+# Copies in the warm build for the named packages, with the root build/ and
+# the Go cache, when the image has one for this lockfile set.
+warm_for() {
+  local started=$SECONDS part
+  if [ ! -f "$warm/key" ] || [ "$(cat "$warm/key")" != "$(build_key)" ]; then
+    echo "==> gantry: no warm build for these lockfiles; building from nothing"
+    return 0
+  fi
+  for part in root go "$@"; do
+    if [ -f "$warm/$part.tar" ]; then
+      tar -xf "$warm/$part.tar"
+    fi
+  done
+  echo "==> gantry: warm build ($*) in $((SECONDS - started)) s"
+}
+
+# The packages each kind of preparation compiles.
+binaries_parts="pkg-tui"
+server_parts="pkg-tui pkg-client pkg-codemode"
+
 # What GitHub's deps job builds, for the lanes that restore it there.
 prepare() {
   local started=$SECONDS
@@ -131,6 +178,7 @@ case "$lane" in
 
 # The static job: the script self-tests, then the four tree-wide gates.
 static)
+  warm_for pkg-lint
   python3 scripts/with_timeout.py 60 -- \
     python3 -m unittest discover -s scripts -p 'test_*.py'
   make fmt-check
@@ -141,6 +189,7 @@ static)
 
 # The runtime-storage-session-events bucket.
 mid)
+  warm_for $binaries_parts pkg-runtime pkg-storage pkg-session pkg-events
   prepare binaries
   bash scripts/check.sh runtime storage session events
   ;;
@@ -150,6 +199,10 @@ mid)
 # three actions report three verdicts. The cut keeps the Go helper and the
 # VMM, which build with a different toolchain, apart from the Gleam packages.
 fast-1)
+  warm_for $binaries_parts pkg-host pkg-core pkg-json_codec pkg-machine \
+    pkg-prompt pkg-statem pkg-statem_parallel pkg-evalstat pkg-gepa \
+    pkg-project pkg-session_view pkg-web_view pkg-web_client \
+    pkg-web_mermaid pkg-telemetry
   prepare binaries
   bash scripts/check.sh host core json_codec machine prompt statem \
     statem_parallel evalstat gepa project session_view web_view web_client \
@@ -159,11 +212,14 @@ fast-1)
 # real-server lifecycle test needs bin/loomd; without them both skip, the
 # second without a word, and the lane would pass having run neither.
 fast-2)
+  warm_for $server_parts pkg-provider pkg-broker pkg-executor pkg-mcp \
+    pkg-lsp pkg-tools pkg-cap pkg-ext pkg-harness pkg-lint
   prepare_server
   bash scripts/check.sh provider broker executor mcp lsp tools cap ext \
     codemode harness tui lint
   ;;
 fast-3)
+  warm_for $binaries_parts
   prepare binaries
   bash scripts/check.sh sandbox vmm
   ;;
@@ -171,6 +227,7 @@ fast-3)
 # The language-server fixtures that rename, build a code-mode monorepo or
 # read SQL need the seed, as in fast-2.
 conformance)
+  warm_for $server_parts pkg-conformance
   prepare_server
   bash scripts/check.sh conformance
   ;;
@@ -179,11 +236,13 @@ conformance)
 # action declares a shallow .git, so the mined tasks that name older commits
 # skip, as they would on a depth-1 checkout.
 eval)
+  warm_for $server_parts pkg-eval
   prepare_server
   bash scripts/check.sh eval
   ;;
 
 client-1 | client-2 | client-3)
+  warm_for $server_parts
   prepare_server
   LOOM_CLIENT_TEST_SHARD="${lane#client-}/3" bash scripts/check.sh client
   ;;
@@ -195,12 +254,40 @@ client-1 | client-2 | client-3)
 match)
   package="${1:?usage: scripts/gantry_lane.sh match PACKAGE PATTERN...}"
   shift
+  warm_for $server_parts "pkg-$package"
   prepare_server
   failed=0
   for pattern in "$@"; do
     bash scripts/test.sh "$package" --match "$pattern" || failed=1
   done
   [ "$failed" -eq 0 ]
+  ;;
+
+# Not a CI lane: the image build runs this to make the warm build. It
+# prepares like a server lane, compiles every Gleam package for the targets
+# its lane compiles, and writes the parts warm_for copies, with the key.
+bake)
+  out="${1:?usage: scripts/gantry_lane.sh bake OUT}"
+  prepare_server
+  for toml in packages/*/gleam.toml; do
+    package=$(dirname "$toml")
+    # A package that does not compile at this revision still leaves its
+    # dependencies built, and the lane that tests it reports the error.
+    (cd "$package" && gleam build --warnings-as-errors) ||
+      echo "==> gantry: bake: $package does not compile; its build is partial"
+  done
+  for package in json_codec evalstat gepa project web_client web_mermaid; do
+    (cd "packages/$package" && gleam build --target javascript)
+  done
+  mkdir -p "$out"
+  tar -cf "$out/root.tar" build
+  tar -cf "$out/go.tar" .gantry/gocache
+  for dir in packages/*/build; do
+    package=$(basename "$(dirname "$dir")")
+    tar -cf "$out/pkg-$package.tar" "$dir"
+  done
+  build_key > "$out/key"
+  du -sh "$out"/*.tar | sort -h | tail -8
   ;;
 
 *)
