@@ -122,10 +122,9 @@ export LOOM_CLIENT_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-64}"
 #
 # A lane copies in the parts it uses before compiling, and Gleam's
 # incremental build then recompiles only what changed since the image's
-# revision: it compares content, not timestamps, so the newer timestamps of
-# a later commit's tree cost nothing. The parts are used only when the
-# dependency lockfiles match the ones they were built from; otherwise the
-# lane builds from nothing, exactly as without them.
+# revision (see warm_for for the timestamps that takes). The parts are used
+# only when the dependency lockfiles match the ones they were built from;
+# otherwise the lane builds from nothing, exactly as without them.
 warm=/opt/loom-warm
 
 # The lockfile set the warm build is valid for: every gleam.toml,
@@ -152,6 +151,17 @@ warm_for() {
       tar -xf "$warm/$part.tar"
     fi
   done
+
+  # Gantry stamps every file of the tree it stages with one fixed time, older
+  # than the build output just copied in, and Gleam compares a module's
+  # content with its cache only when the source is newer than the cache
+  # entry; an older source is taken as compiled and never read. Without this
+  # an edited module was tested as the image's revision compiled it, which a
+  # deliberately broken assertion passing on the fleet proved. Stamping the
+  # tree's own files now makes Gleam check every module's content, so
+  # unchanged modules stay compiled, changed ones recompile, and an edited
+  # Erlang FFI file is copied and compiled again.
+  find packages -name build -prune -o -type f -exec touch {} +
   echo "==> gantry: warm build ($*) in $((SECONDS - started)) s"
 }
 
