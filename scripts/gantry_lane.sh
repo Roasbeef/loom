@@ -111,7 +111,7 @@ export LOOM_TEST_PARALLEL="${LOOM_TEST_PARALLEL:-8}"
 # docs/design-notes/parallel-tests.md measured it at 166 s with eight and
 # 126 s with sixteen, while storage fails at sixteen. scripts/check.sh reads
 # this for the client package alone.
-export LOOM_CLIENT_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-32}"
+export LOOM_CLIENT_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-64}"
 
 # The warm build. Compiling is most of a lane's time: every package has its
 # own build/, so each one compiles its dependencies again, and a client lane
