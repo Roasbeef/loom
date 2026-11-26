@@ -78,8 +78,12 @@ fi
 # Each package's suite takes its deadline from test.sh. A lane of one package
 # reports a hang through that deadline before Gantry's timeout kills the
 # action; a lane of several can reach Gantry's timeout first, which is why the
-# condensed log below is flushed line by line. Every bucket in CI sets LOOM_EVOLUTION_E2E; the lanes that have a server
-# shipment also set LOOM_BOOTSTRAP_E2E_SERVER, as CI does.
+# condensed log below is flushed line by line.
+#
+# Every bucket in CI sets LOOM_EVOLUTION_E2E. CI also sets
+# LOOM_BOOTSTRAP_E2E_SERVER for every bucket; here only the lanes that build a
+# server shipment set it, which covers its only readers, the client and TUI
+# suites.
 export LOOM_EVOLUTION_E2E=1
 
 # The public dummy credential the scripted provider fixture expects, which
