@@ -79,6 +79,9 @@ prepare_server() {
   export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
 }
 
+# One lane's commands, chosen by name. Its output goes to the lane log, not
+# straight to the action's log; see the end of the script.
+run_lane() {
 case "$lane" in
 
 # The static job: the script self-tests, then the four tree-wide gates.
@@ -140,3 +143,32 @@ client-1 | client-2 | client-3)
   exit 2
   ;;
 esac
+}
+
+# Gantry keeps only the first 64 KiB of an action's output, and a client
+# shard writes several megabytes, so a failure late in a lane would be cut
+# from the only log anyone can read. The whole output goes to a file in the
+# workspace instead, and the action's log carries what a reader needs to
+# act: each section header, each failing test with the error that follows
+# it, every SKIP, the suites' totals, and, when the lane fails, its last
+# lines. The file is gone with the workspace; rerun the lane locally, or
+# under `docker run`, for the rest.
+log="$root/.gantry/lane.log"
+started=$SECONDS
+set +e
+run_lane 2>&1 | tee "$log" | awk '
+  # A failing test, or a compiler or Go failure, opens a block of the lines
+  # that explain it. The block is bounded so one runaway report cannot use
+  # the budget meant for the failures after it.
+  /\*failed\*|^error|^--- FAIL|^FAIL|^panic:/ { block = 16 }
+  block > 0 { print; block--; next }
+  /^==> |SKIP |Failed: [0-9]|tests passed|test command finished|^ok  / { print }
+'
+status=${PIPESTATUS[0]}
+set -e
+if [ "$status" -ne 0 ]; then
+  echo "==> gantry: the last lines of the lane log"
+  tail -n 40 "$log"
+fi
+echo "==> gantry: lane $lane exited $status after $((SECONDS - started)) s"
+exit "$status"
