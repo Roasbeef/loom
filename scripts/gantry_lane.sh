@@ -69,6 +69,10 @@ fi
 # shipment also set LOOM_BOOTSTRAP_E2E_SERVER, as CI does.
 export LOOM_EVOLUTION_E2E=1
 
+# The public dummy credential the scripted provider fixture expects, which
+# ci.yml sets for every job; the shipped fixtures assert it before they run.
+export LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key
+
 # The one test that needs the Hex registry, the language-server manager's
 # fresh-workspace preparation, skips when this is set, since an action has
 # no network. No other test reads it.
