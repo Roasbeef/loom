@@ -64,6 +64,11 @@ fi
 # shipment also set LOOM_BOOTSTRAP_E2E_SERVER, as CI does.
 export LOOM_EVOLUTION_E2E=1
 
+# The one test that needs the Hex registry, the language-server manager's
+# fresh-workspace preparation, skips when this is set, since an action has
+# no network. No other test reads it.
+export LOOM_TEST_OFFLINE=1
+
 # What GitHub's deps job builds, for the lanes that restore it there.
 prepare() {
   local started=$SECONDS
