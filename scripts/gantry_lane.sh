@@ -140,8 +140,11 @@ fast-1)
     statem_parallel evalstat gepa project session_view web_view web_client \
     web_mermaid telemetry
   ;;
+# The code-mode package's end-to-end tests need the seed, and the TUI's
+# real-server lifecycle test needs bin/loomd; without them both skip, the
+# second without a word, and the lane would pass having run neither.
 fast-2)
-  prepare binaries
+  prepare_server
   bash scripts/check.sh provider broker executor mcp lsp tools cap ext \
     codemode harness tui lint
   ;;
@@ -150,8 +153,10 @@ fast-3)
   bash scripts/check.sh sandbox vmm
   ;;
 
+# The language-server fixtures that rename, build a code-mode monorepo or
+# read SQL need the seed, as in fast-2.
 conformance)
-  prepare binaries
+  prepare_server
   bash scripts/check.sh conformance
   ;;
 
