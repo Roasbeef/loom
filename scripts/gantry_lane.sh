@@ -97,6 +97,14 @@ export LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key
 # no network. No other test reads it.
 export LOOM_TEST_OFFLINE=1
 
+# Each package's EUnit modules run eight at a time on its emulator, the
+# setting Loom's own signoff gate uses (scripts/signoff.sh). scripts/test.sh
+# holds back the modules scripts/serial-tests declares and runs them alone
+# afterwards, and docs/design-notes/parallel-tests.md has the measurements
+# behind eight. Run one at a time, a lane's tests used one to three of its
+# twelve cores, waiting on fixtures far more than computing.
+export LOOM_TEST_PARALLEL="${LOOM_TEST_PARALLEL:-8}"
+
 # What GitHub's deps job builds, for the lanes that restore it there.
 prepare() {
   local started=$SECONDS
