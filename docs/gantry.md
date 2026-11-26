@@ -66,7 +66,9 @@ Loom's own `bwrap` jail can start inside the container.
 
 ## Measured on the fleet
 
-Measured on 2026-11-25 at commit `6da5d2751`, with every lane run as its own
+Measured on 2026-11-25 at commit `6da5d2751`, and for `fast-2` and
+`conformance` at `55d4e3228`, which gives those two lanes the seed and server
+they had been skipping tests without. Every lane ran as its own
 target on the fleet's `loom` pool: two slots on one 32-core worker host, each
 with 12 CPUs, 8 GiB of memory, a 6000 MiB workspace, a 2048 MiB `/tmp` and
 `/var/tmp`, and the `userns` profile. The action image is
@@ -80,17 +82,18 @@ code-mode seed's resolved packages, and the rust-analyzer toolchain that
 | `static` | pass | 77 s | about 90 s | |
 | `mid` | pass | 266 s | 281 s | |
 | `fast-1` | pass | 196 s | 209 s | |
-| `fast-2` | pass | 482 s | about 495 s | |
+| `fast-2` | pass | 647 s | about 660 s | |
 | `fast-3` | pass | 45 s | about 60 s | |
-| `conformance` | pass | 163 s | 177 s | |
+| `conformance` | pass | 315 s | about 330 s | |
 | `eval` | fail | 271 s | 287 s | does not compile |
 | `client-1` | fail | 712 s | 720 s | 1 of 2,055 |
 | `client-2` | fail | 812 s | 819 s | 3 of 2,622 |
 | `client-3` | fail | 592 s | 607 s | 18 of 2,775 |
 
 Lane time is what `scripts/gantry_lane.sh` reports, including its preparation:
-about 30 s for `make binaries`, and about 176 s for the lanes that also build
-the server shipment and the code-mode seed. Action time is from the worker's
+about 30 s for `make binaries`, and about 177 s for `fast-2`, `conformance`,
+`eval` and the client lanes, which also build the server shipment and the
+code-mode seed because their tests need them. Action time is from the worker's
 lease to the verdict, so the difference, ten to fifteen seconds, is Gantry
 staging the 87.5 MiB tree and collecting the log.
 
@@ -98,7 +101,9 @@ The ten lanes took about 32 minutes from admission to the last verdict. That
 is within 1.02 times the total action time divided by the two slots, so the
 slots were never idle while work was queued. The longest single action,
 `client-2`, is 14 minutes, so more slots would shorten the run until it
-approaches that.
+approaches that. That run predates the `fast-2` and `conformance` change, which adds about
+five minutes of action time between them, so the same two slots would now take
+about 35 minutes.
 
 The previous round, on the image without the Rust toolchain, failed the same
 counts for the same causes; only the test that overran its deadline differed.
