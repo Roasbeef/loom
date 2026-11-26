@@ -75,9 +75,10 @@ if [ -d /opt/loom-codemode-seed/packages ]; then
   export LOOM_CODEMODE_SEED_PACKAGES=/opt/loom-codemode-seed/packages
 fi
 
-# The suites take their deadlines from test.sh, not from Gantry's timeout,
-# so a lane that hangs is reported by the suite before the action is killed.
-# Every bucket in CI sets LOOM_EVOLUTION_E2E; the lanes that have a server
+# Each package's suite takes its deadline from test.sh. A lane of one package
+# reports a hang through that deadline before Gantry's timeout kills the
+# action; a lane of several can reach Gantry's timeout first, which is why the
+# condensed log below is flushed line by line. Every bucket in CI sets LOOM_EVOLUTION_E2E; the lanes that have a server
 # shipment also set LOOM_BOOTSTRAP_E2E_SERVER, as CI does.
 export LOOM_EVOLUTION_E2E=1
 
@@ -195,9 +196,9 @@ run_lane 2>&1 | tee "$log" | awk '
   # A failing test, or a compiler or Go failure, opens a block of the lines
   # that explain it. The block is bounded so one runaway report cannot use
   # the budget meant for the failures after it.
-  /\*failed\*|^error|^--- FAIL|^FAIL|^panic:/ { block = 16 }
-  block > 0 { print; block--; next }
-  /^==> |SKIP |Failed: [0-9]|tests passed|test command finished|^ok  / { print }
+  /\*(failed|timed out|aborted)\*|^error|^--- FAIL|^FAIL|^panic:/ { block = 16 }
+  block > 0 { print; fflush(); block--; next }
+  /^==> |SKIP |Failed: [0-9]|tests passed|test command finished|^ok  / { print; fflush() }
 '
 status=${PIPESTATUS[0]}
 set -e
