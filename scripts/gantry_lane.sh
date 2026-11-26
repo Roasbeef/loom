@@ -104,7 +104,7 @@ export LOOM_TEST_OFFLINE=1
 # afterwards, and docs/design-notes/parallel-tests.md has the measurements
 # behind eight. Run one at a time, a lane's tests used one to three of its
 # twelve cores, waiting on fixtures far more than computing.
-export LOOM_TEST_PARALLEL="${LOOM_TEST_PARALLEL:-8}"
+export LOOM_TEST_PARALLEL="${LOOM_TEST_PARALLEL:-12}"
 
 # The client package is the critical path, and its suite still gains from
 # more concurrency than eight, where other packages' do not:
