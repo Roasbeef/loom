@@ -153,10 +153,21 @@ binaries_parts="pkg-tui"
 server_parts="pkg-tui pkg-client pkg-codemode"
 
 # What GitHub's deps job builds, for the lanes that restore it there.
+#
+# The build runs with only the variables it reads. scripts/shipment.py reuses
+# a shipment only when a digest of the whole environment matches the one it
+# was cached under, and the image's bake and an action differ in variables
+# no build reads (the container's hostname, the test settings above), which
+# made every action export the TUI shipment again from nothing. With the
+# same short list in both, a shipment the image already holds is reused.
 prepare() {
   local started=$SECONDS
   echo "==> gantry: prepare ($*)"
-  make "$@"
+  env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" \
+    XDG_CACHE_HOME="$XDG_CACHE_HOME" REBAR_CACHE_DIR="$REBAR_CACHE_DIR" \
+    GOCACHE="$GOCACHE" GOMODCACHE="${GOMODCACHE:-}" GOFLAGS="${GOFLAGS:-}" \
+    LOOM_CODEMODE_SEED_PACKAGES="${LOOM_CODEMODE_SEED_PACKAGES:-}" \
+    make "$@"
   echo "==> gantry: prepared in $((SECONDS - started)) s"
 }
 
