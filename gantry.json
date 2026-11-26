@@ -1,0 +1,69 @@
+{
+  "targets": {
+    "check": [
+      "static",
+      "mid",
+      "fast-1",
+      "fast-2",
+      "fast-3",
+      "conformance",
+      "eval",
+      "client-1",
+      "client-2",
+      "client-3"
+    ]
+  },
+  "actions": [
+    {
+      "name": "static",
+      "argv": ["bash", "scripts/gantry_lane.sh", "static"],
+      "timeout": 900
+    },
+    {
+      "name": "mid",
+      "argv": ["bash", "scripts/gantry_lane.sh", "mid"],
+      "timeout": 1500
+    },
+    {
+      "name": "fast-1",
+      "argv": ["bash", "scripts/gantry_lane.sh", "fast-1"],
+      "timeout": 1500
+    },
+    {
+      "name": "fast-2",
+      "argv": ["bash", "scripts/gantry_lane.sh", "fast-2"],
+      "timeout": 1500
+    },
+    {
+      "name": "fast-3",
+      "argv": ["bash", "scripts/gantry_lane.sh", "fast-3"],
+      "timeout": 1500
+    },
+    {
+      "name": "conformance",
+      "argv": ["bash", "scripts/gantry_lane.sh", "conformance"],
+      "timeout": 1500
+    },
+    {
+      "name": "eval",
+      "argv": ["bash", "scripts/gantry_lane.sh", "eval"],
+      "timeout": 1800,
+      "git": "shallow"
+    },
+    {
+      "name": "client-1",
+      "argv": ["bash", "scripts/gantry_lane.sh", "client-1"],
+      "timeout": 2700
+    },
+    {
+      "name": "client-2",
+      "argv": ["bash", "scripts/gantry_lane.sh", "client-2"],
+      "timeout": 2700
+    },
+    {
+      "name": "client-3",
+      "argv": ["bash", "scripts/gantry_lane.sh", "client-3"],
+      "timeout": 2700
+    }
+  ]
+}
