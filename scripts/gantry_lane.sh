@@ -208,6 +208,11 @@ seed_paths="build/codemode-seed"
 # prepares for itself. Each tree is removed first, because the warm build
 # copies in the image's revision of it and unpacking on top would keep the
 # files this revision deleted.
+#
+# The files are stamped with the time they are unpacked (tar -m), not the
+# time the prepare action built them. warm_for has just stamped the source
+# tree, and the tests refuse a bin/loom-exec older than the sandbox's
+# sources as stale: with the build's own times, 25 client tests skipped.
 prepare_or_unpack() {
   local started=$SECONDS
   if [ ! -f "$prepared/server.tgz" ] || [ ! -f "$prepared/seed.tgz" ]; then
@@ -215,8 +220,8 @@ prepare_or_unpack() {
     return 0
   fi
   rm -rf $server_paths $seed_paths
-  tar -xzf "$prepared/server.tgz"
-  tar -xzf "$prepared/seed.tgz"
+  tar -xzmf "$prepared/server.tgz"
+  tar -xzmf "$prepared/seed.tgz"
   export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
   echo "==> gantry: unpacked the prepare action's build in $((SECONDS - started)) s"
 }
