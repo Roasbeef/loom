@@ -50,6 +50,7 @@ fn entry(
     role: None,
     project: None,
     executor: None,
+    standing: sessions.Ordinary,
   )
 }
 
@@ -3261,6 +3262,7 @@ fn movable() -> List(Entry) {
     Entry(
       ..entry("E", "box job", "/work", 100_000, Saved),
       executor: Some("box"),
+      standing: sessions.Ordinary,
     ),
     entry("D", "", "/src/notes", 500_000, Saved),
   ]

@@ -11,6 +11,7 @@ import client/daemon/root
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/project_standing
 import gleam/erlang/process
 import gleam/http/request
 import gleam/json
@@ -626,6 +627,40 @@ fn view(status: manager.Status) -> manager.View {
   )
 }
 
+// A project's router and workers carry their standing into the entries the home
+// reads, and a session the catalogue gives no standing is ordinary. The home's
+// lists keep only the ordinary entries and its inbox reads the others, listing
+// one only while it waits on an approval, an ask or a stuck strand.
+pub fn a_project_session_carries_its_standing_into_the_home_entries_test() {
+  let named = fn(id) {
+    manager.View(
+      ..view(manager.Saved),
+      registration: catalogue.Registration(
+        ..view(manager.Saved).registration,
+        id:,
+      ),
+    )
+  }
+  let entries =
+    ui_socket.entries_with_standings(
+      [named("own"), named("router"), named("worker")],
+      [
+        #("router", project_standing.Router("p-1")),
+        #("worker", project_standing.Worker("p-1", "t-a", 2)),
+      ],
+    )
+
+  assert list.map(entries, fn(entry) { entry.standing })
+    == [
+      sessions.Ordinary,
+      sessions.ProjectRouter("p-1"),
+      sessions.ProjectWorker("p-1", "t-a"),
+    ]
+  assert list.filter(entries, fn(entry) { entry.standing == sessions.Ordinary })
+    |> list.map(fn(entry) { entry.id })
+    == ["own"]
+}
+
 // The sidebar's entry carries what a reader is shown and nothing of the
 // registration's path, request key or configuration reference: the entry type
 // has no field for them.
@@ -642,6 +677,7 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       role: option.None,
       project: None,
       executor: None,
+      standing: sessions.Ordinary,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
@@ -714,6 +750,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       role: option.None,
       project: None,
       executor: None,
+      standing: sessions.Ordinary,
     )
   let asked = process.new_subject()
   let read = fn() {
@@ -745,6 +782,7 @@ pub fn the_sidebar_read_runs_off_the_runtime_test() {
       role: option.None,
       project: option.None,
       executor: None,
+      standing: sessions.Ordinary,
     )
 
   // The read holds at a gate the test opens, so that it is still waiting
@@ -2305,6 +2343,9 @@ pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
   let projects =
     home.Projects(
       propose: fn(_, _) { Nil },
+      settings: fn(_, _) { Nil },
+      set_settings: fn(_, _, _, _, _) { Nil },
+      post: fn(_, _, _, _) { Nil },
       create: fn(_, _, _, _) { Nil },
       boards: fn(_) { Nil },
       ticket: fn(_, _, _) { Nil },

@@ -40,9 +40,42 @@ fn handlers(view: Element(message)) -> List(String)
 // A session that is what `start` names, `A`, and the ones listed beside it.
 fn listing() -> List(Entry) {
   [
-    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None, None),
-    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
-    Entry("C", "hex release", "/src/weft", 900, Saved, None, None, None, None),
+    Entry(
+      "B",
+      "vetting lint",
+      "/src/loom",
+      300,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
+    Entry(
+      "A",
+      "web ui",
+      "/src/loom",
+      100,
+      Live,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
+    Entry(
+      "C",
+      "hex release",
+      "/src/weft",
+      900,
+      Saved,
+      None,
+      None,
+      None,
+      None,
+      sessions.Ordinary,
+    ),
     Entry(
       "lint-census",
       "census",
@@ -53,6 +86,7 @@ fn listing() -> List(Entry) {
       None,
       None,
       None,
+      sessions.Ordinary,
     ),
   ]
 }
@@ -321,6 +355,7 @@ pub fn the_open_button_escapes_the_catalogues_name_test() {
         None,
         None,
         None,
+        sessions.Ordinary,
       ),
     ])
   let html = drawn(model)
@@ -583,8 +618,20 @@ pub fn a_blocked_row_is_text_test() {
           None,
           None,
           None,
+          sessions.Ordinary,
         ),
-        Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
+        Entry(
+          "A",
+          "web ui",
+          "/src/loom",
+          100,
+          Live,
+          None,
+          None,
+          None,
+          None,
+          sessions.Ordinary,
+        ),
         Entry(
           "Z",
           "stuck",
@@ -595,6 +642,7 @@ pub fn a_blocked_row_is_text_test() {
           None,
           None,
           None,
+          sessions.Ordinary,
         ),
       ]),
     )

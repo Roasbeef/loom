@@ -97,7 +97,18 @@ fn listed(
       model,
       operator_page.Observed(
         component.SessionsListed([
-          Entry("A", "this one", "/src/loom", 100, Live, None, None, None, None),
+          Entry(
+            "A",
+            "this one",
+            "/src/loom",
+            100,
+            Live,
+            None,
+            None,
+            None,
+            None,
+            sessions.Ordinary,
+          ),
           Entry(
             "B",
             "review <b>auth</b>",
@@ -108,6 +119,7 @@ fn listed(
             None,
             None,
             None,
+            sessions.Ordinary,
           ),
           Entry(
             "C",
@@ -119,6 +131,7 @@ fn listed(
             None,
             None,
             None,
+            sessions.Ordinary,
           ),
         ]),
       ),
@@ -451,6 +464,7 @@ fn catalogue(
         None,
         None,
         None,
+        sessions.Ordinary,
       )
     })
   let model =

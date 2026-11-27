@@ -142,6 +142,11 @@ fn detail_of(id: String) -> json.JsonValue {
 
 fn projects_for(asked: Subject(Asked), says: Says) -> home.Projects {
   home.Projects(
+    settings: fn(_, deliver) { deliver(feed.SettingsUnread) },
+    set_settings: fn(_, _, _, _, deliver) {
+      deliver(feed.SettingsDeclined("bad_request", "no"))
+    },
+    post: fn(_, _, _, deliver) { deliver(feed.NotPosted("bad_request")) },
     propose: fn(_, deliver) {
       deliver(feed.ProposalRefused(creations.Unavailable))
     },
@@ -150,7 +155,9 @@ fn projects_for(asked: Subject(Asked), says: Says) -> home.Projects {
     },
     boards: fn(deliver) {
       process.send(asked, ReadBoards)
-      deliver(feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]))
+      deliver(
+        feed.Heard([feed.Listed("p1", "/src/loom", "router-1", board_body(9))]),
+      )
     },
     ticket: fn(project, id, deliver) {
       process.send(asked, ReadTicket(project, id))
@@ -196,6 +203,7 @@ fn start_with(
             role: None,
             project: None,
             executor: None,
+            standing: sessions.Ordinary,
           ),
         ]),
       )
@@ -659,7 +667,9 @@ fn empty_board() -> json.JsonValue {
 
 fn quiet_projects(asked: Subject(Asked)) -> home.Projects {
   home.Projects(..projects_for(asked, accepting()), boards: fn(deliver) {
-    deliver(feed.Heard([feed.Listed("p1", "/src/loom", empty_board())]))
+    deliver(
+      feed.Heard([feed.Listed("p1", "/src/loom", "router-1", empty_board())]),
+    )
   })
 }
 
@@ -674,6 +684,7 @@ fn saved_entry() -> sessions.Entry {
     role: None,
     project: None,
     executor: None,
+    standing: sessions.Ordinary,
   )
 }
 
@@ -754,7 +765,7 @@ pub fn a_later_board_never_covers_a_settled_composer_test() {
       model,
       home.BoardsRead(
         home.board_reads(model),
-        feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
+        feed.Heard([feed.Listed("p1", "/src/loom", "router-1", board_body(9))]),
       ),
     )
   let html = drawn(later)
@@ -833,7 +844,7 @@ pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
       model,
       home.BoardsRead(
         home.board_reads(model),
-        feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
+        feed.Heard([feed.Listed("p1", "/src/loom", "router-1", board_body(9))]),
       ),
     ))
   assert string.contains(later, "<h1>New session</h1>")

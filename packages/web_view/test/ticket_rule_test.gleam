@@ -36,18 +36,19 @@ fn board_of(tickets: List(board.Ticket)) -> projects.Loaded {
   projects.Loaded(
     id: "p1",
     workspace: "/src/loom",
-    board: Some(
-      board.Board(
-        project: "p1",
-        revision: 3,
-        total: list.length(tickets),
-        tickets:,
-        unreadable: 0,
-        would: [],
-        rules: [],
-        notes: [],
-      ),
-    ),
+    router_session: "router-1",
+    board: Some(board.Board(
+      project: "p1",
+      revision: 3,
+      total: list.length(tickets),
+      tickets:,
+      unreadable: 0,
+      would: [],
+      rules: [],
+      notes: [],
+      decisions: [],
+      router: None,
+    )),
   )
 }
 

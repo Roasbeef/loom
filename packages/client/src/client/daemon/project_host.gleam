@@ -468,6 +468,9 @@ pub type Board {
     /// each: the model router or Jev, and for Jev the probability that decided
     /// it and the reason.
     decisions: List(JsonValue),
+    /// Whether the router has a batch out, and how many candidates wait for it,
+    /// shown on every page.
+    router: JsonValue,
   )
 }
 
@@ -4808,6 +4811,7 @@ fn board_page(host: Host, page: Int) -> Board {
       0 -> decisions_json(host)
       _ -> []
     },
+    router: router_json(host),
   )
 }
 
@@ -4910,6 +4914,19 @@ fn reason_json(
     state.Decided(state.Ignored), [top, ..] -> json.String(top.label)
     _, _ -> json.Null
   }
+}
+
+/// The router's state: whether a batch is out with it, and how many candidates
+/// wait to be offered.
+fn router_json(host: Host) -> JsonValue {
+  json.Object([
+    #("phase", case host.engine.router {
+      state.RouterBusy -> json.String("busy")
+      state.RouterIdle -> json.String("idle")
+    }),
+    #("queued", json.Int(list.length(host.engine.queue))),
+    #("offered", json.Int(list.length(host.engine.offered))),
+  ])
 }
 
 /// One message the router was offered and decided nothing about, with the text

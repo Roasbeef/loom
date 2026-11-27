@@ -381,6 +381,7 @@ fn silent(
             role: None,
             project: None,
             executor: None,
+            standing: sessions.Ordinary,
           ),
         ]),
       )

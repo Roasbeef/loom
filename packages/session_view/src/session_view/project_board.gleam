@@ -267,10 +267,55 @@ pub type Board {
     /// The configured rules with their modes and where each stands on its
     /// verdict, in the order the owner wrote them.
     rules: List(Rule),
+    /// What the router decided about the triggers it was given, newest first,
+    /// or none from a daemon that predates the read.
+    decisions: List(Decision),
+    /// Whether the router has a batch out, or none from a daemon that predates
+    /// the read.
+    router: Option(Router),
     /// What each source said about itself, such as why it is not being read or
     /// when a rate limit ends, in the order sent. A source with nothing to say
     /// adds none, so an empty list means every source is reading normally.
     notes: List(String),
+  )
+}
+
+/// What was decided about one trigger, and by whom. It carries references and
+/// fixed words and none of the trigger's text.
+pub type Decision {
+  Decision(
+    /// The trigger's id.
+    trigger: String,
+    /// The daemon's word: `accepted`, `attached`, `resumed`, `ignored`,
+    /// `would_accept`, or a word this client does not know, kept as text.
+    decision: String,
+    /// When the trigger arrived, in Unix milliseconds, when known.
+    at_ms: Option(Int),
+    /// Who decided it: `jev`, `model` (the router's model) or a word this
+    /// client does not know, kept as text.
+    decider: String,
+    /// The model Jev reported, for a Jev decision.
+    model: Option(String),
+    /// The basis points (hundredths of a percent) the decision rested on, for a
+    /// Jev decision that has them.
+    probability: Option(Int),
+    /// The likeliest reason, for a Jev decline.
+    reason: Option(String),
+    /// Why Jev left the trigger to the router, for a router decision after Jev.
+    fallback: Option(String),
+  )
+}
+
+/// The router's state as the board reports it.
+pub type Router {
+  Router(
+    /// Whether a batch is out with the router: `idle`, `busy`, or a word this
+    /// client does not know.
+    phase: String,
+    /// How many candidates wait to be offered.
+    queued: Int,
+    /// How many the router holds now.
+    offered: Int,
   )
 }
 
@@ -1136,6 +1181,8 @@ fn board_of(fields: List(#(String, JsonValue))) -> Result(Board, String) {
         tickets:,
         unreadable: list.length(rows) - list.length(tickets),
         would: rows_in(fields, "would_have_done", would_row),
+        decisions: rows_in(fields, "decisions", decision_row),
+        router: router_in(fields),
         rules: rules_in(fields),
         notes: notes_in(fields),
       ))
@@ -1465,6 +1512,80 @@ fn would_row(value: JsonValue) -> Result(Would, Nil) {
       |> string.slice(0, would_text_limit),
     link: option.map(text_in(fields, "link"), text_hygiene.single_line),
   )
+}
+
+/// One routing decision. It needs a trigger and a word.
+fn decision_row(value: JsonValue) -> Result(Decision, Nil) {
+  use fields <- result.try(fields_of(value))
+  use trigger <- result.try(option.to_result(text_in(fields, "trigger"), Nil))
+  use decision <- result.map(option.to_result(text_in(fields, "decision"), Nil))
+  Decision(
+    trigger: text_hygiene.single_line(trigger),
+    decision: text_hygiene.single_line(decision),
+    at_ms: int_in(fields, "at_ms"),
+    decider: safe_in(fields, "decider"),
+    model: option.map(text_in(fields, "model"), text_hygiene.single_line),
+    probability: int_in(fields, "probability"),
+    reason: option.map(text_in(fields, "reason"), text_hygiene.single_line),
+    fallback: option.map(text_in(fields, "fallback"), text_hygiene.single_line),
+  )
+}
+
+/// The router's state, when the board carries one.
+fn router_in(fields: List(#(String, JsonValue))) -> Option(Router) {
+  case list.key_find(fields, "router") {
+    Ok(json.Object(inner)) ->
+      Some(Router(
+        phase: safe_in(inner, "phase"),
+        queued: option.unwrap(int_in(inner, "queued"), 0),
+        offered: option.unwrap(int_in(inner, "offered"), 0),
+      ))
+    Ok(_) | Error(Nil) -> None
+  }
+}
+
+/// A decision in a sentence: what became of a trigger and who decided it. The
+/// words are fixed here, one for each of the daemon's, and a word this client does
+/// not know is drawn as the daemon spelled it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let each = project_board.Decision("tr-1", "accepted", None, "model", None, None, None, None)
+/// assert project_board.decision_words(each) == "Opened a ticket, decided by the router"
+/// ```
+pub fn decision_words(each: Decision) -> String {
+  // Each of the daemon's decision words has one fixed sentence; any other is
+  // kept as sent.
+  let what = case each.decision {
+    "accepted" -> "Opened a ticket"
+    "attached" -> "Attached to a ticket"
+    "resumed" -> "Resumed a ticket"
+    "ignored" -> "Ignored"
+    "would_accept" -> "Would have been accepted (observe mode)"
+    other -> other
+  }
+
+  what <> ", " <> decider_words(each)
+}
+
+/// Who decided, and for a Jev decision on what model and with what share, and for
+/// a router decision after Jev why Jev left it.
+fn decider_words(each: Decision) -> String {
+  case each.decider, each.model, each.probability, each.fallback {
+    "jev", Some(model), Some(points), _ ->
+      "decided by Jev (" <> model <> ", " <> percent(points) <> ")"
+    "jev", Some(model), None, _ -> "decided by Jev (" <> model <> ")"
+    "jev", None, _, _ -> "decided by Jev"
+    "model", _, _, Some(why) -> "decided by the router, which Jev left: " <> why
+    "model", _, _, None -> "decided by the router"
+    other, _, _, _ -> "decided by " <> other
+  }
+}
+
+/// Basis points as a whole percent.
+fn percent(points: Int) -> String {
+  int.to_string(points / 100) <> "%"
 }
 
 /// The rules of every source on the board, in the order sent. A source or a

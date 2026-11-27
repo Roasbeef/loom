@@ -851,6 +851,24 @@ costs one git-cow copy once per build, which copies the bytes where the file sys
 
 **What it costs.** An owner with no project sees a Projects section where the page drew none. A project can exist without the settings the owner confirmed. A proposal is read from the folder when the owner chooses it, which is a bounded read of a dozen files.
 
+## Addendum: the project page, the router's decisions and project sessions in the inbox (2026-11-24)
+
+**Affects**: `projects.board` by one field; the home's project capability (`web_view/home.Projects`, `client/daemon/ui_projects.Feed`) by three functions; `web_view/sessions.Entry` by one field; the owner's home by one page and one inbox rule. No new HTTP route, WebSocket route or control command.
+
+**The problem.** The web view showed a project as a section of ticket buttons. A person could not see what the router had decided, change a project's settings or post a request from the page, and a router or worker that waited on an approval or asked a question was hidden with the rest of the project's sessions, so nothing reached the owner.
+
+**What was considered.** A new `projects.decisions` command for the router's recent decisions: rejected, because the board carries the sibling reads from the same engine state, and a second command is a second poll. A second feed read for project sessions' attention: rejected for a `standing` that the session list already carries (`docs/client-protocol.md`, the `standing` member).
+
+**The decision.**
+
+- `projects.board` carries `router` (`{phase, queued, offered}`) on every page. The page draws the `decisions` the addendum "the board's decisions and the Jev verdict" defines (who decided, and for Jev the model and share), worded by `session_view/project_board.decision_words`; an earlier draft of this addendum defined a different row, and that shape is dropped.
+- `Projects` gains `settings`, `set_settings` and `post`, each behind the owner check and answering as the control commands do: `SettingsRead`, `SettingsWrite` (a stale revision is `conflict`; turning publishing on without its URL is the daemon's sentence) and `Posted`/`Reposted`/`NotPosted`. The page is `web_view/project_page` and `view/project_page`: the router's state and decisions, a request composer, the tickets by stage with each one's worker, "Showing N of M tickets" when the board holds more than its first page, and the settings with a form that sends only the keys whose text changed.
+- `sessions.Entry` gains `standing` (`Ordinary`, `ProjectRouter(project)`, `ProjectWorker(project, ticket)`), read from the catalogue by `ui_socket.home_entries`. The lists of conversations still leave project sessions out (`held_entries`, the sidebar, the groups). The home keeps them apart (`Model.machinery`), reads their activity and feed, and lists one as an inbox thread only while its activity reports an approval pending, or its feed holds an ask or a stuck strand. It is named "Worker for <ticket title>" or "Router of <workspace>".
+
+**Authority.** The three functions repeat the owner check in the daemon before any actor is asked, and the page holds the capability only as the owner's operating page. The browser supplies a request's text and four settings strings, through forms that accept exactly those fields; the daemon judges every value by the file's rules. A settings write sends the revision the page read and names the publish URL the daemon showed.
+
+**What it costs.** Every board read carries a few hundred bytes more. The home reads the activity and feed of project sessions as well as ordinary ones, within the same bounds, so a project with many workers can push a session out of the activity limit. A project session that is idle, working or settled still adds nothing to the inbox.
+
 ## Addendum: Jev decisions in the ledger (2026-11-24)
 
 **Status**: PROPOSED, built in the second slice of [the routing design](../docs/design-notes/project-jev-routing.md). **Affects**: the ledger events `Routed` and `RoutedIgnore` by one optional field each, a new event `AgentChosen`, the stored trigger record in the snapshot document, and the engine's router pin by a second form. No change to a worker's tools, the jail, the session wire or a Part 1 interface. The transport, the configuration keys, the `host` line `jev_fallback` and the board's decision entry belong to later slices and are not changed here.

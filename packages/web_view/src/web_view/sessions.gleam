@@ -141,6 +141,32 @@ pub type Entry {
     /// it is no workspace a "New session" button can create in. It is the
     /// catalogue's own text, drawn as a text node.
     executor: Option(String),
+    /// What the session is to a project (protocol-change/106): the router of one,
+    /// the worker of one ticket, or neither. The daemon's own list leaves
+    /// project sessions out of every list of conversations, and the home's inbox
+    /// reads them through this field, so that a router or a worker that asks or
+    /// waits on an approval still reaches the owner as a thread.
+    standing: Standing,
+  )
+}
+
+/// What a session is to a project.
+pub type Standing {
+  /// The session belongs to no project.
+  Ordinary
+
+  /// The session is the router of a project.
+  ProjectRouter(
+    /// The project's id.
+    project: String,
+  )
+
+  /// The session is the worker of one ticket of a project.
+  ProjectWorker(
+    /// The project's id.
+    project: String,
+    /// The ticket's id.
+    ticket: String,
   )
 }
 

@@ -38,6 +38,7 @@ fn entry(id: String) -> Entry {
     role: None,
     project: None,
     executor: None,
+    standing: sessions.Ordinary,
   )
 }
 

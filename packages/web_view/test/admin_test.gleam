@@ -66,6 +66,7 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
     role: None,
     project: None,
     executor: None,
+    standing: sessions.Ordinary,
   )
 }
 
@@ -2277,6 +2278,7 @@ fn with_a_remote_session() -> admin.Start {
             ..entry("0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a73", "box work", Live),
             workspace: "app",
             executor: Some("box"),
+            standing: sessions.Ordinary,
           ),
           ..snap.sessions
         ]),

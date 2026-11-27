@@ -38,7 +38,7 @@ import client/project_overrides
 import client/project_proposal
 import core/json.{type JsonValue}
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import web_view/creations
 import web_view/projects
@@ -64,6 +64,18 @@ pub type Feed {
     /// A project for a folder the socket has already judged, with the check and
     /// setup the owner confirmed. A folder that has a project keeps it.
     create: fn(String, Option(String), Option(String)) -> projects.Creation,
+    /// A project's settings in force.
+    settings: fn(String) -> projects.SettingsRead,
+    /// A change to a project's own settings at the revision the page read, with
+    /// the URL the page named when it turns publishing on.
+    set_settings: fn(
+      String,
+      Int,
+      List(#(String, Option(List(String)))),
+      Option(String),
+    ) -> projects.SettingsWrite,
+    /// The owner's request as an explicit trigger, keyed by a request id.
+    post: fn(String, String, String) -> projects.Posted,
   )
 }
 
@@ -90,6 +102,11 @@ pub fn feed(control: Option(project_start.Control)) -> Option(Feed) {
       retry: fn(project, ticket) {
         acted(held, project, ticket, project_host.retry)
       },
+      settings: fn(project) { settings_of(held, project) },
+      set_settings: fn(project, revision, changes, publish_to) {
+        settings_written(held, project, revision, changes, publish_to)
+      },
+      post: fn(project, request, text) { posted(held, project, request, text) },
       propose: proposal_for,
       create: fn(workspace, check, setup) {
         made(held, workspace, check, setup)
@@ -119,6 +136,7 @@ pub fn board_body(project: String, shown: project_host.Board) -> JsonValue {
     #("would_have_done", json.Array(shown.would_have_done)),
     #("sources", json.Array(shown.sources)),
     #("decisions", json.Array(shown.decisions)),
+    #("router", shown.router),
   ])
 }
 
@@ -132,6 +150,7 @@ fn boards(control: project_start.Control) -> projects.Read {
       projects.Listed(
         id: handle.project,
         workspace: handle.workspace,
+        router_session: handle.router_session,
         board: board_body(handle.project, shown),
       )
     })
@@ -366,4 +385,103 @@ fn store(
       project_host.RefusedSettings(words:) -> words
     }
   })
+}
+
+/// The settings in force, as `projects.settings` replies them.
+fn settings_of(
+  control: project_start.Control,
+  project: String,
+) -> projects.SettingsRead {
+  let read = {
+    use handle <- result.try(
+      project_book.get(control.book, project) |> result.replace_error(Nil),
+    )
+    project_host.settings(handle) |> result.replace_error(Nil)
+  }
+
+  // The read answers with the daemon's body, or says it could not read.
+  case read {
+    Ok(view) ->
+      projects.SettingsHeard(project_settings_wire.view_json(project, view))
+    Error(Nil) -> projects.SettingsUnread
+  }
+}
+
+/// A change to the project's own settings, as `projects.set_settings` takes it:
+/// each value is checked by the rules the file is checked by, a stale revision
+/// is `conflict`, and turning publishing on without naming its URL is refused
+/// with the sentence that states the URL. A key with no words is given back to
+/// `loom.toml`.
+fn settings_written(
+  control: project_start.Control,
+  project: String,
+  revision: Int,
+  changes: List(#(String, Option(List(String)))),
+  publish_to: Option(String),
+) -> projects.SettingsWrite {
+  case project_book.get(control.book, project) {
+    Error(Nil) ->
+      projects.SettingsDeclined("not_found", "That project is gone.")
+    Ok(handle) ->
+      case list.try_map(changes, setting_change) {
+        Error(words) -> projects.SettingsDeclined("bad_request", words)
+        Ok(parsed) ->
+          case
+            project_host.change_settings(
+              handle,
+              revision,
+              parsed,
+              publish_to,
+              "owner",
+            )
+          {
+            Ok(view) ->
+              projects.SettingsStored(project_settings_wire.view_json(
+                project,
+                view,
+              ))
+            Error(project_host.StaleSettings) ->
+              projects.SettingsDeclined(
+                "conflict",
+                "The settings changed since you read them. They are read again.",
+              )
+            Error(project_host.RefusedSettings(words:)) ->
+              projects.SettingsDeclined("bad_request", words)
+          }
+      }
+  }
+}
+
+/// One requested change as the settings code takes it, checked by the file's
+/// own rules so the refusal is the file's.
+fn setting_change(
+  change: #(String, Option(List(String))),
+) -> Result(project_overrides.Change, String) {
+  use key <- result.try(project_overrides.key_from_word(change.0))
+
+  // No words is a release, and words must pass the file's rules.
+  case change.1 {
+    None -> Ok(project_overrides.Release(key))
+    Some(words) ->
+      project_overrides.parse(key, words) |> result.map(project_overrides.Hold)
+  }
+}
+
+/// The owner's request from the composer, recorded as an explicit trigger. The
+/// request id is the idempotency key, so a repeat of one is `Reposted`.
+fn posted(
+  control: project_start.Control,
+  project: String,
+  request: String,
+  text: String,
+) -> projects.Posted {
+  case project_book.get(control.book, project) {
+    Error(Nil) -> projects.NotPosted("not_found")
+    Ok(handle) ->
+      case project_host.post(handle, request, text) {
+        Ok(project_host.Posted(trigger)) -> projects.Posted(trigger)
+        Ok(project_host.Repeated(trigger)) -> projects.Reposted(trigger)
+        Error(_) -> projects.NotPosted("bad_request")
+      }
+  }
 }
