@@ -83,7 +83,7 @@ pub fn publishing_on_names_the_url_the_daemon_showed_test() {
 // The composer takes a request once, refuses an empty one and a long one, and
 // counts a recorded one so the box empties and the next id differs.
 pub fn the_composer_sends_once_and_counts_a_recorded_request_test() {
-  let page = project_page.open("p1")
+  let page = project_page.open("p1", 1000)
 
   assert project_page.posting(page, "  ") == Error(page)
   let assert Error(Page(notice: Some(project_page.Refusal(_)), ..)) =
@@ -96,8 +96,8 @@ pub fn the_composer_sends_once_and_counts_a_recorded_request_test() {
 
   let recorded = project_page.post_settled(waiting, projects.Posted("tr-1"))
   assert recorded.sent == 1
-  assert project_page.request_id(page) == "web-p1-0"
-  assert project_page.request_id(recorded) == "web-p1-1"
+  assert project_page.request_id(page) == "web-p1-1000-0"
+  assert project_page.request_id(recorded) == "web-p1-1000-1"
 
   let refused =
     project_page.post_settled(waiting, projects.NotPosted("not_found"))
@@ -115,7 +115,7 @@ fn string_of(count: Int) -> String {
 // A stored write replaces the settings the page holds; a refusal keeps them and
 // says why in the daemon's words.
 pub fn a_stored_write_replaces_the_settings_and_a_refusal_keeps_them_test() {
-  let page = project_page.open("p1")
+  let page = project_page.open("p1", 1000)
   let body =
     json.Object([
       #("project", json.String("p1")),
@@ -136,4 +136,13 @@ pub fn a_stored_write_replaces_the_settings_and_a_refusal_keeps_them_test() {
   assert refused.settings == stored.settings
   assert refused.notice
     == Some(project_page.Refusal("project.check is not a command"))
+}
+
+// A later visit counts from zero again, so its first request id must not be
+// the id an earlier visit already gave the daemon, which would record nothing.
+pub fn two_visits_to_one_project_never_share_a_request_id_test() {
+  let first = project_page.open("p1", 1000)
+  let second = project_page.open("p1", 2000)
+
+  assert project_page.request_id(first) != project_page.request_id(second)
 }

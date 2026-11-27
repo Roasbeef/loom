@@ -3858,7 +3858,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           project_settings_reading(
             Model(
               ..model,
-              pane: Projected(project_page.open(project)),
+              pane: Projected(project_page.open(project, model.start.now())),
               note: None,
             ),
             project,
@@ -5490,8 +5490,10 @@ fn reopened(state: create.State, outcome: Outcome) -> create.State {
 /// Triggers background observation reads for active sessions across all groups.
 fn observing(model: Model) -> Effect(Msg) {
   let running =
-    list.flat_map(model.groups, fn(group) { group.entries })
-    |> list.append(model.machinery)
+    // The project sessions come first, so a crowd of ordinary sessions cannot push
+    // out the one whose approval or ask is waiting on the owner.
+    model.machinery
+    |> list.append(list.flat_map(model.groups, fn(group) { group.entries }))
     |> list.filter(fn(entry) { entry.residency == Live })
     |> list.take(sessions.activity_limit)
     |> list.map(fn(entry) { entry.id })
@@ -7077,9 +7079,10 @@ fn previous_report(
 
 /// Whether the page's own list still shows `id` as a running session.
 fn still_running(model: Model, id: String) -> Bool {
-  list.any(listing.entries(model.groups), fn(entry) {
-    entry.id == id && entry.residency == Live
-  })
+  list.any(
+    list.append(listing.entries(model.groups), model.machinery),
+    fn(entry) { entry.id == id && entry.residency == Live },
+  )
 }
 
 /// The session a selection names, if it names one.
@@ -7688,9 +7691,12 @@ fn attending(model: Model) -> Effect(Msg) {
   case model.start.attention, model.status {
     Some(reads), Connected -> {
       let entries = listing.entries(model.groups)
+
+      // The project sessions come first, so a crowd of ordinary sessions cannot
+      // push out the one whose approval or ask is waiting on the owner.
       let live =
-        entries
-        |> list.append(model.machinery)
+        model.machinery
+        |> list.append(entries)
         |> list.filter(fn(entry) { entry.residency == Live })
         |> list.take(sessions.activity_limit)
         |> list.map(fn(entry) { entry.id })
@@ -8758,15 +8764,18 @@ fn inbox_return(model: Model) -> Option(Msg) {
 /// How many running sessions the page lists, which the inbox's headline counts
 /// its answers against.
 fn running_sessions(model: Model) -> Int {
-  list.count(listing.entries(model.groups), fn(entry) {
-    case entry.residency {
-      Live -> True
-      sessions.Saved
-      | sessions.Blocked
-      | sessions.FailedStart(_)
-      | sessions.Moving(_) -> False
-    }
-  })
+  list.count(
+    list.append(listing.entries(model.groups), model.machinery),
+    fn(entry) {
+      case entry.residency {
+        Live -> True
+        sessions.Saved
+        | sessions.Blocked
+        | sessions.FailedStart(_)
+        | sessions.Moving(_) -> False
+      }
+    },
+  )
 }
 
 /// What the page holds that bears on setup, which the checklist, the rail's

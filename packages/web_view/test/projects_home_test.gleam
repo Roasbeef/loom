@@ -1764,7 +1764,8 @@ pub fn a_request_is_posted_to_the_router_once_test() {
   let _ = drain_paged(asked)
 
   let model = run(model, home.ProjectRequested(" fix the flaky test "))
-  assert drain_paged(asked) == [Posted("p1", "web-p1-0", "fix the flaky test")]
+  assert drain_paged(asked)
+    == [Posted("p1", "web-p1-7400000-0", "fix the flaky test")]
   assert string.contains(drawn(model), "Request sent to the router.")
 
   let _ = run(model, home.ProjectRequested("   "))

@@ -3438,7 +3438,7 @@ fn home_read(
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
     |> result.map_error(authentication_failure),
   )
-  let entries = held_entries(attachment.registry, views)
+  let entries = home_entries(attachment.registry, views)
 
   // A failed read of the roles leaves the rows without one, which is the owner's
   // case too: a row that says less than it could is the safe way to be wrong.
@@ -3941,7 +3941,7 @@ fn listed(
 ) -> List(sessions.Entry) {
   // This branch resolves manager authorized_page registry credential after before the operation continues.
   case manager.authorized_page(registry, credential, after: "") {
-    Ok(#(_, views)) -> home_entries(registry, views) |> with_projects
+    Ok(#(_, views)) -> held_entries(registry, views) |> with_projects
     Error(_) -> []
   }
 }

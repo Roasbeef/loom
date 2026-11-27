@@ -34,7 +34,7 @@
 //// ## Examples
 ////
 //// ```gleam
-//// let page = project_page.open("p1")
+//// let page = project_page.open("p1", 1000)
 //// assert page.settings == project_page.Unread
 //// ```
 
@@ -54,6 +54,10 @@ pub type Page {
   Page(
     /// The project's id, a value of a board the page holds.
     project: String,
+    /// The moment this visit opened, in milliseconds. It keeps one visit's request
+    /// ids apart from every other's, because the daemon keeps an id as the
+    /// durable key of its request and a repeated one records nothing.
+    opened: Int,
     /// What the page knows of the settings.
     settings: Reading,
     /// Whether a request is with the daemon.
@@ -110,10 +114,17 @@ pub type Note {
 /// ## Examples
 ///
 /// ```gleam
-/// assert project_page.open("p1").sent == 0
+/// assert project_page.open("p1", 1000).sent == 0
 /// ```
-pub fn open(project: String) -> Page {
-  Page(project:, settings: Unread, composing: Ready, sent: 0, notice: None)
+pub fn open(project: String, opened: Int) -> Page {
+  Page(
+    project:,
+    opened:,
+    settings: Unread,
+    composing: Ready,
+    sent: 0,
+    notice: None,
+  )
 }
 
 /// A read of the settings. A body that does not decode keeps what the page held,
@@ -122,7 +133,7 @@ pub fn open(project: String) -> Page {
 /// ## Examples
 ///
 /// ```gleam
-/// let page = project_page.open("p1")
+/// let page = project_page.open("p1", 1000)
 /// assert project_page.settings_heard(page, projects.SettingsUnread) == page
 /// ```
 pub fn settings_heard(page: Page, read: projects.SettingsRead) -> Page {
@@ -296,7 +307,7 @@ pub fn settings_settled(page: Page, write: projects.SettingsWrite) -> Page {
 /// ## Examples
 ///
 /// ```gleam
-/// assert project_page.posting(project_page.open("p1"), "  ") == Error(project_page.open("p1"))
+/// assert project_page.posting(project_page.open("p1", 1000), "  ") == Error(project_page.open("p1", 1000))
 /// ```
 pub fn posting(page: Page, text: String) -> Result(#(Page, String), Page) {
   case page.composing, string.trim(text) {
@@ -350,15 +361,22 @@ fn post_refusal(code: String) -> String {
   }
 }
 
-/// The request id of the next post: the project, and how many the page has sent.
-/// A repeat of one id is `Reposted` and changes nothing, so the daemon dedupes a
-/// press that arrives twice.
+/// The request id of the next post: the project, the moment this visit opened,
+/// and how many the page has sent. A repeat of one id is `Reposted` and changes
+/// nothing, so the daemon dedupes a press that arrives twice. The visit's moment
+/// keeps a later visit, which counts from zero again, from repeating an id the
+/// daemon already holds and so losing its request.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert project_page.request_id(project_page.open("p1")) == "web-p1-0"
+/// assert project_page.request_id(project_page.open("p1", 1000)) == "web-p1-1000-0"
 /// ```
 pub fn request_id(page: Page) -> String {
-  "web-" <> page.project <> "-" <> int.to_string(page.sent)
+  "web-"
+  <> page.project
+  <> "-"
+  <> int.to_string(page.opened)
+  <> "-"
+  <> int.to_string(page.sent)
 }

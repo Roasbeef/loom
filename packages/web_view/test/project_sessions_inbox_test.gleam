@@ -35,7 +35,7 @@ fn listing() -> List(Entry) {
   [
     entry("O", "my own session", sessions.Ordinary),
     entry("W1", "", sessions.ProjectWorker("p1", "t-needs")),
-    entry("W2", "", sessions.ProjectWorker("p1", "t-quiet")),
+    entry("W2", "quiet-worker-name", sessions.ProjectWorker("p1", "t-quiet")),
     entry("R", "", sessions.ProjectRouter("p1")),
   ]
 }
@@ -205,6 +205,7 @@ pub fn project_sessions_stay_out_of_the_lists_test() {
 
   assert string.contains(html, "my own session")
   assert !string.contains(html, "Worker for ticket t-quiet")
+  assert !string.contains(html, "quiet-worker-name")
 }
 
 // A project session whose feed holds an ask, or a stuck strand, is a thread too,
