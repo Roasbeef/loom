@@ -84,9 +84,9 @@ fi
 # condensed log below is flushed line by line.
 #
 # Every bucket in CI sets LOOM_EVOLUTION_E2E. CI also sets
-# LOOM_BOOTSTRAP_E2E_SERVER for every bucket; here only the lanes that build a
-# server shipment set it, which covers its only readers, the client and TUI
-# suites.
+# LOOM_BOOTSTRAP_E2E_SERVER for every bucket; here only the lanes that build
+# or unpack a server shipment set it, which covers its only readers, the
+# client and TUI suites.
 export LOOM_EVOLUTION_E2E=1
 
 # The public dummy credential the scripted provider fixture expects, which
@@ -188,8 +188,10 @@ prepare() {
   echo "==> gantry: prepared in $((SECONDS - started)) s"
 }
 
-# The shipment and the seed, for the lanes that run the shipped fixtures and
-# the code-mode builds. The server shipment depends on the seed.
+# The shipment and the seed, which the shipped fixtures and the code-mode
+# builds need. The prepare action builds them for the lanes that depend on
+# it; match, bake and a lane run without its prepare output build them here.
+# The server shipment depends on the seed.
 prepare_server() {
   prepare binaries server-shipment
   export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
@@ -316,7 +318,9 @@ prepare)
   mkdir -p "$prepared"
   tar -czf "$prepared/server.tgz" $server_paths
   tar -czf "$prepared/seed.tgz" $seed_paths
-  ls -l "$prepared"
+  # The action log keeps only ==> lines, and each output must stay under
+  # Gantry's 64 MiB limit, so the sizes go there.
+  du -h "$prepared"/*.tgz | sed 's/^/==> gantry: /'
   ;;
 
 # Not a CI lane: a few named tests of one package, for an ad hoc action that
