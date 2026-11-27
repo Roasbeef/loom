@@ -55,10 +55,12 @@ lane, and its comments say why each answer has the shape it has:
   fixed, older time, so without the stamp an edited module would be tested as
   the image's revision compiled it. With it Gleam recompiles only what changed
   since that revision. With other lockfiles the lane builds from nothing.
-- The lanes that need the server shipment and the code-mode seed build them
-  (`make binaries server-shipment`), since a Gantry output is a list of regular
-  files and both are directory trees. A fresh seed has to resolve against Hex
-  once, so `scripts/codemode_seed.sh` takes the image's resolved packages
+- The `prepare` action builds the server shipment and the code-mode seed once
+  (`make binaries server-shipment`) and publishes them, with `bin/`, the TUI
+  shipment and the helper, as two tarballs, since a Gantry output is a list of
+  regular files of at most 64 MiB each and these are directory trees. The six
+  lanes that need them list `prepare` in their `deps` and unpack them. A fresh
+  seed has to resolve against Hex once, so `scripts/codemode_seed.sh` takes the image's resolved packages
   through `LOOM_CODEMODE_SEED_PACKAGES` and still runs all of its checks on the
   result. That `make` runs with only the variables the build reads, so
   `scripts/shipment.py`'s environment digest is the same in the image's bake
@@ -146,17 +148,42 @@ lane now stamps the tree after copying the build in, the same assertion fails,
 and the times above the line were taken on commits whose compiled code matched
 the image's. The fix costs about three percent: the same four lanes took 813 s with it, against 803 s without.
 
+### Preparing once
+
+In the run above, six lanes each spent about 130 s on the same preparation, of
+which about 92 s is exporting the server shipment. `scripts/shipment.py` does
+not reuse that export by design: the client's closure holds `esqlite_loom`,
+`khepri`, `ra` and other builds outside its reviewed `ERLANG_ONLY` list. Six
+copies were close to 40% of all slot time, so the `prepare` action now builds it
+once and those lanes unpack its output. Measured at `eb3d61ffc` on the same
+pool, with every lane's outcome checked against the same expectations:
+
+| Action | Before | After |
+| --- | --- | --- |
+| `prepare` | | 158 |
+| `client-1` | 365 | 241 |
+| `client-2` | 353 | 244 |
+| `client-3` | 423 | 289 |
+| `fast-2` | 309 | 175 |
+| `conformance` | 175 | 44 |
+| `eval` | 150 | 13 |
+| **Slot time, all eleven** | **2,079** | **1,478** |
+
+The lanes without a server shipment are unchanged (`static` 86, `mid` 55,
+`fast-1` 139, `fast-3` 34). The makespan was not measured as one run, because
+a `check` run stops admitting work at its first failing action and `eval`
+fails before the client shards start; laid out on two slots, these times give
+about 750 s, against 1,107 s.
+
 ### What binds it now
 
-A client lane is about 130 s of preparation and 210 to 280 s of tests. Of the
-preparation, about 92 s is exporting the server shipment, which
-`scripts/shipment.py` does not reuse by design: the client's closure holds
-`esqlite_loom`, `khepri`, `ra` and other builds outside its reviewed
-`ERLANG_ONLY` list. `client-3` runs longest because the runner deals modules to
-shards round-robin rather than by weight. With two slots the makespan is about
-the total action time divided by two; more slots would bring it toward the
-longest lane, about seven minutes, but the worker host has no memory to spare
-for a third or fourth slot at a client lane's peak of about 5 GiB.
+A client lane is now about 230 to 290 s of tests and a few seconds of setup.
+`client-3` runs longest because the runner deals modules to shards
+round-robin rather than by weight. With two slots the makespan is about the
+total action time divided by two; more slots would bring it toward the
+longest chain, `prepare` then `client-3`, about seven and a half minutes, but
+the worker host has no memory to spare for a third or fourth slot at a client
+lane's peak of about 5 GiB.
 
 ## Remaining failures, by cause
 
