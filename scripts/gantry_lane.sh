@@ -24,11 +24,11 @@
 #   built, and they are copied in before anything compiles. A lane that
 #   needs a dependency the image lacks fails to resolve it, which is the
 #   signal to rebuild the image, not to retry.
-# - Nothing is restored from an upstream job. GitHub's deps job builds
-#   bin/, the helper, the server shipment and the code-mode seed once and
-#   hands them on as an artifact. A Gantry output is a list of regular files,
-#   and the shipment and the seed are directory trees, so each lane builds
-#   what it needs itself.
+# - GitHub's deps job builds bin/, the helper, the server shipment and the
+#   code-mode seed once and hands them on as an artifact. Here the `prepare`
+#   action does the same: a Gantry output is a list of regular files, so it
+#   packs those trees into two tarballs, and every lane that needs them
+#   depends on it and unpacks them instead of building them again.
 # - There is no delegated cgroup v2, so the helper reports partial
 #   enforcement and the tests that demand every layer fail. That is a
 #   property of the worker, and this script does not hide it.
@@ -195,6 +195,32 @@ prepare_server() {
   export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
 }
 
+# What prepare_server builds that a lane reads: the launchers and the helper,
+# the two shipments the launchers run, and the seed. The prepare action packs
+# them in two parts because each Gantry output is at most 64 MiB, and the two
+# together compress to about 47 MiB.
+prepared="$root/.gantry/prepared"
+server_paths="bin build/erlang-shipment build/tui-erlang-shipment packages/sandbox/loom-exec"
+seed_paths="build/codemode-seed"
+
+# Unpacks the prepare action's output when Gantry staged it, which every
+# action that lists prepare in its deps has; run any other way, the lane
+# prepares for itself. Each tree is removed first, because the warm build
+# copies in the image's revision of it and unpacking on top would keep the
+# files this revision deleted.
+prepare_or_unpack() {
+  local started=$SECONDS
+  if [ ! -f "$prepared/server.tgz" ] || [ ! -f "$prepared/seed.tgz" ]; then
+    prepare_server
+    return 0
+  fi
+  rm -rf $server_paths $seed_paths
+  tar -xzf "$prepared/server.tgz"
+  tar -xzf "$prepared/seed.tgz"
+  export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
+  echo "==> gantry: unpacked the prepare action's build in $((SECONDS - started)) s"
+}
+
 # One lane's commands, chosen by name. Its output goes to the lane log, not
 # straight to the action's log; see the end of the script.
 run_lane() {
@@ -242,7 +268,7 @@ fast-1)
 fast-2)
   warm_for $server_parts pkg-provider pkg-broker pkg-executor pkg-mcp \
     pkg-lsp pkg-tools pkg-cap pkg-ext pkg-harness pkg-lint
-  prepare_server
+  prepare_or_unpack
   bash scripts/check.sh provider broker executor mcp lsp tools cap ext \
     codemode harness tui lint
   ;;
@@ -256,7 +282,7 @@ fast-3)
 # read SQL need the seed, as in fast-2.
 conformance)
   warm_for $server_parts pkg-conformance
-  prepare_server
+  prepare_or_unpack
   bash scripts/check.sh conformance
   ;;
 
@@ -265,14 +291,27 @@ conformance)
 # skip, as they would on a depth-1 checkout.
 eval)
   warm_for $server_parts pkg-eval
-  prepare_server
+  prepare_or_unpack
   bash scripts/check.sh eval
   ;;
 
 client-1 | client-2 | client-3)
   warm_for $server_parts
-  prepare_server
+  prepare_or_unpack
   LOOM_CLIENT_TEST_SHARD="${lane#client-}/3" bash scripts/check.sh client
+  ;;
+
+# Not a CI lane: the server shipment, the TUI shipment, the helper and the
+# code-mode seed, built once for the lanes that list this action in their
+# deps. It is the 130 s every one of those lanes used to spend, most of it
+# exporting the server shipment, which scripts/shipment.py does not reuse.
+prepare)
+  warm_for $server_parts
+  prepare_server
+  mkdir -p "$prepared"
+  tar -czf "$prepared/server.tgz" $server_paths
+  tar -czf "$prepared/seed.tgz" $seed_paths
+  ls -l "$prepared"
   ;;
 
 # Not a CI lane: a few named tests of one package, for an ad hoc action that
