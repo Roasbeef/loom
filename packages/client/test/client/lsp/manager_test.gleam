@@ -2907,15 +2907,24 @@ pub fn a_warm_server_restarts_after_sibling_dependency_configuration_changes_tes
 // This fixture begins without build/ or a manifest, and with an empty
 // private cache. It tests the real downloader and server, not a host build
 // whose pre-existing metadata would conceal a broken preparation path.
+//
+// Downloading needs the Hex registry, and a Gantry build action has no
+// network. The Gantry lane script sets LOOM_TEST_OFFLINE=1 and this test
+// skips there, visibly; GitHub CI never sets it, so its skip census still
+// requires the test to run. The variable belongs to this test alone.
 pub fn gleam_preparation_downloads_hex_and_loads_a_sibling_in_a_fresh_workspace_test() {
   case
+    secret.lookup(secret.env(), "LOOM_TEST_OFFLINE"),
     live_prerequisites("lsp dependency preparation"),
     ffi_os.find_executable("gleam")
   {
-    Error(Nil), _ -> Nil
-    Ok(_), Error(_) ->
+    Ok("1"), _, _ ->
+      io.println_error("SKIP lsp dependency preparation: offline lane")
+    _, Error(Nil), _ -> Nil
+    _, Ok(_), Error(_) ->
       io.println_error("SKIP lsp dependency preparation: gleam is not on PATH")
-    Ok(helper), Ok(_) -> run_prepared_gleam(live_rig(helper, "prepared-gleam"))
+    _, Ok(helper), Ok(_) ->
+      run_prepared_gleam(live_rig(helper, "prepared-gleam"))
   }
 }
 

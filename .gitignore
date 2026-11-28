@@ -9,6 +9,8 @@ erl_crash.dump
 /.claude/worktrees/
 /scripts/__pycache__/
 /.codemode/
+# The writable HOME, TMPDIR and caches of a Gantry lane (scripts/gantry_lane.sh).
+/.gantry/
 
 # UI exploration captures are archived in docs/design-notes/capture-archive.md.
 # Keep the design prose and generators, but ignore their generated output.

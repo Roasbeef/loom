@@ -27,6 +27,20 @@ esac
 # dependency resolution when a compatible version is published later.
 cp scripts/codemode-seed-manifest.toml "$seed/manifest.toml"
 
+# A host with no network can still make the seed when it is handed the
+# build/packages of a seed already resolved elsewhere. A freshly laid-out seed
+# always resolves once before it settles, and resolution needs Hex; with the
+# Hex sources, packages.toml and each local package's config fingerprint
+# already present, Gleam finds nothing to resolve. A Gantry action is such a
+# host, and its image carries the directory (scripts/gantry_lane.sh). Every
+# check below still runs on the result, so a directory that no longer fits
+# this tree, because a vendored package's gleam.toml changed since it was
+# made, fails as a seed that did not build offline rather than passing.
+if [ -n "${LOOM_CODEMODE_SEED_PACKAGES:-}" ]; then
+  mkdir -p "$seed/build/packages"
+  cp -R "$LOOM_CODEMODE_SEED_PACKAGES/." "$seed/build/packages/"
+fi
+
 # Generated source timestamps become part of Gleam's cache metadata. Release
 # builds use the source commit epoch before compiling the newly laid-out seed.
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then

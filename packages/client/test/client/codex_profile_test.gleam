@@ -19,9 +19,17 @@ import host/bootstrap
 import provider/http
 import weft
 
+// The package's build directory is writable wherever the suite runs, including
+// a read-only root where only the workspace is writable. Nothing here needs
+// the short path that keeps other fixtures' sockets under `/var/tmp`.
 fn directory() -> String {
-  "/var/tmp/loom-codex-profile-"
-  <> bit_array.base16_encode(crypto.strong_random_bytes(8))
+  let assert Ok(directory) =
+    bootstrap.absolute_path(
+      "build/loom-codex-profile-"
+      <> bit_array.base16_encode(crypto.strong_random_bytes(8)),
+    )
+    as "The package's build directory has an absolute path."
+  directory
 }
 
 fn binding() -> credentials.Binding {
